@@ -1,0 +1,789 @@
+/*
+ * Reusable widgets: buttons, tables, tiles, badges, kv lists, filters, forms, flash banner,
+ * cards, spinner. Shared by every page.
+ */
+
+/* ---- Buttons ---- */
+button, .btn {
+    font: inherit;
+    padding: 0.45rem 0.9rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--fg);
+    cursor: pointer;
+}
+button.primary, .btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+button.danger, .btn.danger {
+    background: var(--danger-bg);
+    border-color: var(--danger);
+    color: var(--danger);
+}
+button.link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent);
+    cursor: pointer;
+}
+button.link:hover { text-decoration: underline; }
+form.inline { display: inline; }
+
+/* ---- Form controls ----
+ * Native <select> chrome on macOS/Chrome adds intrinsic height beyond `padding` + `border`,
+ * so inputs and selects rendered side-by-side end up at different heights even with identical
+ * box rules. Normalise by stripping the native appearance and pinning a shared box model:
+ * same padding, same line-height, explicit min-height, custom caret on selects.
+ */
+input[type=password], input[type=text], input[type=datetime-local], select {
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 2.4rem;
+    padding: 0.45rem 0.65rem;
+    line-height: 1.3;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font: inherit;
+    background: var(--surface);
+    color: var(--fg);
+}
+
+select {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    /* Caret rendered as a small inline SVG so we don't depend on a font/icon asset. */
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath fill='%235c616b' d='M1 1l5 5 5-5'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.65rem center;
+    background-size: 10px 7px;
+    padding-right: 1.8rem;
+}
+
+input[type=datetime-local] {
+    /* WebKit otherwise inserts a baseline-shifting picker control. */
+    -webkit-appearance: none;
+}
+
+input:focus, select:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+    border-color: var(--accent);
+}
+
+.field { display: block; margin-bottom: var(--space-4); }
+.field label { display: block; margin-bottom: var(--space-1); font-weight: 500; }
+
+/* ---- Collapsible page sections ---- */
+details.collapsible-section { margin: var(--space-4) 0; }
+details.collapsible-section > summary {
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+}
+details.collapsible-section > summary::-webkit-details-marker { display: none; }
+details.collapsible-section > summary::before {
+    content: "▸";
+    font-size: 0.85em;
+    color: var(--fg-muted);
+    transition: transform 120ms ease;
+    display: inline-block;
+}
+details.collapsible-section[open] > summary::before { transform: rotate(90deg); }
+details.collapsible-section > summary h2 { margin: 0; display: inline; }
+
+/* ---- Upload grid (split host vs consumer mapping forms) ---- */
+.upload-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: var(--space-3);
+    margin: var(--space-3) 0;
+}
+.upload-grid .upload-card { margin: 0; padding: var(--space-3); }
+.upload-grid .upload-card h3,
+.upload-grid .upload-card h4 { margin-top: 0; }
+
+/* ---- Cards ---- */
+.card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 1.2rem 1.4rem;
+}
+.card.narrow { max-width: 22rem; margin: var(--space-6) auto; }
+section.card { margin: var(--space-4) 0; }
+section.card h2 { margin-top: 0; }
+
+/* ---- Tables ---- */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+th, td {
+    text-align: left;
+    padding: 0.6rem 0.8rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+}
+th {
+    background: var(--surface-alt);
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+tr:last-child td { border-bottom: none; }
+
+/* ---- Utility text ---- */
+.muted { color: var(--fg-muted); }
+.mono { font-family: var(--font-mono); font-size: 0.92em; }
+.crumbs { color: var(--fg-muted); margin-bottom: var(--space-1); font-size: 0.9rem; }
+.crumbs a { color: var(--fg-muted); }
+pre.report {
+    background: #0f1115;
+    color: #d8dde5;
+    padding: var(--space-4) 1.2rem;
+    border-radius: var(--radius-md);
+    overflow-x: auto;
+    font-size: 0.88rem;
+    line-height: 1.5;
+}
+
+/* ---- Tiles (dashboard) ---- */
+.tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: var(--space-3);
+    margin: var(--space-4) 0 var(--space-5);
+}
+.tile {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: var(--space-3) var(--space-4);
+}
+.tile-label { font-size: 0.75rem; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.tile-value { font-size: 1.5rem; font-weight: 600; margin-top: var(--space-1); }
+
+/* ---- Key-value lists (status / details) ---- */
+.kv { list-style: none; padding: 0; margin: 0; }
+.kv li {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: var(--space-4);
+    padding: var(--space-1) 0;
+    border-bottom: 1px dotted var(--border);
+}
+.kv li:last-child { border-bottom: none; }
+.kv li > span:first-child { color: var(--fg-muted); font-size: 0.9rem; }
+.kv code { font-size: 0.9em; }
+
+/* ---- Filter bar ---- */
+.filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    align-items: flex-end;
+    margin: var(--space-4) 0;
+    padding: var(--space-4);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+}
+.active-filter {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin: var(--space-3) 0 calc(-1 * var(--space-2));
+    flex-wrap: wrap;
+}
+.btn.btn-small {
+    padding: 2px 8px;
+    font-size: 0.75rem;
+}
+.filters label { display: flex; flex-direction: column; font-size: 0.8rem; color: var(--fg-muted); }
+.filters input,
+.filters select,
+.filters button,
+.filters .btn {
+    height: 2.4rem;
+    min-height: 2.4rem;
+    box-sizing: border-box;
+    padding: 0 var(--space-2);
+    margin: 0;
+    font: inherit;
+    line-height: 1.2;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: #fff;
+    color: var(--fg);
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+}
+.filters input,
+.filters select { margin-top: var(--space-1); }
+.filters select {
+    padding-right: 1.75rem;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'><path fill='%23555' d='M2 4l4 4 4-4z'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+    background-size: 0.7rem;
+}
+.filters input[type="datetime-local"] {
+    /* Safari/Chrome render datetime-local with internal calendar UI; force the same outer box. */
+    line-height: 2.1;
+}
+.filters button, .filters .btn {
+    align-self: flex-end;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
+}
+
+/* "?" hint badge with a CSS-only tooltip driven by data-tip. Shows on hover and keyboard focus. */
+.filters .hint {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1rem;
+    height: 1rem;
+    margin-left: 0.35rem;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    color: var(--fg-muted);
+    font-size: 0.7rem;
+    cursor: help;
+    user-select: none;
+}
+.filters .hint:hover,
+.filters .hint:focus {
+    background: var(--accent-bg);
+    color: var(--fg);
+    outline: none;
+}
+.filters .hint:hover::after,
+.filters .hint:focus::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--fg);
+    color: #fff;
+    padding: 0.45rem 0.65rem;
+    border-radius: var(--radius-sm);
+    white-space: normal;
+    width: max-content;
+    max-width: 18rem;
+    font-size: 0.8rem;
+    line-height: 1.4;
+    z-index: 10;
+    pointer-events: none;
+    text-align: left;
+}
+.filters .hint:hover::before,
+.filters .hint:focus::before {
+    content: "";
+    position: absolute;
+    bottom: calc(100% + 1px);
+    left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: var(--fg);
+    z-index: 10;
+    pointer-events: none;
+}
+
+/* ---- Pager ---- */
+.pager {
+    display: flex;
+    gap: var(--space-4);
+    justify-content: center;
+    align-items: center;
+    margin: 1.2rem 0;
+}
+
+/* ---- Badges ---- */
+.badge {
+    display: inline-block;
+    padding: 0.1rem 0.5rem;
+    font-size: 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    color: var(--fg-muted);
+    background: var(--surface-alt);
+}
+.badge-ok {
+    background: var(--success-bg);
+    border-color: var(--success-border);
+    color: var(--success);
+}
+.badge-bad {
+    background: var(--danger-bg);
+    border-color: var(--danger);
+    color: var(--danger);
+}
+.badge-channel-multipart {
+    background: var(--badge-multipart-bg);
+    border-color: var(--badge-multipart-border);
+    color: var(--badge-multipart-fg);
+}
+.badge-channel-json {
+    background: var(--badge-json-bg);
+    border-color: var(--badge-json-border);
+    color: var(--badge-json-fg);
+}
+
+/* ---- Flash banner / inline error ---- */
+.flash {
+    margin-bottom: var(--space-4);
+    padding: 0.55rem 0.8rem;
+    border: 1px solid var(--accent);
+    background: var(--accent-bg);
+    color: var(--accent);
+    border-radius: var(--radius-sm);
+}
+.error {
+    background: var(--danger-bg);
+    color: var(--danger);
+    border: 1px solid var(--danger);
+    border-radius: var(--radius-sm);
+    padding: 0.55rem 0.8rem;
+    margin-bottom: var(--space-4);
+}
+
+/* ---- Spinner / loading button ---- */
+.spinner {
+    display: inline-block;
+    width: 0.85em;
+    height: 0.85em;
+    margin-right: 0.4em;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    vertical-align: -2px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+button.is-loading { opacity: 0.7; cursor: wait; }
+
+.actions { display: flex; gap: 0.6rem; margin-top: var(--space-4); }
+
+/* ---- Logcat viewer + filter (Report detail) ---- */
+.logcat-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    align-items: flex-end;
+    margin: var(--space-3) 0;
+    padding: var(--space-3);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+}
+.logcat-controls label { display: flex; flex-direction: column; font-size: 0.8rem; color: var(--fg-muted); flex: 1 1 auto; min-width: 12rem; }
+.logcat-controls input, .logcat-controls select { margin-top: var(--space-1); }
+.logcat-controls .logcat-count { margin-left: auto; align-self: center; }
+.logcat-controls .btn { align-self: flex-end; }
+
+.logcat {
+    background: #0f1115;
+    color: #d8dde5;
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-md);
+    overflow: auto;
+    max-height: 30rem;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.55;
+    margin: 0;
+}
+.logcat code { display: block; }
+.logcat-line { display: block; white-space: pre; }
+.logcat-line[hidden] { display: none; }
+.logcat-num {
+    display: inline-block;
+    min-width: 3.5rem;
+    text-align: right;
+    margin-right: 0.6rem;
+    color: #6f7787;
+    user-select: none;
+}
+.logcat-error   { color: #ff8b8b; background: rgba(255, 70, 70, 0.06); }
+.logcat-warn    { color: #ffcd6f; }
+.logcat-info    { color: #9ad0ff; }
+.logcat-debug   { color: #b8c7d9; }
+.logcat-verbose { color: #6f7787; }
+.logcat-other   { color: #d8dde5; }
+
+/* ---- Stats page ---- */
+.presets { display: flex; gap: var(--space-2); margin-left: auto; align-items: flex-end; }
+.chart-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: var(--space-3) var(--space-3) var(--space-2);
+    overflow-x: auto;
+}
+.bar-chart {
+    display: block;
+    width: 100%;
+    min-width: 480px;
+    height: 220px;
+}
+.bar-chart .bar-multipart { fill: var(--badge-multipart-fg); }
+.bar-chart .bar-json      { fill: var(--badge-json-fg); }
+.bar-chart .bar-label     { fill: var(--fg-muted); font-size: 10px; font-family: var(--font-mono); }
+.legend { font-size: 0.85rem; color: var(--fg-muted); }
+.swatch {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+    vertical-align: -1px;
+    margin: 0 var(--space-1) 0 var(--space-3);
+}
+.swatch-multipart { background: var(--badge-multipart-fg); }
+.swatch-json      { background: var(--badge-json-fg); }
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: var(--space-4);
+    margin-top: var(--space-5);
+}
+/* Vertical stack used by the Stats page so each Top-N card renders full-width with its own pager. */
+.stats-stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    margin-top: var(--space-5);
+}
+.bucket-pager { justify-content: flex-end; gap: var(--space-3); margin-top: var(--space-2); }
+.stats-card {
+    margin: 0;
+    min-width: 0;
+    overflow: hidden;
+}
+.stats-table {
+    font-size: 0.9rem;
+    width: 100%;
+    table-layout: fixed;
+}
+.stats-table th, .stats-table td {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+.stats-table .bar-col { width: 30%; }
+.hbar {
+    display: inline-block;
+    height: 8px;
+    background: var(--accent);
+    border-radius: 2px;
+    min-width: 2px;
+}
+
+/* ---- Accessibility: skip-to-content link ---- */
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+.visually-hidden:focus {
+    position: static;
+    width: auto;
+    height: auto;
+    padding: var(--space-2) var(--space-4);
+    margin: 0;
+    overflow: visible;
+    clip: auto;
+    white-space: normal;
+    background: var(--accent);
+    color: #fff;
+}
+
+/* Platform-scope tabs used on Analytics + Errors dashboards. */
+.scope-tabs {
+    display: flex;
+    gap: var(--space-2);
+    margin: var(--space-3) 0 var(--space-4);
+    flex-wrap: wrap;
+}
+.scope-tabs a {
+    text-decoration: none;
+    color: var(--fg);
+    padding: var(--space-1) var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+.scope-tabs a:hover { background: var(--accent-bg); }
+.scope-tabs a.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+}
+
+/* ---- Report detail page ---- */
+.report-header { margin: var(--space-3) 0 var(--space-4); }
+.report-title { margin: 0 0 var(--space-2); }
+.report-meta { margin: var(--space-2) 0 0; font-size: 0.9rem; }
+.report-card { margin: var(--space-4) 0; }
+.report-card h2 { margin-top: 0; }
+.report-message {
+    margin: 0 0 var(--space-3);
+    font-size: 1.05rem;
+    color: var(--fg);
+}
+
+.chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    align-items: center;
+}
+.chip {
+    display: inline-block;
+    padding: 0.2rem 0.55rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--fg-muted);
+    font-size: 0.78rem;
+    line-height: 1.4;
+    text-decoration: none;
+}
+a.chip:hover { background: var(--accent-bg); color: var(--fg); }
+.chip-platform { background: var(--accent-bg); color: var(--fg); border-color: var(--accent-bg); font-family: var(--font-mono); }
+.chip-type { font-family: var(--font-mono); border-color: #e5b8b8; background: #fdecec; color: #7a1f1f; }
+a.chip-type:hover { background: #fbdcdc; color: #7a1f1f; }
+.chip-channel { font-family: var(--font-mono); }
+.chip-attachment { background: #eef6ee; color: #1f5b1f; border-color: #cbe3cb; }
+.chip-label { background: var(--surface-alt); }
+
+.summary-grid {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.4rem 1.25rem;
+    margin: 0;
+}
+.summary-grid dt {
+    color: var(--fg-muted);
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    align-self: center;
+}
+.summary-grid dd {
+    margin: 0;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+.summary-grid dd .chip { margin-right: 0.25rem; }
+
+pre.report.stack {
+    /* Same dark monospace box as the JSON dump, but a hair tighter for tracebacks. */
+    line-height: 1.5;
+    font-size: 0.88rem;
+}
+
+/* Inline form: a single-row form (label + control + button) used inside cards. Reuses the same
+   input/select/button height as the .filters bar so the button lines up with the dropdown. */
+.form-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--space-3);
+    margin: var(--space-2) 0 0;
+}
+.form-row label { display: flex; flex-direction: column; font-size: 0.8rem; color: var(--fg-muted); }
+.form-row input,
+.form-row select,
+.form-row button,
+.form-row .btn {
+    height: 2.4rem;
+    min-height: 2.4rem;
+    box-sizing: border-box;
+    padding: 0 var(--space-2);
+    margin: 0;
+    font: inherit;
+    line-height: 1.2;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: #fff;
+    color: var(--fg);
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+}
+.form-row input,
+.form-row select { margin-top: var(--space-1); }
+.form-row select {
+    padding-right: 1.75rem;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'><path fill='%23555' d='M2 4l4 4 4-4z'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+    background-size: 0.7rem;
+}
+
+/* ---- Attachment overview (Report detail) ---- */
+.logcat-overview { margin-bottom: var(--space-3); }
+.logcat-overview-h { margin: var(--space-3) 0 var(--space-2); font-size: 1rem; }
+.tiles.tiles-compact {
+    margin: 0 0 var(--space-3);
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+}
+.tiles.tiles-compact .tile { padding: var(--space-2) var(--space-3); }
+.tiles.tiles-compact .tile-value { font-size: 1.15rem; }
+.tile-error { border-color: #e5b8b8; background: #fdecec; }
+.tile-error .tile-label { color: #7a1f1f; }
+.tile-warn { border-color: #e5d2b1; background: #fbf2dc; }
+.tile-warn .tile-label { color: #7a4f1f; }
+.logcat-first-errors { font-size: 0.85rem; line-height: 1.45; max-height: 14rem; overflow: auto; }
+.logcat-details > summary {
+    cursor: pointer;
+    padding: var(--space-2) 0;
+    color: var(--accent);
+    font-weight: 500;
+    user-select: none;
+}
+.logcat-details[open] > summary { margin-bottom: var(--space-2); }
+
+/* Environment badge in the app header — colours the brand bar so production / staging are
+   impossible to confuse at a glance. */
+.env-badge {
+    display: inline-block;
+    margin-left: var(--space-2);
+    padding: 2px 8px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-radius: 999px;
+    border: 1px solid currentColor;
+}
+.env-badge.env-production { color: #b9123e; background: #ffe5ed; }
+.env-badge.env-staging    { color: #5a3500; background: #ffeec5; }
+
+
+/* Per-channel chip palette — multipart (SDK) vs json (API). Used in the Errors top-N table
+   to show how each fault site splits across ingestion paths, and in the recent-errors row to
+   tag a single occurrence's path. */
+.chip-channel-m { font-family: var(--font-mono); background: #e0f2fe; color: #075985; border-color: #7dd3fc; }
+.chip-channel-j { font-family: var(--font-mono); background: #fef3c7; color: #854d0e; border-color: #fcd34d; }
+
+/* API explorer page — Swagger UI ships its own self-contained HTML at `/docs/`, so we render
+   it inside an iframe and let the admin shell (sidebar + page header) wrap it. The iframe
+   stretches to fill the viewport below the page header so the explorer reads as a real page,
+   not a widget squeezed into a card. */
+.api-docs-frame { padding: 0; overflow: hidden; }
+.api-docs-frame iframe {
+    display: block;
+    width: 100%;
+    height: calc(100vh - 220px);
+    min-height: 600px;
+    border: 0;
+}
+
+/* Docs preview page — Markdig renders the README to plain semantic HTML (headings, paragraphs,
+   lists, tables, code blocks); we restyle just enough to read comfortably inside the admin
+   chrome without introducing any inline styles (the page must satisfy the strict CSP). */
+.docs-content {
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+.docs-content h1,
+.docs-content h2,
+.docs-content h3,
+.docs-content h4 {
+    margin-top: var(--space-5);
+    margin-bottom: var(--space-2);
+    line-height: 1.3;
+}
+.docs-content h1:first-child,
+.docs-content > :first-child { margin-top: 0; }
+.docs-content h1 { font-size: 1.6rem; }
+.docs-content h2 { font-size: 1.3rem; border-bottom: 1px solid var(--border); padding-bottom: var(--space-1); }
+.docs-content h3 { font-size: 1.1rem; }
+.docs-content p { margin: var(--space-2) 0; }
+.docs-content ul, .docs-content ol { padding-left: 1.4rem; }
+.docs-content li { margin: 0.15rem 0; }
+.docs-content a { color: var(--accent); }
+.docs-content code {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    padding: 0.05rem 0.3rem;
+    background: var(--surface-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+.docs-content pre {
+    background: #0f1115;
+    color: #d8dde5;
+    padding: var(--space-3) 1rem;
+    border-radius: var(--radius-md);
+    overflow-x: auto;
+    font-size: 0.88rem;
+    line-height: 1.5;
+    margin: var(--space-3) 0;
+}
+.docs-content pre code {
+    background: transparent;
+    border: none;
+    padding: 0;
+    color: inherit;
+}
+.docs-content table {
+    margin: var(--space-3) 0;
+    font-size: 0.92rem;
+}
+.docs-content blockquote {
+    margin: var(--space-3) 0;
+    padding: var(--space-2) var(--space-3);
+    border-left: 3px solid var(--accent);
+    background: var(--accent-bg);
+    color: var(--fg);
+}
+.docs-content img { max-width: 100%; height: auto; }
+
+/* Wipe-all zone — visually quarantined from the rest of the maintenance actions so an operator
+   doesn't fat-finger their way into deleting everything. */
+section.card.danger-zone {
+    border-color: #e5b8b8;
+    background: #fff7f7;
+}
+section.card.danger-zone h2 { color: #7a1f1f; }
+
+/* Per-level log chips on the Problem-reports listing + report-detail summary panel. Color
+   palette matches the iOS LogEntryLevel cases — info/debug/warning/error read at a glance,
+   "other" levels fall back to the neutral chip. */
+.chip-loglevel { font-family: var(--font-mono); }
+.chip-loglevel-debug    { background: #f3f4f6; color: #374151; border-color: #d1d5db; }
+.chip-loglevel-info     { background: #eff6ff; color: #1e40af; border-color: #bfdbfe; }
+.chip-loglevel-warning  { background: #fffbeb; color: #92400e; border-color: #fde68a; }
+.chip-loglevel-error    { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
+.chip-loglevel-deverror { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
+.chip-loglevel-preview  { background: #f5f3ff; color: #5b21b6; border-color: #ddd6fe; }

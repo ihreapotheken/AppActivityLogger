@@ -1,0 +1,18 @@
+@page
+@model RSAApiDocsModel
+@using ReportService.Admin.ViewModels
+@{
+    ViewData["Title"] = "API";
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM(
+    "API",
+    "Interactive OpenAPI explorer for the ingestion service. Endpoints are gated by the `apiKey` header — paste the value from `.env` into the Authorize button to fire requests."))
+
+<section class="card api-docs-frame">
+    <iframe src="/docs/"
+            title="OpenAPI explorer"
+            loading="lazy"
+            referrerpolicy="no-referrer"
+            sandbox="allow-same-origin allow-scripts allow-forms allow-popups">
+    </iframe>
+</section>

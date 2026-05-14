@@ -1,0 +1,69 @@
+@page
+@model RSAForcedReportsModel
+@using ReportService.Admin.ViewModels
+@{
+    ViewData["Title"] = "Forced reports";
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM(
+    "Forced reports",
+    "Allow-list of identifiers that mobile clients check at startup. When a client's id is on the list, it forcefully submits a Report-a-Problem entry on the next backend fetch."))
+
+@if (!string.IsNullOrEmpty(Model.Flash))
+{
+    <div class="flash @(Model.FlashKind == "err" ? "flash-err" : "flash-ok")" role="status">@Model.Flash</div>
+}
+
+<section>
+    <h2>Add identifier</h2>
+    <p class="muted">Free-form string up to 256 chars. Whatever stable identifier the mobile app already keys on — clientId, userId, deviceId — is appropriate. Adding an id that already exists refreshes its note and timestamp.</p>
+    <form method="post" asp-page-handler="Add" class="filter-form">
+        @Html.AntiForgeryToken()
+        <label>
+            <span>ID</span>
+            <input name="id" required maxlength="256" placeholder="e.g. android-user-9999" />
+        </label>
+        <label>
+            <span>Note (optional)</span>
+            <input name="note" maxlength="512" placeholder="ticket #4214" />
+        </label>
+        <button type="submit" class="primary">Add</button>
+    </form>
+</section>
+
+<section>
+    <h2>Current allow-list (@Model.Entries.Count)</h2>
+    @if (Model.Entries.Count == 0)
+    {
+        <p class="muted">No identifiers on the list. Mobile clients querying the public endpoint will receive <code>forced=false</code> for every id.</p>
+    }
+    else
+    {
+        <table>
+            <thead>
+                <tr>
+                    <th scope="col">ID</th>
+                    <th scope="col">Added (UTC)</th>
+                    <th scope="col">Note</th>
+                    <th scope="col"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var e in Model.Entries)
+                {
+                    <tr>
+                        <td class="mono">@e.Id</td>
+                        <td class="mono">@e.AddedAt.AsLocalTime()</td>
+                        <td>@(e.Note ?? "")</td>
+                        <td>
+                            <form method="post" asp-page-handler="Remove" class="inline">
+                                @Html.AntiForgeryToken()
+                                <input type="hidden" name="id" value="@e.Id" />
+                                <button type="submit" class="link" aria-label="Remove @e.Id">remove</button>
+                            </form>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</section>

@@ -1,0 +1,32 @@
+# Build artifacts
+**/bin/
+**/obj/
+
+# IDE / editor
+**/.vs/
+**/*.user
+**/*.suo
+
+# Local secrets / env
+.env
+.env.*
+
+# Tooling that is not part of the runtime image (other agents own these)
+scripts/
+ops/
+tests/
+ReportService.sln
+
+# Dev-only config (Production config is baked in; Development overrides are not needed)
+**/appsettings.Development.json
+
+# Misc junk
+**/.DS_Store
+
+# Repo meta (not needed inside the image)
+# README.md is now needed: the admin project bundles it into /app/admin/admin-docs/
+# for the /Docs preview page (see src/ReportService.Admin/ReportService.Admin.csproj).
+.gitignore
+docker-compose.yml
+Dockerfile
+.dockerignore

@@ -1,0 +1,106 @@
+@inject ReportService.Options.RSCReportServiceOptions ServiceOptions
+@{
+    var title = ViewData["Title"] as string ?? "Report admin";
+    var user = User?.Identity?.Name;
+    var authed = User?.Identity?.IsAuthenticated == true;
+    // Loopback connections are auto-signed-in by Program.cs; signing out is meaningless because
+    // the next request would re-authenticate. Hide the button so localhost operators don't see
+    // a control that does nothing.
+    var remote = Context.Connection.RemoteIpAddress;
+    var isLoopback = remote != null && System.Net.IPAddress.IsLoopback(remote);
+    var env = string.IsNullOrWhiteSpace(ServiceOptions.Environment) ? "production" : ServiceOptions.Environment;
+    var envIsProd = string.Equals(env, "production", StringComparison.OrdinalIgnoreCase);
+
+    // Highlight the active sidebar link. ViewContext.RouteData.Values["page"] holds the current
+    // Razor page route ("/Reports", "/Index", etc.); comparing against each link's target keeps
+    // the active state in lockstep with where the user actually is.
+    var currentPage = (ViewContext.RouteData.Values["page"] as string) ?? string.Empty;
+    string Active(string pageRoute) =>
+        string.Equals(currentPage, pageRoute, StringComparison.OrdinalIgnoreCase) ? "is-active" : string.Empty;
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>@title · report-admin</title>
+    <link rel="stylesheet" href="~/css/tokens.css" asp-append-version="true" />
+    <link rel="stylesheet" href="~/css/layout.css" asp-append-version="true" />
+    <link rel="stylesheet" href="~/css/components.css" asp-append-version="true" />
+</head>
+<body class="@(authed ? "shell" : "shell shell-anon")">
+    <a href="#main" class="visually-hidden">Skip to content</a>
+    @if (authed)
+    {
+        <aside class="app-sidebar" aria-label="Primary navigation">
+            <a class="brand" href="/">
+                <span class="brand-name">report-admin</span>
+                <span class="env-badge env-@env.ToLowerInvariant()" title="ReportService:Environment" aria-label="Environment">@env</span>
+            </a>
+
+            <nav class="side-nav" aria-label="Sections">
+                <div class="side-section">
+                    <h2 class="side-heading">Insights</h2>
+                    <a class="@Active("/Index")" asp-page="/Index">Dashboard</a>
+                    <a class="@Active("/Stats")" asp-page="/Stats">Stats</a>
+                </div>
+
+                <div class="side-section">
+                    <h2 class="side-heading">Submissions</h2>
+                    <a class="@Active("/Analytics")"      asp-page="/Analytics">Analytics</a>
+                    <a class="@Active("/ProblemReports")" asp-page="/ProblemReports">Problem reports</a>
+                    <a class="@Active("/Errors")"         asp-page="/Errors">Error reports</a>
+                    <a class="@Active("/Reports")"        asp-page="/Reports">All reports</a>
+                </div>
+
+                <div class="side-section">
+                    <h2 class="side-heading">Operations</h2>
+                    <a class="@Active("/ForcedReports")" asp-page="/ForcedReports">Forced reports</a>
+                    <a class="@Active("/Maintenance")"   asp-page="/Maintenance">Maintenance</a>
+                    <a class="@Active("/Audit")"         asp-page="/Audit">Audit log</a>
+                </div>
+
+                <div class="side-section">
+                    <h2 class="side-heading">System</h2>
+                    <a class="@Active("/Status")"  asp-page="/Status">Status</a>
+                    <a class="@Active("/ApiDocs")" asp-page="/ApiDocs">API docs</a>
+                    <a class="@Active("/Docs")"    asp-page="/Docs">Docs</a>
+                </div>
+            </nav>
+
+            <div class="side-footer">
+                <span class="user" aria-label="Signed in as">@user</span>
+                @if (!isLoopback)
+                {
+                    <form method="post" action="/Logout" class="inline">
+                        @Html.AntiForgeryToken()
+                        <button type="submit" class="link" aria-label="Sign out">sign out</button>
+                    </form>
+                }
+            </div>
+        </aside>
+    }
+    else
+    {
+        <header class="app-header">
+            <div class="bar">
+                <a class="brand" href="/">report-admin</a>
+                <span class="env-badge env-@env.ToLowerInvariant()" title="ReportService:Environment" aria-label="Environment">@env</span>
+            </div>
+        </header>
+    }
+    <main id="main">
+        @await Html.PartialAsync("_FlashBanner")
+        @RenderBody()
+    </main>
+    @if (!authed)
+    {
+        <footer>
+            <small>report-admin · operator console</small>
+        </footer>
+    }
+    <script src="~/js/local-time.js" asp-append-version="true"></script>
+    @await RenderSectionAsync("Scripts", required: false)
+</body>
+</html>

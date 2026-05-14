@@ -1,0 +1,156 @@
+@page
+@model RSAMaintenanceModel
+@using ReportService.Admin.ViewModels
+@{
+    ViewData["Title"] = "Maintenance";
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Maintenance", "Operator-triggered actions: retention sweep, index rebuild, integrity, vacuum, backup, export."))
+
+@if (!Model.IndexAvailable)
+{
+    <div class="error">
+        The SQLite metadata index isn't available in this deployment (either <code>Storage != "SqliteIndex"</code>
+        or the DB is currently unreachable). Rebuild / integrity / vacuum / backup are disabled until it's back.
+    </div>
+}
+
+<section class="card">
+    <h2>Retention</h2>
+    <p class="muted">
+        Storage is capped at <strong>@RSAByteFormatter.Format(Model.Retention.LimitBytes)</strong>; reports older than
+        <strong>@Model.Retention.MaxAgeDays days</strong> are also removed. Currently using
+        <strong>@RSAByteFormatter.Format(Model.Retention.UsedBytes)</strong> across @Model.Retention.ReportCount reports
+        @if (Model.Retention.Oldest is { } oldest)
+        {
+            <span>(oldest @oldest.AsLocalTime()).</span>
+        }
+        else
+        {
+            <span>.</span>
+        }
+        @if (!Model.Retention.Enabled)
+        {
+            <span class="badge">Background sweep disabled</span>
+        }
+    </p>
+    <form method="post" asp-page-handler="Purge">
+        @Html.AntiForgeryToken()
+        <button type="submit" class="primary">Run retention sweep</button>
+    </form>
+    <p class="muted small">Only deletes reports older than the retention window or oldest-first if over the size cap. To delete <em>everything</em>, use Wipe all data below.</p>
+</section>
+
+<section class="card">
+    <h2>Index rebuild</h2>
+    <p class="muted">Reconcile the SQLite metadata index with the files on disk. Adds rows for files that aren't indexed; removes rows whose files are gone.</p>
+    <form method="post" asp-page-handler="Rebuild">
+        @Html.AntiForgeryToken()
+        <button type="submit" class="primary" @(Model.IndexAvailable ? "" : "disabled")>Rebuild now</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Integrity check</h2>
+    <p class="muted">Runs <code>PRAGMA integrity_check</code> against the live index DB. The result appears on the Status page.</p>
+    <form method="post" asp-page-handler="Integrity">
+        @Html.AntiForgeryToken()
+        <button type="submit" @(Model.IndexAvailable ? "" : "disabled")>Run integrity check</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Vacuum / analyze</h2>
+    <p class="muted">Rebuilds the DB to reclaim free pages, then runs <code>ANALYZE</code> to refresh planner stats. Safe to run online, but holds a write lock briefly.</p>
+    <form method="post" asp-page-handler="Vacuum">
+        @Html.AntiForgeryToken()
+        <button type="submit" @(Model.IndexAvailable ? "" : "disabled")>VACUUM + ANALYZE</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Backup snapshot</h2>
+    <p class="muted">Writes a consistent <code>VACUUM INTO</code> snapshot to <code>@Model.BackupRoot</code>. The snapshot is verified before being published atomically — a crash mid-copy leaves a <code>*.partial.*</code> file for cleanup, never a corrupt backup.</p>
+    <form method="post" asp-page-handler="Backup">
+        @Html.AntiForgeryToken()
+        <button type="submit" class="primary" @(Model.IndexAvailable ? "" : "disabled")>Create backup now</button>
+    </form>
+    @if (Model.ExistingBackups.Count > 0)
+    {
+        <h3>Recent backups</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th scope="col">File</th>
+                    <th scope="col">Size</th>
+                    <th scope="col">Modified</th>
+                    <th scope="col"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var f in Model.ExistingBackups)
+                {
+                    <tr>
+                        <td class="mono">@f.Name</td>
+                        <td>@RSAByteFormatter.Format(f.Length)</td>
+                        <td class="mono">@f.LastWriteTimeUtc.AsLocalTime()</td>
+                        <td><a asp-page-handler="DownloadBackup" asp-route-name="@f.Name">download</a></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</section>
+
+<section class="card">
+    <h2>Export metadata</h2>
+    <p class="muted">Exports platform / filename / size / submitted-at / attachment columns for every stored report. CSV by default.</p>
+    <form method="post" asp-page-handler="Export" class="form-row">
+        @Html.AntiForgeryToken()
+        <label>Format
+            <select name="format">
+                <option value="csv">CSV</option>
+                <option value="json">JSON</option>
+            </select>
+        </label>
+        <button type="submit" class="primary">Download</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Restore</h2>
+    <p class="muted">
+        Replace the live SQLite index with a previously-taken snapshot. The uploaded file is validated
+        (SQLite header + <code>PRAGMA integrity_check</code>) before it touches the live database;
+        any failure leaves the live DB untouched. After restore, run an Integrity check + index Rebuild
+        to reconcile reports added since the snapshot.
+    </p>
+    <form method="post" asp-page-handler="Restore" enctype="multipart/form-data" class="form-row" data-confirm-restore>
+        @Html.AntiForgeryToken()
+        <label>Snapshot file
+            <input type="file" name="file" accept=".db,application/x-sqlite3,application/octet-stream" required />
+        </label>
+        <button type="submit" class="danger">Restore</button>
+    </form>
+    <p class="muted">Maximum upload size 200 MiB.</p>
+</section>
+
+<section class="card danger-zone">
+    <h2>Wipe all data</h2>
+    <p class="muted">
+        Deletes every stored problem report (JSON + gzip attachment) on every platform plus every
+        row in the forced-report allow-list. The audit log is intentionally preserved so this
+        action stays traceable. <strong>Irreversible — there is no undo.</strong>
+    </p>
+    <form method="post" asp-page-handler="WipeAll" class="filter-form" onsubmit="return confirm('This permanently deletes every stored report and every forced-report row. Continue?');">
+        @Html.AntiForgeryToken()
+        <label>
+            <span>Type <code>WIPE</code> to confirm</span>
+            <input name="confirm" required pattern="WIPE" placeholder="WIPE" autocomplete="off" />
+        </label>
+        <button type="submit" class="danger">Wipe everything</button>
+    </form>
+</section>
+
+@section Scripts {
+    <script src="~/js/maintenance.js" asp-append-version="true"></script>
+}

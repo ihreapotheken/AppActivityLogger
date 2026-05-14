@@ -1,0 +1,65 @@
+@page
+@model RSAReportsModel
+@using ReportService.Admin.ViewModels
+@{
+    ViewData["Title"] = "Reports";
+    var filter = Model.Filter;
+    var vm = Model.Listing;
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Reports", "Filter, search, and paginate every stored submission."))
+
+@await Html.PartialAsync("_ReportsFilter", new RSAReportsFilterPanelVM("/Reports", filter, Model.AvailablePlatforms))
+
+@section Scripts {
+    <script src="~/js/auto-submit.js" asp-append-version="true"></script>
+}
+
+<p class="muted">
+    @vm.TotalMatched matches · page @vm.PageNumber of @vm.TotalPages
+    · source: <span class="mono">@(vm.UsedIndex ? "sqlite index" : "filesystem scan")</span>
+</p>
+
+@if (vm.Items.Count == 0)
+{
+    <p class="muted">No reports match the current filter.</p>
+}
+else
+{
+    <table>
+        <thead>
+            <tr>
+                <th scope="col">Submitted</th>
+                <th scope="col">Platform</th>
+                <th scope="col">Channel</th>
+                <th scope="col">File</th>
+                <th scope="col">Size</th>
+                <th scope="col">Attachment</th>
+            </tr>
+        </thead>
+        <tbody>
+        @foreach (var r in vm.Items)
+        {
+            <tr>
+                <td class="mono">@r.SubmittedAt.AsLocalTime()</td>
+                <td class="mono">@r.Platform</td>
+                <td>@await Html.PartialAsync("_ChannelBadge", r)</td>
+                <td class="mono"><a asp-page="/Report" asp-route-platform="@r.Platform" asp-route-fileName="@r.FileName">@r.FileName</a></td>
+                <td>@RSAByteFormatter.Format(r.SizeBytes)</td>
+                <td>@RSAByteFormatter.Format(r.AttachmentSizeBytes)</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+
+<nav class="pager" aria-label="Pagination">
+    @if (vm.PageNumber > 1)
+    {
+        <a href="@filter.ToQueryString(vm.PageNumber - 1)">← previous</a>
+    }
+    <span class="muted">page @vm.PageNumber / @vm.TotalPages</span>
+    @if (vm.PageNumber < vm.TotalPages)
+    {
+        <a href="@filter.ToQueryString(vm.PageNumber + 1)">next →</a>
+    }
+</nav>

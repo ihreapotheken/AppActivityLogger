@@ -1,0 +1,24 @@
+@*
+    Routed at /Documentation rather than /Docs so it doesn't collide with Swagger UI's
+    /docs/ prefix (ASP.NET routing is case-insensitive — Swagger would otherwise intercept).
+*@
+@page "/Documentation"
+@model RSADocsModel
+@using ReportService.Admin.ViewModels
+@{
+    ViewData["Title"] = Model.Readme?.Title ?? "Docs";
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM(
+    "Docs",
+    "Project README bundled with this build."))
+
+<section class="card docs-content">
+    @if (Model.Readme is not null)
+    {
+        @Html.Raw(Model.Readme.HtmlBody)
+    }
+    else
+    {
+        <p class="muted">README not found in this build.</p>
+    }
+</section>

@@ -1,0 +1,54 @@
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.RazorPages;
+using ReportService.Admin.Models;
+using ReportService.Admin.Services;
+using ReportService.Admin.ViewModels;
+using ReportService.Options;
+
+namespace ReportService.Admin.Pages;
+
+public sealed class RSAAnalyticsModel : PageModel
+{
+    private const int PageSize = 25;
+    private static readonly string[] AllowedPlatforms = { "ios", "android" };
+    private static readonly RSAReportListingScope Scope = new(KindIn: new[] { "analytics" });
+
+    private readonly IRSAAnalyticsDashboardService _analytics;
+    private readonly IRSAReportListingService _listing;
+    private readonly RSCReportServiceOptions _options;
+
+    public RSAAnalyticsModel(
+        IRSAAnalyticsDashboardService analytics,
+        IRSAReportListingService listing,
+        RSCReportServiceOptions options)
+    {
+        _analytics = analytics;
+        _listing = listing;
+        _options = options;
+    }
+
+    [BindProperty(SupportsGet = true, Name = "platform")]
+    public string? Platform { get; set; }
+
+    [BindProperty(SupportsGet = true)]
+    public RSAReportsFilterInput Filter { get; set; } = new();
+
+    public RSAAnalyticsDashboardVM Dashboard { get; private set; } = default!;
+    public RSAReportsPageVM Listing { get; private set; } = default!;
+
+    public string? CanonicalPlatform =>
+        Platform is { Length: > 0 } p && Array.IndexOf(AllowedPlatforms, p.ToLowerInvariant()) >= 0
+            ? p.ToLowerInvariant()
+            : null;
+
+    public IReadOnlyList<string> AvailablePlatforms => _options.AllowedPlatforms;
+
+    public async Task OnGetAsync(CancellationToken ct)
+    {
+        Dashboard = _analytics.Build(CanonicalPlatform);
+        // The scope-tab platform (URL ?platform=) and the bound filter share one query field.
+        // Razor's binding gives Filter.Platform the same string, so the listing already inherits
+        // the scope. No extra wiring needed.
+        Listing = await _listing.ListAsync(Filter, PageSize, Scope, ct).ConfigureAwait(false);
+    }
+}

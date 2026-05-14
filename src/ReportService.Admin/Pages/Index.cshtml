@@ -1,0 +1,178 @@
+@page
+@model RSAIndexModel
+@using ReportService.Admin.ViewModels
+@{
+    ViewData["Title"] = "Dashboard";
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Dashboard", "Live overview of stored reports + service health."))
+
+<section class="tiles" aria-label="Dashboards">
+    <a class="tile" asp-page="/Analytics">
+        <div class="tile-label">Analytics</div>
+        <div class="tile-value">User tracking</div>
+    </a>
+    <a class="tile" asp-page="/Errors">
+        <div class="tile-label">Errors</div>
+        <div class="tile-value">Crash + error reporting</div>
+    </a>
+</section>
+
+<section class="tiles" aria-label="Summary">
+    <div class="tile">
+        <div class="tile-label">Reports stored</div>
+        <div class="tile-value">@Model.Dashboard.TotalCount</div>
+    </div>
+    <div class="tile">
+        <div class="tile-label">Multipart (zip)</div>
+        <div class="tile-value">@Model.Dashboard.MultipartCount</div>
+    </div>
+    <div class="tile">
+        <div class="tile-label">JSON</div>
+        <div class="tile-value">@Model.Dashboard.JsonCount</div>
+    </div>
+    <div class="tile">
+        <div class="tile-label">JSON bytes</div>
+        <div class="tile-value">@RSAByteFormatter.Format(Model.Dashboard.TotalJsonBytes)</div>
+    </div>
+    <div class="tile">
+        <div class="tile-label">Attachment bytes</div>
+        <div class="tile-value">@RSAByteFormatter.Format(Model.Dashboard.TotalAttachmentBytes)</div>
+    </div>
+    <div class="tile">
+        <div class="tile-label">Version</div>
+        <div class="tile-value mono">@Model.Version</div>
+    </div>
+    <div class="tile">
+        <div class="tile-label">Uptime</div>
+        <div class="tile-value">@FormatUptime(Model.Uptime)</div>
+    </div>
+</section>
+
+<h2>Platforms</h2>
+<table>
+    <thead>
+        <tr>
+            <th scope="col">Platform</th>
+            <th scope="col">Reports</th>
+            <th scope="col">Multipart (zip)</th>
+            <th scope="col">JSON</th>
+            <th scope="col">Latest</th>
+            <th scope="col"></th>
+        </tr>
+    </thead>
+    <tbody>
+    @foreach (var p in Model.Dashboard.Platforms)
+    {
+        <tr>
+            <td class="mono">@p.Name</td>
+            <td>@p.Count</td>
+            <td>
+                @p.MultipartCount
+                @if (p.MultipartCount > 0)
+                {
+                    <text> · </text><a asp-page="/Reports" asp-route-platform="@p.Name" asp-route-channel="multipart">view</a>
+                }
+            </td>
+            <td>
+                @p.JsonCount
+                @if (p.JsonCount > 0)
+                {
+                    <text> · </text><a asp-page="/Reports" asp-route-platform="@p.Name" asp-route-channel="json">view</a>
+                }
+            </td>
+            <td>@p.LatestSubmittedAt.AsLocalTimeOrDash()</td>
+            <td><a asp-page="/Reports" asp-route-platform="@p.Name">browse all →</a></td>
+        </tr>
+    }
+    </tbody>
+</table>
+
+<h2>Latest submissions</h2>
+@if (Model.Dashboard.Recent.Count == 0)
+{
+    <p class="muted">No reports yet.</p>
+}
+else
+{
+    <table>
+        <thead>
+            <tr>
+                <th scope="col">Submitted</th>
+                <th scope="col">Platform</th>
+                <th scope="col">Channel</th>
+                <th scope="col">File</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var r in Model.Dashboard.Recent)
+            {
+                <tr>
+                    <td class="mono">@r.SubmittedAt.AsLocalTime()</td>
+                    <td class="mono">@r.Platform</td>
+                    <td>@await Html.PartialAsync("_ChannelBadge", r)</td>
+                    <td class="mono"><a asp-page="/Report" asp-route-platform="@r.Platform" asp-route-fileName="@r.FileName">@r.FileName</a></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+<h2>Health</h2>
+<table>
+    <thead>
+        <tr>
+            <th scope="col">Component</th>
+            <th scope="col">State</th>
+            <th scope="col">Detail</th>
+            <th scope="col">At</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var kvp in Model.Health)
+        {
+            <tr>
+                <td class="mono">@kvp.Key</td>
+                <td>
+                    @if (kvp.Value.Healthy)
+                    {
+                        <span class="badge badge-ok">healthy</span>
+                    }
+                    else
+                    {
+                        <span class="badge badge-bad">degraded</span>
+                    }
+                </td>
+                <td>@kvp.Value.Detail</td>
+                <td class="mono">@kvp.Value.At.AsLocalTime()</td>
+            </tr>
+        }
+        @if (Model.Health.Count == 0)
+        {
+            <tr><td colspan="4" class="muted">no components reporting yet — activity will populate this table</td></tr>
+        }
+    </tbody>
+</table>
+
+@if (Model.IndexStatus is { } status)
+{
+    <h2>Index at a glance</h2>
+    <ul class="kv">
+        <li><span>DB path</span><code>@status.DbPath</code></li>
+        <li><span>Size</span>@RSAByteFormatter.Format(status.DbSizeBytes) (<span class="mono">WAL=@status.WalPresent, SHM=@status.ShmPresent</span>)</li>
+        <li><span>Schema version</span>@status.SchemaVersion</li>
+        <li><span>Last integrity</span>@(status.LastIntegrityCheckAt is { } t ? $"{status.LastIntegrityCheckResult} · {t:u}" : "never")</li>
+        <li><span>Last backup</span>@(status.LastBackupAt is { } b ? $"{status.LastBackupPath} · {b:u}" : "never")</li>
+        <li><span>Drift (missing / stale)</span>@status.DriftMissingInIndex / @status.DriftStaleIndexRows</li>
+    </ul>
+    <p class="muted">Use <a asp-page="/Maintenance">Maintenance</a> to rebuild, run integrity, or snapshot a backup.</p>
+}
+
+@functions {
+    static string FormatUptime(TimeSpan u)
+    {
+        if (u.TotalDays >= 1) return $"{(int)u.TotalDays}d {u.Hours}h";
+        if (u.TotalHours >= 1) return $"{u.Hours}h {u.Minutes}m";
+        if (u.TotalMinutes >= 1) return $"{u.Minutes}m {u.Seconds}s";
+        return $"{u.Seconds}s";
+    }
+}

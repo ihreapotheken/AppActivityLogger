@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "isRoot": true,
+  "tools": {
+    "swashbuckle.aspnetcore.cli": {
+      "version": "6.9.0",
+      "commands": ["swagger"]
+    },
+    "docfx": {
+      "version": "2.78.3",
+      "commands": ["docfx"]
+    }
+  }
+}

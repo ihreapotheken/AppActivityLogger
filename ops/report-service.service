@@ -1,0 +1,55 @@
+# report-service.service
+#
+# systemd unit for the ReportService ASP.NET Core 8 application.
+#
+# PLACEHOLDER PATHS: the install prefix (/opt/report-service), reports root
+# (/srv/reports), log directory (/var/log/report-service) and environment
+# file (/etc/report-service/report-service.env) are defaults. If your
+# deployment uses different paths, adjust this unit (ExecStart,
+# WorkingDirectory, EnvironmentFile, ReadWritePaths) AND install.sh
+# accordingly before enabling the service.
+#
+# Type=simple is used because the application is not wired for sd_notify
+# (Program.cs does not call UseSystemd()). Switch to Type=notify only after
+# adding the Microsoft.Extensions.Hosting.Systemd integration.
+
+[Unit]
+Description=Report Ingestion Service (ASP.NET Core 8)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=report-service
+Group=report-service
+WorkingDirectory=/opt/report-service
+ExecStart=/usr/bin/dotnet /opt/report-service/ReportService.dll
+EnvironmentFile=-/etc/report-service/report-service.env
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryDenyWriteExecute=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Paths the service is allowed to write to (everything else read-only due to
+# ProtectSystem=strict). Keep this list aligned with the directories created
+# by install.sh.
+ReadWritePaths=/srv/reports /var/log/report-service
+
+[Install]
+WantedBy=multi-user.target

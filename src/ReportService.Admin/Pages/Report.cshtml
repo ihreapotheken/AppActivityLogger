@@ -1,0 +1,265 @@
+@page "/Report/{platform}/{fileName}"
+@model RSAReportModel
+@{
+    ViewData["Title"] = $"{Model.Platform} · {Model.FileName}";
+    var s = Model.Summary;
+}
+<div class="crumbs">
+    <a asp-page="/Index">Dashboard</a> /
+    <a asp-page="/Reports" asp-route-platform="@Model.Platform">@Model.Platform</a> /
+    <span class="mono">@Model.FileName</span>
+</div>
+
+<header class="report-header">
+    <h1 class="report-title">@(s.Title ?? Model.FileName)</h1>
+    <div class="chips" aria-label="Report tags">
+        <span class="chip chip-platform">@Model.Platform</span>
+        @if (!string.IsNullOrEmpty(Model.IngestionChannel))
+        {
+            <span class="chip chip-channel">channel · @Model.IngestionChannel</span>
+        }
+        @if (Model.AttachmentFileName is not null)
+        {
+            <span class="chip chip-attachment">attachment</span>
+        }
+    </div>
+    <p class="muted report-meta">
+        Submitted <span class="mono">@Model.SubmittedAt.AsLocalTime()</span>
+        · <span class="mono">@Model.SizeBytes bytes</span>
+        @if (Model.AttachmentFileName is not null)
+        {
+            <text> · <span class="mono">@Model.AttachmentFileName</span></text>
+        }
+    </p>
+</header>
+
+@if (!string.IsNullOrEmpty(s.Message) || !string.IsNullOrEmpty(s.DeviceModel) || !string.IsNullOrEmpty(s.AppVersion))
+{
+    <section class="card report-card">
+        <h2>Summary</h2>
+        @if (!string.IsNullOrEmpty(s.Message))
+        {
+            <p class="report-message">@s.Message</p>
+        }
+        <dl class="summary-grid">
+            @{ void Row(string label, string? value, string? css = null) {
+                if (!string.IsNullOrEmpty(value))
+                {
+                    <text>
+                        <dt>@label</dt>
+                        <dd class="@css">@value</dd>
+                    </text>
+                }
+            } }
+            @{ Row("Device", s.DeviceModel, "mono"); }
+            @{ Row("App version", s.AppVersion, "mono"); }
+            @{ Row("Source", s.Source); }
+            @{ Row("Pharmacy", s.PharmacyId, "mono"); }
+            @{ Row("Importance", s.FunctionalityImportance); }
+            @{ Row("Email", s.Email, "mono"); }
+            @{ Row("Phone", s.PhoneNumber, "mono"); }
+            @if (s.Labels is { Count: > 0 } labels)
+            {
+                <dt>Labels</dt>
+                <dd>
+                    @foreach (var l in labels)
+                    {
+                        <span class="chip chip-label">@l</span>
+                    }
+                </dd>
+            }
+        </dl>
+    </section>
+}
+
+@if (!string.IsNullOrEmpty(Model.StackTrace))
+{
+    <section class="card report-card">
+        <h2>Stack trace</h2>
+        @if (Model.DeobfuscatedStackTrace is { } deob)
+        {
+            <p class="muted small">
+                <span class="chip">deobfuscated · @Model.RewrittenFrameCount frame@(Model.RewrittenFrameCount == 1 ? "" : "s")</span>
+                @Model.AppliedMappingSummary — applied in memory, not stored. Refresh to return to the obfuscated view.
+            </p>
+            <pre class="report stack">@deob</pre>
+            <details class="muted small">
+                <summary>Show original obfuscated trace</summary>
+                <pre class="report stack">@Model.StackTrace</pre>
+            </details>
+        }
+        else
+        {
+            <pre class="report stack">@Model.StackTrace</pre>
+        }
+    </section>
+}
+
+@* Per-report ephemeral deobfuscation — the operator drops a mapping.txt here, the page parses
+   + applies it in memory, and re-renders with symbolic frames. Nothing is written to disk,
+   nothing is shared with the next viewer. Optional SDK consumer mapping for chained retrace. *@
+<section class="card report-card">
+    <h2>Deobfuscate this report</h2>
+    <p class="muted small">
+        Apply an R8 <code>mapping.txt</code> to this report's stack trace and logcat. The
+        mapping is parsed in memory and never persisted — refreshing the page returns to the
+        obfuscated view. For chained retrace (host + pre-minified SDK), drop the SDK's
+        consumer mapping into the second field as well.
+    </p>
+    @if (Model.AppliedMappingSummary is { } applied)
+    {
+        <div class="flash flash-ok" role="status">
+            <span class="chip">deobfuscated · @Model.RewrittenFrameCount frame@(Model.RewrittenFrameCount == 1 ? "" : "s")</span>
+            applied <span class="mono">@applied</span> to this view (in memory; refresh to revert).
+        </div>
+    }
+    @if (TempData["Flash"] is string flash)
+    {
+        <div class="flash flash-err" role="status">@flash</div>
+    }
+    <form method="post" asp-page-handler="Deobfuscate" enctype="multipart/form-data" class="filter-form">
+        @Html.AntiForgeryToken()
+        <input type="hidden" name="platform" value="@Model.Platform" />
+        <input type="hidden" name="fileName" value="@Model.FileName" />
+        <label>
+            <span>Host mapping.txt</span>
+            <input type="file" name="hostMapping" accept=".txt,text/plain" required />
+        </label>
+        <label>
+            <span>SDK consumer mapping.txt (optional)</span>
+            <input type="file" name="consumerMapping" accept=".txt,text/plain" />
+        </label>
+        <button type="submit" class="primary">Deobfuscate</button>
+    </form>
+</section>
+
+@if (Model.LogSummary is { } logSummary)
+{
+    <section class="card report-card">
+        <h2>Log attachment summary</h2>
+        <p class="muted">Extracted at ingest from the gzip attachment (iOS plaintext <code>LogEntry</code> array). Counts per level + total HTTP events; the raw attachment is downloadable above.</p>
+        <div class="tiles tiles-compact">
+            <div class="tile">
+                <div class="tile-label">Total entries</div>
+                <div class="tile-value">@logSummary.TotalEntries.ToString("N0")</div>
+            </div>
+            <div class="tile">
+                <div class="tile-label">HTTP events</div>
+                <div class="tile-value">@logSummary.HttpEventCount.ToString("N0")</div>
+            </div>
+            @if (logSummary.Earliest is { } e1 && logSummary.Latest is { } e2)
+            {
+                <div class="tile">
+                    <div class="tile-label">Window</div>
+                    <div class="tile-value mono">@((e2 - e1).ToString(@"hh\:mm\:ss"))</div>
+                </div>
+            }
+        </div>
+        @if (logSummary.ByLevel.Count > 0)
+        {
+            <h3 class="logcat-overview-h">By level</h3>
+            <div class="chips">
+                @foreach (var kv in logSummary.ByLevel.OrderByDescending(kv => kv.Value))
+                {
+                    <span class="chip chip-loglevel chip-loglevel-@kv.Key.ToLowerInvariant()">@kv.Key.ToLowerInvariant()&nbsp;@kv.Value</span>
+                }
+            </div>
+        }
+    </section>
+}
+
+<section class="card report-card">
+    <h2>Full JSON</h2>
+    <pre class="report">@Model.JsonBody</pre>
+</section>
+
+@if (Model.AttachmentFileName is not null)
+{
+    <section class="card report-card">
+        <h2>Attachment log</h2>
+        @if (!Model.LogcatAvailable)
+        {
+            <p class="muted">@(Model.LogcatNotice ?? "No log content to display.")</p>
+        }
+        else
+        {
+            @if (Model.LogcatNotice is { } notice)
+            {
+                <p class="muted">@notice</p>
+            }
+            @if (Model.LogcatOverview is { } ov)
+            {
+                <section class="logcat-overview" aria-label="Log summary">
+                    <div class="tiles tiles-compact">
+                        <div class="tile"><div class="tile-label">Total lines</div><div class="tile-value">@ov.TotalLines.ToString("N0")</div></div>
+                        <div class="tile tile-error"><div class="tile-label">Errors</div><div class="tile-value">@ov.ErrorCount.ToString("N0")</div></div>
+                        <div class="tile tile-warn"><div class="tile-label">Warnings</div><div class="tile-value">@ov.WarnCount.ToString("N0")</div></div>
+                        <div class="tile"><div class="tile-label">Info</div><div class="tile-value">@ov.InfoCount.ToString("N0")</div></div>
+                        <div class="tile"><div class="tile-label">Debug</div><div class="tile-value">@ov.DebugCount.ToString("N0")</div></div>
+                        <div class="tile"><div class="tile-label">Verbose</div><div class="tile-value">@ov.VerboseCount.ToString("N0")</div></div>
+                    </div>
+                    @if (ov.FirstTimestamp is not null || ov.LastTimestamp is not null)
+                    {
+                        <p class="muted">
+                            Range:
+                            <span class="mono">@(ov.FirstTimestamp ?? "?")</span> →
+                            <span class="mono">@(ov.LastTimestamp ?? "?")</span>
+                        </p>
+                    }
+                    @if (ov.FirstErrors.Count > 0)
+                    {
+                        <h3 class="logcat-overview-h">First @(ov.FirstErrors.Count) error line@(ov.FirstErrors.Count == 1 ? "" : "s")</h3>
+                        <pre class="report stack logcat-first-errors" aria-label="First error lines">@foreach (var line in ov.FirstErrors)
+{<text>#@line.Number  @line.Text
+</text>}</pre>
+                    }
+                </section>
+            }
+            <details class="logcat-details">
+                <summary>Full attachment log (@Model.LogcatLines.Count.ToString("N0") lines) — expand to view, filter, or search</summary>
+                <div class="logcat-controls" role="region" aria-label="Logcat filter">
+                    <label>Level
+                        <select id="logcat-level" aria-label="Log level filter">
+                            <option value="">all</option>
+                            <option value="error">error</option>
+                            <option value="warn">warn</option>
+                            <option value="info">info</option>
+                            <option value="debug">debug</option>
+                            <option value="verbose">verbose</option>
+                        </select>
+                    </label>
+                    <label>Search (case-insensitive substring or /regex/)
+                        <input id="logcat-search" type="text" placeholder="e.g. NullPointer  or  /pharmacyId=\d+/" />
+                    </label>
+                    <span class="logcat-count muted" id="logcat-count">@Model.LogcatLines.Count lines</span>
+                    <button type="button" id="logcat-clear" class="btn">Clear</button>
+                </div>
+                <pre class="logcat" aria-label="Logcat content"><code id="logcat-body">@foreach (var line in Model.LogcatLines)
+{<text><span class="logcat-line logcat-@line.Level" data-level="@line.Level"><span class="logcat-num">@line.Number</span><span class="logcat-text">@line.Text</span></span>
+</text>}</code></pre>
+            </details>
+        }
+    </section>
+}
+
+<div class="actions">
+    <a class="btn" asp-page-handler="DownloadJson" asp-route-platform="@Model.Platform" asp-route-fileName="@Model.FileName">Download JSON</a>
+    @if (Model.AttachmentFileName is not null)
+    {
+        <a class="btn" asp-page-handler="DownloadAttachment" asp-route-platform="@Model.Platform" asp-route-fileName="@Model.FileName">Download gzip</a>
+    }
+    <form method="post" asp-page-handler="Delete" class="inline"
+          onsubmit="return confirm('Permanently delete @Model.FileName and its attachment? This cannot be undone.');">
+        @Html.AntiForgeryToken()
+        <input type="hidden" name="platform" value="@Model.Platform" />
+        <input type="hidden" name="fileName" value="@Model.FileName" />
+        <button type="submit" class="danger">Delete</button>
+    </form>
+</div>
+
+@if (Model.LogcatAvailable)
+{
+    @section Scripts {
+        <script src="~/js/logcat.js" asp-append-version="true"></script>
+    }
+}

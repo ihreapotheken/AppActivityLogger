@@ -1,0 +1,70 @@
+@*
+    Renders one Top-N table for the Stats page with built-in pagination. Each row links into
+    /Reports filtered by the bucket's column so the operator can drill from "top N pharmacies"
+    straight to the matching report list. The parent page supplies prev/next URLs so it can
+    preserve every other bucket's page state in the query string.
+*@
+@using ReportService.Admin.ViewModels
+@using ReportService.Storage
+@model RSAStatsBucketArgs
+@{
+    var items = Model.Items;
+    var page = Math.Max(1, Model.Page);
+    var pageSize = Math.Max(1, Model.PageSize);
+    var totalPages = items.Count == 0 ? 1 : (int)Math.Ceiling(items.Count / (double)pageSize);
+    if (page > totalPages) page = totalPages;
+    var slice = items.Skip((page - 1) * pageSize).Take(pageSize).ToArray();
+    var max = items.Count == 0 ? 1 : Math.Max(1, items.Max(b => b.Count));
+}
+<section class="card stats-card">
+    <h2>@Model.Title</h2>
+    @if (items.Count == 0)
+    {
+        <p class="muted">No data.</p>
+    }
+    else
+    {
+        <table class="stats-table">
+            <thead>
+                <tr>
+                    <th scope="col">Key</th>
+                    <th scope="col">Count</th>
+                    <th scope="col" class="bar-col"></th>
+                    <th scope="col"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var b in slice)
+                {
+                    var pct = (int)Math.Round(b.Count * 100.0 / max);
+                    <tr>
+                        <td class="mono">@b.Key</td>
+                        <td>@b.Count</td>
+                        <td class="bar-col"><span class="hbar" style="width: @(pct)%"></span></td>
+                        <td>
+                            @if (b.Key != "(unset)" && !string.IsNullOrEmpty(Model.FilterParam))
+                            {
+                                <a asp-page="/Reports" asp-route-@Model.FilterParam="@b.Key">filter</a>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        @if (totalPages > 1)
+        {
+            <nav class="pager bucket-pager" aria-label="@Model.Title pagination">
+                @if (page > 1)
+                {
+                    <a href="@Model.BuildHref(page - 1)">← previous</a>
+                }
+                <span class="muted">page @(page) / @totalPages</span>
+                @if (page < totalPages)
+                {
+                    <a href="@Model.BuildHref(page + 1)">next →</a>
+                }
+            </nav>
+        }
+    }
+</section>
+

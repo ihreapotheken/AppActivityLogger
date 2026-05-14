@@ -1,0 +1,138 @@
+@page
+@model RSAStatsModel
+@using ReportService.Admin.ViewModels
+@using ReportService.Storage
+@{
+    ViewData["Title"] = "Stats";
+    var stats = Model.Stats;
+    var daily = stats?.Daily ?? Array.Empty<RSCDailyVolume>();
+    var maxTotal = daily.Count == 0 ? 1 : Math.Max(1, daily.Max(d => d.Total));
+    const int barWidth = 18;
+    const int barGap = 4;
+    const int chartHeight = 180;
+    var chartWidth = daily.Count * (barWidth + barGap);
+    // Limit label density on long windows so the x-axis doesn't turn into mush.
+    var labelStep = daily.Count <= 14 ? 1 : daily.Count <= 30 ? 3 : 7;
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Stats", "Aggregates over a date window: volume, top crash types, devices, pharmacies."))
+
+<form method="get" class="filters" aria-label="Stats date range">
+    <label>From (UTC)
+        <input type="datetime-local" name="from" value="@Model.RangeFrom.UtcDateTime.ToString("yyyy-MM-ddTHH:mm")" />
+    </label>
+    <label>Until (UTC)
+        <input type="datetime-local" name="until" value="@Model.RangeUntil.UtcDateTime.ToString("yyyy-MM-ddTHH:mm")" />
+    </label>
+    <button type="submit" class="primary">Apply</button>
+    <span class="presets">
+        <a class="btn" asp-page="/Stats" asp-route-preset="7d">7d</a>
+        <a class="btn" asp-page="/Stats" asp-route-preset="14d">14d</a>
+        <a class="btn" asp-page="/Stats" asp-route-preset="30d">30d</a>
+        <a class="btn" asp-page="/Stats" asp-route-preset="60d">60d</a>
+        <a class="btn" asp-page="/Stats" asp-route-preset="90d">90d</a>
+    </span>
+</form>
+
+@if (stats is null)
+{
+    <p class="error">Stats need the SQLite index. The service is configured for filesystem-only storage or the index is degraded — check <a asp-page="/Status">Status</a>.</p>
+}
+else
+{
+    <p class="muted">
+        Window: <span class="mono">@stats.From.AsLocalTime()</span> →
+        <span class="mono">@stats.Until.AsLocalTime()</span>
+        · @stats.TotalReports reports
+    </p>
+
+    <section class="tiles" aria-label="Window summary">
+        <div class="tile">
+            <div class="tile-label">Total in window</div>
+            <div class="tile-value">@stats.TotalReports</div>
+        </div>
+        <div class="tile">
+            <div class="tile-label">Multipart (zip)</div>
+            <div class="tile-value">@stats.MultipartCount</div>
+        </div>
+        <div class="tile">
+            <div class="tile-label">JSON</div>
+            <div class="tile-value">@stats.JsonCount</div>
+        </div>
+        <div class="tile">
+            <div class="tile-label">JSON bytes</div>
+            <div class="tile-value">@RSAByteFormatter.Format(stats.TotalJsonBytes)</div>
+        </div>
+        <div class="tile">
+            <div class="tile-label">Attachment bytes</div>
+            <div class="tile-value">@RSAByteFormatter.Format(stats.TotalAttachmentBytes)</div>
+        </div>
+        <div class="tile">
+            <div class="tile-label">Days covered</div>
+            <div class="tile-value">@stats.Daily.Count</div>
+        </div>
+    </section>
+
+    <h2>Daily submissions</h2>
+    @if (stats.Daily.Count == 0)
+    {
+        <p class="muted">No reports in this window.</p>
+    }
+    else
+    {
+        <div class="chart-wrap">
+            <svg class="bar-chart" viewBox="0 0 @(chartWidth) @(chartHeight + 32)"
+                 preserveAspectRatio="none" role="img" aria-label="Daily report volume bar chart">
+                @for (var i = 0; i < daily.Count; i++)
+                {
+                    var d = daily[i];
+                    var totalH = (int)((double)d.Total / maxTotal * chartHeight);
+                    var multipartH = (int)((double)d.Multipart / maxTotal * chartHeight);
+                    var jsonH = totalH - multipartH;
+                    var x = i * (barWidth + barGap);
+                    var multipartY = chartHeight - multipartH;
+                    var jsonY = multipartY - jsonH;
+                    <g>
+                        <title>@d.Date.ToString("yyyy-MM-dd"): @d.Total total (@d.Multipart multipart, @d.Json json)</title>
+                        @if (multipartH > 0)
+                        {
+                            <rect class="bar bar-multipart" x="@x" y="@multipartY" width="@barWidth" height="@multipartH"></rect>
+                        }
+                        @if (jsonH > 0)
+                        {
+                            <rect class="bar bar-json" x="@x" y="@jsonY" width="@barWidth" height="@jsonH"></rect>
+                        }
+                        @if (i % labelStep == 0)
+                        {
+                            @Html.Raw($"<text class=\"bar-label\" x=\"{x + barWidth / 2}\" y=\"{chartHeight + 14}\" text-anchor=\"middle\">{d.Date:MM-dd}</text>")
+                        }
+                    </g>
+                }
+            </svg>
+        </div>
+        <p class="legend">
+            <span class="swatch swatch-multipart" aria-hidden="true"></span> multipart (zip)
+            <span class="swatch swatch-json" aria-hidden="true"></span> JSON
+            · max day: <strong>@maxTotal</strong>
+        </p>
+    }
+
+    <div class="stats-stack">
+        @* Device model has no corresponding /Reports filter, so we pass empty FilterParam — the
+           partial will render the bucket without a per-row "filter" link. *@
+        @await Html.PartialAsync("_StatsBucket", new RSAStatsBucketArgs(
+            "Top device models", stats.ByDeviceModel, "", Model.DevicePage, RSAStatsModel.BucketPageSize,
+            p => Model.BuildBucketQuery("devicePage", p)))
+        @await Html.PartialAsync("_StatsBucket", new RSAStatsBucketArgs(
+            "Top pharmacies", stats.ByPharmacy, "pharmacyId", Model.PharmacyPage, RSAStatsModel.BucketPageSize,
+            p => Model.BuildBucketQuery("pharmacyPage", p)))
+        @await Html.PartialAsync("_StatsBucket", new RSAStatsBucketArgs(
+            "Top app versions", stats.ByAppVersion, "appVersion", Model.VersionPage, RSAStatsModel.BucketPageSize,
+            p => Model.BuildBucketQuery("versionPage", p)))
+        @await Html.PartialAsync("_StatsBucket", new RSAStatsBucketArgs(
+            "By platform", stats.ByPlatform, "platform", Model.PlatformPage, RSAStatsModel.BucketPageSize,
+            p => Model.BuildBucketQuery("platformPage", p)))
+        @await Html.PartialAsync("_StatsBucket", new RSAStatsBucketArgs(
+            "By channel", stats.ByChannel, "channel", Model.ChannelPage, RSAStatsModel.BucketPageSize,
+            p => Model.BuildBucketQuery("channelPage", p)))
+    </div>
+}

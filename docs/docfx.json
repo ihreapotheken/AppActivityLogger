@@ -1,0 +1,45 @@
+{
+  "metadata": [
+    {
+      "src": [
+        {
+          "src": "..",
+          "files": [
+            "src/ReportService.Core/ReportService.Core.csproj",
+            "src/ReportService/ReportService.csproj",
+            "src/ReportService.Admin/ReportService.Admin.csproj"
+          ]
+        }
+      ],
+      "dest": "api",
+      "outputFormat": "mref",
+      "memberLayout": "samePage"
+    }
+  ],
+  "build": {
+    "content": [
+      {
+        "files": ["**/*.{md,yml}"],
+        "exclude": ["_site/**", "**/bin/**", "**/obj/**", "openapi/**"]
+      }
+    ],
+    "resource": [
+      {
+        "files": ["openapi/**"],
+        "exclude": ["**/.gitkeep"]
+      }
+    ],
+    "output": "_site",
+    "globalMetadata": {
+      "_appName": "report-service",
+      "_appTitle": "report-service · documentation",
+      "_disableContribution": true,
+      "_disableNewTab": true
+    },
+    "template": ["default", "modern"],
+    "xref": [],
+    "exportRawModel": false,
+    "keepFileLink": false,
+    "disableGitFeatures": true
+  }
+}

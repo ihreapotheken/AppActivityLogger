@@ -1,0 +1,62 @@
+services:
+  # Single merged process — the admin Razor pages and the SDK-facing ingestion endpoints share
+  # one ASP.NET Core host. Multi-scheme auth keeps them gated correctly: Cookie + auto-sign-in
+  # in dev for `/`, `/Reports`, `/Errors`, …; ApiKey for `/partners/api/v2/report-problem`,
+  # `/api/v1/reports`, `/api/v1/forced-reports/{id}`. The previous two-container split is gone.
+  report-service:
+    build:
+      context: .
+      target: admin
+    image: report-service:local
+    ports:
+      # Host-loopback bind so SDK clients on the host (Android emulator via 10.0.2.2, iOS sim via
+      # localhost) reach it but external machines can't. Public deployments would put this behind
+      # a reverse proxy and bind 0.0.0.0 instead.
+      - "127.0.0.1:${HOST_PORT:-8080}:8080"
+    env_file: ${ENV_FILE:-.env}
+    environment:
+      # All writable state lives on the reports volume — the container's root FS is read-only, so
+      # SQLite files MUST be anchored here. Relative paths would be resolved into the read-only
+      # content root and fail with SQLITE_CANTOPEN.
+      - ReportService__ReportsRoot=/srv/reports
+      - ReportService__SqliteDbPath=/srv/reports/reports.db
+      - ReportService__AuthAbuseDbPath=/srv/reports/auth-abuse.db
+      # SqliteIndex is what lets the admin distinguish multipart vs JSON submissions, filter on
+      # channel, and show fast paginated counts. Filesystem-only mode persists the JSON but not
+      # the ingestion_channel column.
+      - ReportService__Storage=SqliteIndex
+      # Local-development cap. Production deploys override via the .env to a sane production value.
+      - ReportService__RateLimitPermitsPerMinute=600
+      # Development gives us the developer exception page; DevAutoSignIn (the explicit bypass
+      # flag) skips the login screen so an operator on the host never sees a password prompt.
+      # The host-port prefix above guarantees only loopback packets reach this container, so the
+      # bypass is bounded by network isolation, not application auth.
+      - ASPNETCORE_ENVIRONMENT=Development
+      - Admin__DevAutoSignIn=true
+    volumes:
+      - reports:/srv/reports:rw
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          # 1 GiB headroom for parsing large R8 mappings in memory (a Flutter release mapping for
+          # a mid-size host app weighs in around 130 MB of text and unfolds to ~5–8x that as the
+          # parsed RSCMappingFile dictionary). Drop back to 512M once the parser is rewritten to
+          # stream + bucket on disk.
+          memory: 1G
+
+volumes:
+  reports:

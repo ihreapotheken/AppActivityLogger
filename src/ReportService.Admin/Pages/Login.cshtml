@@ -1,0 +1,20 @@
+@page
+@model RSALoginModel
+@{
+    ViewData["Title"] = "Sign in";
+    Layout = "_Layout";
+}
+<section class="card narrow">
+    <h1>Sign in</h1>
+    @if (!string.IsNullOrEmpty(Model.Error))
+    {
+        <div class="error">@Model.Error</div>
+    }
+    <form method="post">
+        <div class="field">
+            <label for="key">Admin key</label>
+            <input id="key" type="password" name="Key" autocomplete="current-password" autofocus required />
+        </div>
+        <button type="submit" class="primary">Sign in</button>
+    </form>
+</section>

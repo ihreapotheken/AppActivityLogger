@@ -1,0 +1,12 @@
+@*
+    Page heading + optional one-line subtitle. Pages just write:
+        @await Html.PartialAsync("_PageHeader", new PageHeaderModel("Reports", "Searchable, filterable…"))
+*@
+@model ReportService.Admin.ViewModels.RSAPageHeaderVM
+<header class="page-header">
+    <h1>@Model.Title</h1>
+    @if (!string.IsNullOrEmpty(Model.Subtitle))
+    {
+        <p class="muted page-subtitle">@Model.Subtitle</p>
+    }
+</header>

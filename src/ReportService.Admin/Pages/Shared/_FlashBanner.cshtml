@@ -1,0 +1,8 @@
+@*
+    One-shot success/info banner driven by TempData["Flash"]. Rendered at the top of every page
+    via _Layout so individual pages no longer reimplement the same `@if (TempData["Flash"]…)` block.
+*@
+@if (ViewContext.TempData["Flash"] is string flash)
+{
+    <div class="flash" role="status" aria-live="polite">@flash</div>
+}

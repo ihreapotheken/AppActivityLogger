@@ -1,0 +1,300 @@
+{
+  "info": {
+    "_postman_id": "8f1c0aa0-0000-4000-8000-report-service",
+    "name": "report-service",
+    "description": "Manual smoke + fixture collection for the report-service ingestion + read surface.\n\nIngestion endpoints require the `apiKey` header (env var `{{apiKey}}`). Health endpoints are anonymous.\n\nImports cleanly into Postman, Bruno (`Import → Postman Collection`), Insomnia, and Hoppscotch — the v2.1.0 Postman Collection format is the open de-facto interchange format.\n\nEdit the `report-service · local` environment to point at a different host / apiKey when targeting staging.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      { "key": "key", "value": "apiKey", "type": "string" },
+      { "key": "value", "value": "{{apiKey}}", "type": "string" },
+      { "key": "in", "value": "header", "type": "string" }
+    ]
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Default assertion every request inherits: response is non-5xx and arrived in <5s.",
+          "pm.test('response is not 5xx', () => pm.expect(pm.response.code).to.be.lessThan(500));",
+          "pm.test('response under 5s', () => pm.expect(pm.response.responseTime).to.be.below(5000));"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "description": "Anonymous liveness + readiness probes. The container's healthcheck hits `/healthz`; the API surface offers richer `/api/health` and `/api/health/ready`.",
+      "item": [
+        {
+          "name": "Liveness · /healthz",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/healthz",
+              "host": ["{{baseUrl}}"],
+              "path": ["healthz"]
+            }
+          }
+        },
+        {
+          "name": "API health · /api/health",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "health"]
+            }
+          }
+        },
+        {
+          "name": "Readiness · /api/health/ready",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/health/ready",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "health", "ready"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Ingestion — JSON crash reports",
+      "description": "JSON ingestion endpoint (kind=crash). One POST per crash; the body is the canonical `RSCProblemReport` envelope. `stackTrace` is the only field the report-detail page renders verbatim.",
+      "item": [
+        {
+          "name": "Android JVM crash · /api/v1/reports",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const j = pm.response.json();",
+                  "pm.test('persisted file name returned', () => pm.expect(j.fileName).to.match(/^problem-report_/));",
+                  "pm.collectionVariables.set('lastFileName', j.fileName);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"platform\": \"android\",\n  \"kind\": \"crash\",\n  \"title\": \"java.lang.RuntimeException\",\n  \"message\": \"Automatic crash report\\nThread: main\\nReason: UNCAUGHT_EXCEPTION\\nSDK related: false\\nMessage: Postman fixture crash\",\n  \"deviceModel\": \"{{deviceModel}}\",\n  \"appVersion\": \"{{appVersion}}\",\n  \"source\": \"SDK\",\n  \"pharmacyId\": \"{{pharmacyId}}\",\n  \"userId\": \"{{installUserId}}\",\n  \"labels\": [\"SDKV2\", \"fixture\", \"postman\"],\n  \"stackTrace\": \"java.lang.RuntimeException: Postman fixture crash\\n\\tat de.example.fixture.PostmanCrasherKt.crashNow(PostmanCrasherKt.kt:42)\\n\\tat de.example.fixture.MainActivity.onCreate(MainActivity.kt:17)\\n\\tat android.app.Activity.performCreate(Activity.java:8595)\",\n  \"occurredAt\": \"2026-05-12T10:00:00Z\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/reports",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "reports"]
+            }
+          }
+        },
+        {
+          "name": "iOS demo crash · /api/v1/reports",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"platform\": \"ios\",\n  \"kind\": \"crash\",\n  \"title\": \"DemoTriggeredCrash.postman_fixture: Postman fixture crash\",\n  \"message\": \"Postman iOS fixture\",\n  \"deviceModel\": \"iPhone\",\n  \"appVersion\": \"0.0.1\",\n  \"source\": \"demo-app\",\n  \"labels\": [\"SDKV2\", \"crash\", \"fixture\"],\n  \"userId\": \"{{installUserId}}\",\n  \"stackTrace\": \"DemoTriggeredCrash.postman_fixture: Postman fixture crash\\n0   IASDK                postmanFixtureCrash()\\n1   DemoCrashHook        emit(trigger:message:)\",\n  \"occurredAt\": \"2026-05-12T10:01:00Z\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/reports",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "reports"]
+            }
+          }
+        },
+        {
+          "name": "Flutter host crash · /api/v1/reports",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"platform\": \"android\",\n  \"kind\": \"crash\",\n  \"title\": \"java.lang.RuntimeException\",\n  \"message\": \"Automatic crash report\\nThread: main\\nReason: UNCAUGHT_EXCEPTION\\nSDK related: false\\nMessage: Host app simulated crash from FlutterDemo MainActivity\",\n  \"deviceModel\": \"{{deviceModel}}\",\n  \"appVersion\": \"1.0.0 (SDK 2.3.41)\",\n  \"source\": \"SDK\",\n  \"pharmacyId\": \"\",\n  \"userId\": \"{{installUserId}}\",\n  \"labels\": [\"SDKV2\", \"1.0.0 (SDK 2.3.41)\", \"6001\"],\n  \"stackTrace\": \"java.lang.RuntimeException: Host app simulated crash from FlutterDemo MainActivity\\n\\tat com.example.appsdk_v2_flutter_plugin_example.MainActivity$configureFlutterEngine$1.onMethodCall(MainActivity.kt:23)\",\n  \"occurredAt\": \"2026-05-12T10:02:00Z\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/reports",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "reports"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Ingestion — Analytics events",
+      "description": "kind=analytics events flow through the same `/api/v1/reports` endpoint. They show up on `/Analytics`, not `/Errors`.",
+      "item": [
+        {
+          "name": "Screen view event",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"platform\": \"android\",\n  \"kind\": \"analytics\",\n  \"title\": \"screen_view\",\n  \"message\": \"User landed on the pharmacy detail screen\",\n  \"deviceModel\": \"{{deviceModel}}\",\n  \"appVersion\": \"{{appVersion}}\",\n  \"source\": \"SDK\",\n  \"pharmacyId\": \"{{pharmacyId}}\",\n  \"userId\": \"{{installUserId}}\",\n  \"labels\": [\"SDKV2\", \"analytics\", \"screen_view\"],\n  \"eventProperties\": {\n    \"screen\": \"PharmacyDetail\",\n    \"referrer\": \"Apofinder\"\n  },\n  \"occurredAt\": \"2026-05-12T10:03:00Z\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/reports",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "reports"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Ingestion — Multipart Report a Problem",
+      "description": "The partner endpoint the IA SDK calls. Multipart form-data with `json` part (required) + optional `file` gzip attachment. Crash uploads and user-initiated RaP submissions both flow through here.\n\nFor uploads with a file: edit the `file` form field's `src` to a real local path. For the simple Postman-only smoke (no file), the JSON-only path on /api/v1/reports is easier.",
+      "item": [
+        {
+          "name": "User-initiated RaP (no attachment)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "json",
+                  "value": "{\"platform\":\"android\",\"title\":\"App is slow on the cart screen\",\"message\":\"Loading the cart takes >10s on my phone after the last update\",\"deviceModel\":\"{{deviceModel}}\",\"appVersion\":\"{{appVersion}}\",\"source\":\"SDK\",\"pharmacyId\":\"{{pharmacyId}}\",\"userId\":\"{{installUserId}}\",\"email\":\"reporter@example.org\",\"phone\":\"+49 1234 567890\",\"labels\":[\"SDKV2\",\"RaP\",\"manual\"]}",
+                  "type": "text",
+                  "contentType": "application/json"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/partners/api/v2/report-problem",
+              "host": ["{{baseUrl}}"],
+              "path": ["partners", "api", "v2", "report-problem"]
+            }
+          }
+        },
+        {
+          "name": "Crash upload with gzip log (file required)",
+          "description": "Replace the `file` field's `src` with a local `.log.gz` path (e.g. the one Android SDK's CrashReportUploader writes to the cache dir).",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "json",
+                  "value": "{\"platform\":\"android\",\"kind\":\"crash\",\"title\":\"java.lang.RuntimeException\",\"message\":\"Automatic crash report\\nThread: main\\nReason: UNCAUGHT_EXCEPTION\\nSDK related: true\\nMessage: Postman multipart fixture\",\"deviceModel\":\"{{deviceModel}}\",\"appVersion\":\"{{appVersion}}\",\"source\":\"SDK\",\"pharmacyId\":\"{{pharmacyId}}\",\"userId\":\"{{installUserId}}\",\"labels\":[\"SDKV2\",\"crash\",\"fixture\"]}",
+                  "type": "text",
+                  "contentType": "application/json"
+                },
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "",
+                  "contentType": "application/gzip"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/partners/api/v2/report-problem",
+              "host": ["{{baseUrl}}"],
+              "path": ["partners", "api", "v2", "report-problem"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reports browsing",
+      "description": "Read-side: list stored reports per platform + fetch individual reports by file name. The admin UI calls the same endpoints internally.",
+      "item": [
+        {
+          "name": "List reports for {{platform}}",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/problem-reports/{{platform}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "problem-reports", "{{platform}}"]
+            }
+          }
+        },
+        {
+          "name": "Download a report JSON",
+          "description": "Uses `lastFileName` set by the 'Android JVM crash' test script. Run that request first to populate it.",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/problem-reports/{{platform}}/{{lastFileName}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "problem-reports", "{{platform}}", "{{lastFileName}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Forced reports",
+      "description": "Mobile clients call `/api/v1/forced-reports/{id}` on every backend fetch with their stable identifier. The admin operator adds ids through `/ForcedReports`; this endpoint returns `forced=true` for those ids and the SDK then submits a forced RaP.",
+      "item": [
+        {
+          "name": "Check by id (probably false)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/forced-reports/{{forcedReportId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "forced-reports", "{{forcedReportId}}"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "lastFileName",
+      "value": "",
+      "type": "string"
+    }
+  ]
+}

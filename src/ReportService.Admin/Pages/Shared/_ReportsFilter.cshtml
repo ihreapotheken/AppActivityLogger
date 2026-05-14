@@ -1,0 +1,100 @@
+@*
+    Shared filter form. Used by /Reports, /ProblemReports, /Analytics, and /Errors so all four
+    listings expose the same field set + behaviour. The owning page passes its own page name so
+    GET / Clear point back at the right route, and can hide the channel / attachment filters when
+    the page already constrains them implicitly.
+*@
+@model ReportService.Admin.ViewModels.RSAReportsFilterPanelVM
+@{
+    var filter = Model.Filter;
+}
+@if (!string.IsNullOrEmpty(Model.Filter.TopFrame))
+{
+    <div class="active-filter">
+        <span class="muted">Signature:</span>
+        <span class="chip mono">@Model.Filter.TopFrame</span>
+        <a class="btn btn-small" asp-page="@Model.PageName"
+           asp-route-platform="@Model.Filter.Platform"
+           asp-route-pharmacyId="@Model.Filter.PharmacyId"
+           asp-route-userId="@Model.Filter.UserId"
+           asp-route-email="@Model.Filter.Email"
+           asp-route-phone="@Model.Filter.Phone"
+           asp-route-appVersion="@Model.Filter.AppVersion"
+           asp-route-channel="@Model.Filter.Channel"
+           asp-route-q="@Model.Filter.Q">× clear signature</a>
+    </div>
+}
+<form method="get" class="filters" asp-page="@Model.PageName" aria-label="Reports filter" data-auto-submit>
+    @* Hidden round-trip: when an operator drilled in by clicking a signature, applying any
+       other filter via this form must preserve the signature scope. *@
+    @if (!string.IsNullOrEmpty(Model.Filter.TopFrame))
+    {
+        <input type="hidden" name="topFrame" value="@Model.Filter.TopFrame" />
+    }
+    <label>
+        <span>Platform <span class="hint" tabindex="0" role="tooltip" aria-label="Mobile platform the report came from. iOS or Android." data-tip="Mobile platform the report came from. iOS or Android.">?</span></span>
+        <select name="platform">
+            <option value="">(any)</option>
+            @foreach (var p in Model.AvailablePlatforms)
+            {
+                <option value="@p" selected="@(string.Equals(filter.Platform, p, StringComparison.OrdinalIgnoreCase))">@p</option>
+            }
+        </select>
+    </label>
+    <label>
+        <span>Pharmacy <span class="hint" tabindex="0" role="tooltip" aria-label="Pharmacy ID from the report (PharmacyId field). Exact match." data-tip="Pharmacy ID from the report (PharmacyId field). Exact match.">?</span></span>
+        <input name="pharmacyId" value="@filter.PharmacyId" placeholder="e.g. 204" />
+    </label>
+    <label>
+        <span>User ID <span class="hint" tabindex="0" role="tooltip" aria-label="SDK-assigned user identifier (UserId field). Exact match." data-tip="SDK-assigned user identifier (UserId field). Exact match.">?</span></span>
+        <input name="userId" value="@filter.UserId" placeholder="e.g. android-user-0042" />
+    </label>
+    <label>
+        <span>Email <span class="hint" tabindex="0" role="tooltip" aria-label="Filters by SHA-256 hash of the email — type the exact address. The raw email is never stored." data-tip="Filters by SHA-256 hash of the email — type the exact address. The raw email is never stored.">?</span></span>
+        <input name="email" value="@filter.Email" placeholder="user@example.com" />
+    </label>
+    <label>
+        <span>Phone <span class="hint" tabindex="0" role="tooltip" aria-label="Phone number from the report (Phone field, distinct from PhoneNumber). Exact match." data-tip="Phone number from the report (Phone field, distinct from PhoneNumber). Exact match.">?</span></span>
+        <input name="phone" value="@filter.Phone" placeholder="+49…" />
+    </label>
+    <label>
+        <span>App version <span class="hint" tabindex="0" role="tooltip" aria-label="Client app version string from the report (AppVersion field). Exact match." data-tip="Client app version string from the report (AppVersion field). Exact match.">?</span></span>
+        <input name="appVersion" value="@filter.AppVersion" placeholder="e.g. 4.12.0" />
+    </label>
+    @if (Model.ShowAttachmentFilter)
+    {
+        <label>
+            <span>Attachment <span class="hint" tabindex="0" role="tooltip" aria-label="Whether the report has a gzip log attached. SDK multipart submissions usually do; JSON-API submissions don't." data-tip="Whether the report has a gzip log attached. SDK multipart submissions usually do; JSON-API submissions don't.">?</span></span>
+            <select name="hasAttachment">
+                <option value="" selected="@(filter.HasAttachment is null)">any</option>
+                <option value="true" selected="@(filter.HasAttachment == true)">has attachment</option>
+                <option value="false" selected="@(filter.HasAttachment == false)">no attachment</option>
+            </select>
+        </label>
+    }
+    @if (Model.ShowChannelFilter)
+    {
+        <label>
+            <span>Channel <span class="hint" tabindex="0" role="tooltip" aria-label="How the report reached the service. multipart = SDK upload (form-data with json + gzip parts). json = direct JSON POST to /api/v1/reports." data-tip="How the report reached the service. multipart = SDK upload (form-data with json + gzip parts). json = direct JSON POST to /api/v1/reports.">?</span></span>
+            <select name="channel">
+                <option value="" selected="@(string.IsNullOrEmpty(filter.Channel))">any</option>
+                <option value="multipart" selected="@(filter.Channel == "multipart")">multipart (SDK)</option>
+                <option value="json" selected="@(filter.Channel == "json")">json (API)</option>
+            </select>
+        </label>
+    }
+    <label>
+        <span>From (UTC) <span class="hint" tabindex="0" role="tooltip" aria-label="Earliest submission time to include, in UTC. Leave empty for no lower bound." data-tip="Earliest submission time to include, in UTC. Leave empty for no lower bound.">?</span></span>
+        <input type="datetime-local" name="from" value="@(filter.From?.ToString("yyyy-MM-ddTHH:mm"))" />
+    </label>
+    <label>
+        <span>Until (UTC) <span class="hint" tabindex="0" role="tooltip" aria-label="Latest submission time to include, in UTC. Leave empty for no upper bound." data-tip="Latest submission time to include, in UTC. Leave empty for no upper bound.">?</span></span>
+        <input type="datetime-local" name="until" value="@(filter.Until?.ToString("yyyy-MM-ddTHH:mm"))" />
+    </label>
+    <label>
+        <span>Search <span class="hint" tabindex="0" role="tooltip" aria-label="Case-insensitive substring match against the stored file name." data-tip="Case-insensitive substring match against the stored file name.">?</span></span>
+        <input name="q" placeholder="filename contains…" value="@filter.Q" />
+    </label>
+    <button type="submit" class="primary">Apply</button>
+    <a asp-page="@Model.PageName" class="btn">Clear</a>
+</form>

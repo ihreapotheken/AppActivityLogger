@@ -1,0 +1,163 @@
+@page
+@model RSAAnalyticsModel
+@using ReportService.Admin.ViewModels
+@{
+    ViewData["Title"] = "Analytics";
+    var scope = Model.CanonicalPlatform;
+    var subtitle = scope switch
+    {
+        "ios" => "iOS user-tracking signals from ingested analytics events.",
+        "android" => "Android user-tracking signals from ingested analytics events.",
+        _ => "User-tracking signals from ingested analytics events (iOS + Android).",
+    };
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Analytics", subtitle))
+
+<nav class="scope-tabs" aria-label="Platform scope">
+    <a asp-page="/Analytics" class="@(scope is null ? "active" : null)">All platforms</a>
+    <a asp-page="/Analytics" asp-route-platform="ios" class="@(scope == "ios" ? "active" : null)">iOS</a>
+    <a asp-page="/Analytics" asp-route-platform="android" class="@(scope == "android" ? "active" : null)">Android</a>
+</nav>
+
+<section class="tiles" aria-label="Engagement summary">
+    <div class="tile">
+        <div class="tile-label">Daily active users</div>
+        <div class="tile-value">@Model.Dashboard.DailyActiveUsers.ToString("N0")</div>
+    </div>
+    <div class="tile">
+        <div class="tile-label">Monthly active users</div>
+        <div class="tile-value">@Model.Dashboard.MonthlyActiveUsers.ToString("N0")</div>
+    </div>
+    <div class="tile">
+        <div class="tile-label">Sessions today</div>
+        <div class="tile-value">@Model.Dashboard.SessionsToday.ToString("N0")</div>
+    </div>
+    <div class="tile">
+        <div class="tile-label">Avg session length</div>
+        <div class="tile-value">@FormatDuration(Model.Dashboard.AverageSessionLength)</div>
+    </div>
+</section>
+
+<h2>Platforms</h2>
+<table>
+    <thead>
+        <tr>
+            <th scope="col">Platform</th>
+            <th scope="col">DAU</th>
+            <th scope="col">MAU</th>
+            <th scope="col">Sessions today</th>
+            <th scope="col">Avg session</th>
+            <th scope="col"></th>
+        </tr>
+    </thead>
+    <tbody>
+    @foreach (var p in Model.Dashboard.Platforms)
+    {
+        <tr>
+            <td class="mono"><a asp-page="/Analytics" asp-route-platform="@p.Name">@p.Name</a></td>
+            <td>@p.DailyActiveUsers.ToString("N0")</td>
+            <td>@p.MonthlyActiveUsers.ToString("N0")</td>
+            <td>@p.SessionsToday.ToString("N0")</td>
+            <td>@FormatDuration(p.AverageSessionLength)</td>
+            <td><a asp-page="/Errors" asp-route-platform="@p.Name">errors →</a></td>
+        </tr>
+    }
+    </tbody>
+</table>
+
+<h2>Top screens</h2>
+<table>
+    <thead>
+        <tr>
+            <th scope="col">Screen</th>
+            <th scope="col">Views</th>
+            <th scope="col">Avg time on screen</th>
+        </tr>
+    </thead>
+    <tbody>
+    @foreach (var s in Model.Dashboard.TopScreens)
+    {
+        <tr>
+            <td class="mono">@s.Screen</td>
+            <td>@s.Views.ToString("N0")</td>
+            <td>@FormatDuration(s.AverageTimeOnScreen)</td>
+        </tr>
+    }
+    </tbody>
+</table>
+
+<h2>Retention</h2>
+<ul class="kv">
+    <li><span>Day 1</span>@FormatPercent(Model.Dashboard.Retention.Day1)</li>
+    <li><span>Day 7</span>@FormatPercent(Model.Dashboard.Retention.Day7)</li>
+    <li><span>Day 30</span>@FormatPercent(Model.Dashboard.Retention.Day30)</li>
+</ul>
+
+<h2>Analytics submissions</h2>
+@await Html.PartialAsync("_ReportsFilter", new RSAReportsFilterPanelVM(
+    "/Analytics",
+    Model.Filter,
+    Model.AvailablePlatforms,
+    ShowChannelFilter: false,
+    ShowAttachmentFilter: false))
+
+@section Scripts {
+    <script src="~/js/auto-submit.js" asp-append-version="true"></script>
+}
+
+<p class="muted">
+    @Model.Listing.TotalMatched matching event@(Model.Listing.TotalMatched == 1 ? "" : "s") · page @Model.Listing.PageNumber of @Model.Listing.TotalPages
+    · source: <span class="mono">@(Model.Listing.UsedIndex ? "sqlite index" : "filesystem scan")</span>
+</p>
+
+@if (Model.Listing.Items.Count == 0)
+{
+    <p class="muted">No analytics events match the current filter. SDK analytics events arrive with <code>kind = "analytics"</code>.</p>
+}
+else
+{
+    <table>
+        <thead>
+            <tr>
+                <th scope="col">Submitted</th>
+                <th scope="col">Platform</th>
+                <th scope="col">File</th>
+                <th scope="col">Size</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var r in Model.Listing.Items)
+            {
+                <tr>
+                    <td class="mono">@r.SubmittedAt.AsLocalTime()</td>
+                    <td class="mono">@r.Platform</td>
+                    <td class="mono"><a asp-page="/Report" asp-route-platform="@r.Platform" asp-route-fileName="@r.FileName">@r.FileName</a></td>
+                    <td>@RSAByteFormatter.Format(r.SizeBytes)</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <nav class="pager" aria-label="Pagination">
+        @if (Model.Listing.PageNumber > 1)
+        {
+            <a href="@Model.Filter.ToQueryString(Model.Listing.PageNumber - 1)">← previous</a>
+        }
+        <span class="muted">page @Model.Listing.PageNumber / @Model.Listing.TotalPages</span>
+        @if (Model.Listing.PageNumber < Model.Listing.TotalPages)
+        {
+            <a href="@Model.Filter.ToQueryString(Model.Listing.PageNumber + 1)">next →</a>
+        }
+    </nav>
+}
+
+@functions {
+    static string FormatDuration(TimeSpan t)
+    {
+        if (t.TotalHours >= 1) return $"{(int)t.TotalHours}h {t.Minutes}m";
+        if (t.TotalMinutes >= 1) return $"{t.Minutes}m {t.Seconds}s";
+        return $"{t.Seconds}s";
+    }
+
+    static string FormatPercent(double v) => (v * 100).ToString("0.0") + "%";
+}

@@ -1,0 +1,17 @@
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# Env files — keep the example tracked
+.env*
+!.env.example
+
+# macOS
+.DS_Store
+
+# Generated documentation (regenerate with ./scripts/generate-docs.sh)
+docs/_site/
+docs/api/
+docs/openapi/

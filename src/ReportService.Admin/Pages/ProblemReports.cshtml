@@ -1,0 +1,93 @@
+@page
+@model RSAProblemReportsModel
+@using ReportService.Admin.ViewModels
+@{
+    ViewData["Title"] = "Problem reports";
+    var filter = Model.Filter;
+    var vm = Model.Listing;
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM(
+    "Problem reports",
+    "User-initiated Report-a-Problem submissions with attached logs. Crash auto-uploads (Errors) and analytics events live in their own sections."))
+
+@await Html.PartialAsync("_ReportsFilter", new RSAReportsFilterPanelVM(
+    "/ProblemReports",
+    filter,
+    Model.AvailablePlatforms,
+    ShowChannelFilter: false,
+    ShowAttachmentFilter: false))
+
+@section Scripts {
+    <script src="~/js/auto-submit.js" asp-append-version="true"></script>
+}
+
+<p class="muted">
+    @vm.TotalMatched matching submission@(vm.TotalMatched == 1 ? "" : "s") · page @vm.PageNumber of @vm.TotalPages
+    · source: <span class="mono">@(vm.UsedIndex ? "sqlite index" : "filesystem scan")</span>
+</p>
+
+@if (vm.Items.Count == 0)
+{
+    <p class="muted">No user-submitted problem reports match the current filter. Submissions appear here when the SDK posts to <code>/partners/api/v2/report-problem</code> with a non-crash <code>kind</code>.</p>
+}
+else
+{
+    <table>
+        <thead>
+            <tr>
+                <th scope="col">Submitted</th>
+                <th scope="col">Platform</th>
+                <th scope="col">File</th>
+                <th scope="col">Attachment</th>
+                <th scope="col">Log entries</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var r in vm.Items)
+            {
+                <tr>
+                    <td class="mono">@r.SubmittedAt.AsLocalTime()</td>
+                    <td class="mono">@r.Platform</td>
+                    <td class="mono"><a asp-page="/Report" asp-route-platform="@r.Platform" asp-route-fileName="@r.FileName">@r.FileName</a></td>
+                    <td>@(r.AttachmentFileName is null ? Html.Raw("<span class=\"muted\">— (no logs)</span>") : Html.Raw(RSAByteFormatter.Format(r.AttachmentSizeBytes)))</td>
+                    <td>
+                        @if (r.LogSummary is { } s)
+                        {
+                            <span class="mono">@s.TotalEntries</span>
+                            <span class="muted small">
+                                @foreach (var kv in s.ByLevel.OrderByDescending(kv => kv.Value).Take(4))
+                                {
+                                    <span class="chip chip-loglevel chip-loglevel-@kv.Key.ToLowerInvariant()">@kv.Key.ToLowerInvariant()&nbsp;@kv.Value</span>
+                                }
+                                @if (s.HttpEventCount > 0)
+                                {
+                                    <span class="chip">http&nbsp;@s.HttpEventCount</span>
+                                }
+                            </span>
+                        }
+                        else if (r.AttachmentFileName is null)
+                        {
+                            <span class="muted">—</span>
+                        }
+                        else
+                        {
+                            <span class="muted">— (encrypted or not parsed)</span>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <nav class="pager" aria-label="Pagination">
+        @if (vm.PageNumber > 1)
+        {
+            <a href="@filter.ToQueryString(vm.PageNumber - 1)">← previous</a>
+        }
+        <span class="muted">page @vm.PageNumber / @vm.TotalPages</span>
+        @if (vm.PageNumber < vm.TotalPages)
+        {
+            <a href="@filter.ToQueryString(vm.PageNumber + 1)">next →</a>
+        }
+    </nav>
+}

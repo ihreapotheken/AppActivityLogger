@@ -1,0 +1,122 @@
+@page
+@model RSAStatusModel
+@using ReportService.Admin.ViewModels
+@{
+    ViewData["Title"] = "Status";
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Status", "Service version, paths, retention headroom, and component health."))
+
+<section class="card">
+    <h2>Service</h2>
+    <ul class="kv">
+        <li><span>Version</span><code>@Model.Version</code></li>
+        <li><span>Uptime</span>@Model.Uptime</li>
+        <li><span>Reports root</span><code>@Model.ReportsRoot</code></li>
+        <li><span>Backup root</span><code>@Model.BackupRoot</code></li>
+    </ul>
+</section>
+
+<section class="card">
+    <h2>Report metadata index</h2>
+    @if (Model.IndexStatus is null)
+    {
+        <p class="muted">SQLite index not in use (Storage != "SqliteIndex") or currently unavailable. Ingestion continues against the filesystem; the Reports page falls back to disk scan.</p>
+    }
+    else
+    {
+        <ul class="kv">
+            <li><span>DB path</span><code>@Model.IndexStatus.DbPath</code></li>
+            <li><span>Exists</span>@Model.IndexStatus.Exists</li>
+            <li><span>Size</span>@RSAByteFormatter.Format(Model.IndexStatus.DbSizeBytes)</li>
+            <li><span>WAL / SHM present</span>@Model.IndexStatus.WalPresent / @Model.IndexStatus.ShmPresent</li>
+            <li><span>Schema version</span>@Model.IndexStatus.SchemaVersion</li>
+            <li><span>Last integrity check</span>
+                @if (Model.IndexStatus.LastIntegrityCheckAt is { } ic)
+                {
+                    @Model.IndexStatus.LastIntegrityCheckResult<text> · </text>@ic.AsLocalTime()
+                }
+                else
+                {
+                    <span class="muted">never</span>
+                }
+            </li>
+            <li><span>Last backup</span>
+                @if (Model.IndexStatus.LastBackupAt is { } lb)
+                {
+                    <code>@Model.IndexStatus.LastBackupPath</code><text> · </text>@lb.AsLocalTime()
+                }
+                else
+                {
+                    <span class="muted">never</span>
+                }
+            </li>
+            <li><span>Drift (files missing from index / stale rows)</span>@Model.IndexStatus.DriftMissingInIndex / @Model.IndexStatus.DriftStaleIndexRows</li>
+        </ul>
+        <p class="muted"><a asp-page="/Maintenance">Maintenance →</a> runs rebuild / integrity / vacuum / backup / export.</p>
+    }
+</section>
+
+<section class="card">
+    <h2>Storage usage / retention</h2>
+    <ul class="kv">
+        <li><span>Used</span>@RSAByteFormatter.Format(Model.Retention.UsedBytes) / @RSAByteFormatter.Format(Model.Retention.LimitBytes) cap</li>
+        <li><span>Reports on disk</span>@Model.Retention.ReportCount</li>
+        <li><span>Max age</span>@Model.Retention.MaxAgeDays days</li>
+        <li><span>Oldest</span>
+            @if (Model.Retention.Oldest is { } o) { <span class="mono">@o.AsLocalTime()</span> } else { <span class="muted">—</span> }
+        </li>
+        <li><span>Newest</span>
+            @if (Model.Retention.Newest is { } n) { <span class="mono">@n.AsLocalTime()</span> } else { <span class="muted">—</span> }
+        </li>
+        <li><span>Background sweep</span>
+            @if (Model.Retention.Enabled) { <span class="badge badge-ok">enabled</span> } else { <span class="badge badge-bad">disabled</span> }
+        </li>
+    </ul>
+    <p class="muted"><a asp-page="/Maintenance">Maintenance →</a> has a manual "Purge now" button.</p>
+</section>
+
+<section class="card">
+    <h2>Other state files</h2>
+    <ul class="kv">
+        <li><span>Auth abuse DB</span><code>@Model.AuthAbuseDbPath</code> · @RSAByteFormatter.Format(Model.AuthAbuseDbSize)</li>
+        <li><span>Audit log DB</span><code>@Model.AuditDbPath</code> · @RSAByteFormatter.Format(Model.AuditDbSize) · @Model.AuditCount entries</li>
+    </ul>
+</section>
+
+<section class="card">
+    <h2>Component health</h2>
+    <table>
+        <thead>
+            <tr>
+                <th scope="col">Component</th>
+                <th scope="col">State</th>
+                <th scope="col">Detail</th>
+                <th scope="col">At</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var kvp in Model.Health)
+            {
+                <tr>
+                    <td class="mono">@kvp.Key</td>
+                    <td>
+                        @if (kvp.Value.Healthy)
+                        {
+                            <span class="badge badge-ok">healthy</span>
+                        }
+                        else
+                        {
+                            <span class="badge badge-bad">degraded</span>
+                        }
+                    </td>
+                    <td>@kvp.Value.Detail</td>
+                    <td class="mono">@kvp.Value.At.AsLocalTime()</td>
+                </tr>
+            }
+            @if (Model.Health.Count == 0)
+            {
+                <tr><td colspan="4" class="muted">no activity yet</td></tr>
+            }
+        </tbody>
+    </table>
+</section>

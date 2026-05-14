@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>ReportService.Admin</RootNamespace>
+    <AssemblyName>ReportService.Admin</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- 1591: missing XML doc on public types — out of scope for the admin's UI helpers.
+         0436: the admin and the ReportService project both emit a `public partial class Program`
+         from their top-level statements; since admin now references ReportService, the compiler
+         flags the duplicate. The picked type (admin's own) is the right one for the admin
+         executable; the test factory uses the one from the referenced ReportService assembly. -->
+    <NoWarn>$(NoWarn);1591;CS0436</NoWarn>
+    <Version>1.0.0</Version>
+    <InformationalVersion>1.0.0</InformationalVersion>
+    <!-- The referenced ReportService project ships its own appsettings.json for the standalone
+         deployment / test factory. When this admin publishes, the admin's appsettings.json is
+         what should land in /app — `ErrorOnDuplicatePublishOutputFiles=false` keeps publish from
+         tripping on the collision (admin's own copy wins by position in the publish item set). -->
+    <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ReportService.Core\ReportService.Core.csproj" />
+    <!-- The admin process now hosts the ingestion endpoints as well (single-process merge), so it
+         needs the route maps + Minimal API helpers from the ReportService project. The standalone
+         ReportService project still exists for the test factories and as a fallback deployment
+         target; in docker-compose, only this merged admin process runs. -->
+    <ProjectReference Include="..\ReportService\ReportService.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Full Swashbuckle: SwaggerGen builds the OpenAPI document from the live route table, and
+         SwaggerUI serves it. The previous proxy-the-spec-from-:8080 dance is gone — there's only
+         one process now, and it generates its own spec. -->
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.9.0" />
+    <!-- Markdown -> HTML renderer for the in-app docs preview (/Docs). Runs on a strict pipeline
+         that disables raw HTML pass-through (see RSADocsService) so the admin's same-origin CSP
+         keeps protecting the page even if a doc accidentally embeds a <script>. -->
+    <PackageReference Include="Markdig" Version="0.37.0" />
+  </ItemGroup>
+
+  <!-- Bundle the repo-root README into the admin's output so the /Documentation page can render
+       it without depending on the source tree at runtime (Docker images don't ship sources). -->
+  <ItemGroup>
+    <Content Include="..\..\README.md">
+      <Link>admin-docs\README.md</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <Visible>false</Visible>
+    </Content>
+  </ItemGroup>
+
+</Project>
