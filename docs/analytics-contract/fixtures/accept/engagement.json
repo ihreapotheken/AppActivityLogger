@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "batchId": "00000000-0000-4000-8000-000000000004",
+  "platform": "ios",
+  "sdkVersion": "1.0.0",
+  "hostAppVersion": "5.6.7",
+  "anonymousId": "anon-stable-per-install",
+  "clientId": null,
+  "generatedAt": "2026-05-14T10:00:00.0000000+00:00",
+  "events": [
+    {
+      "eventId": "00000000-0000-4000-8000-000000040001",
+      "sessionId": "session-eng-1",
+      "sequence": 5,
+      "occurredAt": "2026-05-14T10:00:00.0000000+00:00",
+      "type": "engagement",
+      "name": "scroll_depth_50",
+      "screen": "product_detail",
+      "feature": "otc",
+      "durationMs": 4200,
+      "properties": {
+        "depth_percent": "50",
+        "item_id": "sku-aspirin-500"
+      },
+      "items": null
+    }
+  ]
+}

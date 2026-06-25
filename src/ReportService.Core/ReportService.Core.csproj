@@ -21,4 +21,8 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="ReportService.Tests" />
+  </ItemGroup>
+
 </Project>

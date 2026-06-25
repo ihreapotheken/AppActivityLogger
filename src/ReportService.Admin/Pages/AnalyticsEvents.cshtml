@@ -1,0 +1,96 @@
+@page
+@model RSAAnalyticsEventsModel
+@using ReportService.Admin.ViewModels
+@{
+    ViewData["Title"] = "Analytics events";
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Analytics events", "Raw event search across analytics_events. Click a session to see the full timeline."))
+
+<p>
+    Each row is one validated event from <code>analytics_events</code>.
+    The pipeline deduplicates on <code>(platform, event_id)</code>, so a retried batch never inserts twice.
+    Filter by <code>type = ecommerce</code> and <code>name = purchase</code> to see completed OTC orders;
+    use <code>type = error</code> to spot validation failures or UI error states.
+    The Session column links to the full ordered timeline for that anonymous user's session.
+    To export a slice as NDJSON for offline analysis, use <code>GET /admin/api/analytics/events.ndjson</code> with the same filter parameters.
+</p>
+
+<form method="get" class="filters" aria-label="Event filters">
+    <label>Platform
+        <select name="platform">
+            <option value="">all</option>
+            @foreach (var p in Model.AvailablePlatforms)
+            {
+                <option value="@p" selected="@(string.Equals(Model.Platform, p, StringComparison.OrdinalIgnoreCase))">@p</option>
+            }
+        </select>
+    </label>
+    <label>Type
+        <input type="text" name="type" value="@Model.Type" placeholder="screen, action, ecommerce…" />
+    </label>
+    <label>Name
+        <input type="text" name="name" value="@Model.Name" placeholder="home_viewed, add_to_cart…" />
+    </label>
+    <label>Screen
+        <input type="text" name="screen" value="@Model.Screen" />
+    </label>
+    <label>Session
+        <input type="text" name="session" value="@Model.SessionId" />
+    </label>
+    <label>From (UTC)
+        <input type="datetime-local" name="from" value="@(Model.From?.ToString("yyyy-MM-ddTHH:mm"))" />
+    </label>
+    <label>Until (UTC)
+        <input type="datetime-local" name="until" value="@(Model.Until?.ToString("yyyy-MM-ddTHH:mm"))" />
+    </label>
+    <button type="submit" class="primary">Apply</button>
+</form>
+
+<p class="muted">@Model.Result.Total.ToString("N0") event@(Model.Result.Total == 1 ? "" : "s") · page @Math.Max(1, Model.PageNumber) of @Model.TotalPages</p>
+
+@if (Model.Result.Rows.Count == 0)
+{
+    <p class="muted">No events match the current filter.</p>
+}
+else
+{
+    <table>
+        <thead>
+            <tr>
+                <th scope="col">Occurred</th>
+                <th scope="col">Platform</th>
+                <th scope="col">Type</th>
+                <th scope="col">Name</th>
+                <th scope="col">Screen</th>
+                <th scope="col">Duration</th>
+                <th scope="col">Session</th>
+            </tr>
+        </thead>
+        <tbody>
+        @foreach (var e in Model.Result.Rows)
+        {
+            <tr>
+                <td class="mono">@e.OccurredAt.AsLocalTime()</td>
+                <td class="mono">@e.Platform</td>
+                <td class="mono">@e.Type</td>
+                <td class="mono">@e.Name</td>
+                <td class="mono">@(e.Screen ?? "—")</td>
+                <td>@(e.DurationMs is { } ms ? ms.ToString("N0") + " ms" : "—")</td>
+                <td class="mono"><a asp-page="/AnalyticsSession" asp-route-platform="@e.Platform" asp-route-id="@e.SessionId">@e.SessionId</a></td>
+            </tr>
+        }
+        </tbody>
+    </table>
+
+    <nav class="pager" aria-label="Pagination">
+        @if (Model.PageNumber > 1)
+        {
+            <a href="@Model.BuildPageHref(Model.PageNumber - 1)">← previous</a>
+        }
+        <span class="muted">page @Math.Max(1, Model.PageNumber) / @Model.TotalPages</span>
+        @if (Model.PageNumber < Model.TotalPages)
+        {
+            <a href="@Model.BuildPageHref(Model.PageNumber + 1)">next →</a>
+        }
+    </nav>
+}

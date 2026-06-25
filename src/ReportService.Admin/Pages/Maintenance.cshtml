@@ -134,6 +134,40 @@
     <p class="muted">Maximum upload size 200 MiB.</p>
 </section>
 
+<section class="card">
+    <h2>Rotate identifier-hash pepper</h2>
+    <p class="muted">
+        After updating <code>Analytics:IdentifierHashPepper</code> and bumping
+        <code>Analytics:IdentifierHashVersion</code> in configuration <em>and</em> restarting the
+        service, run this to purge stale user-day rollups under previous hash versions. Cohorts will
+        start fresh under the current version (currently <code>@Model.AnalyticsHashVersion</code>).
+        <strong>This is destructive to retention cohort continuity — there is no way to merge old
+        and new hashes since raw IDs are not stored.</strong>
+    </p>
+    <form method="post" asp-page-handler="RotatePepper" class="filter-form">
+        @Html.AntiForgeryToken()
+        <label>
+            <span>Type <code>ROTATE</code> to confirm</span>
+            <input name="confirm" required pattern="ROTATE" placeholder="ROTATE" autocomplete="off" />
+        </label>
+        <button type="submit" class="danger">Purge old user-day rows</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Import legacy analytics</h2>
+    <p class="muted">
+        One-shot migration that scans persisted problem reports for <code>kind = "analytics"</code>
+        entries and folds them into the v2 analytics pipeline. Idempotent on (platform, eventId) —
+        re-running is safe. Once the SDKs are emitting <code>/api/v2/analytics/events</code> directly
+        and the existing legacy data has been imported, this action can be ignored.
+    </p>
+    <form method="post" asp-page-handler="ImportAnalytics">
+        @Html.AntiForgeryToken()
+        <button type="submit">Import now</button>
+    </form>
+</section>
+
 <section class="card danger-zone">
     <h2>Wipe all data</h2>
     <p class="muted">

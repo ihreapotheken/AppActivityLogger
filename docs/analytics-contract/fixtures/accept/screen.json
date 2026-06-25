@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "batchId": "00000000-0000-4000-8000-000000000001",
+  "platform": "android",
+  "sdkVersion": "1.0.0",
+  "hostAppVersion": "5.6.7",
+  "anonymousId": "anon-stable-per-install",
+  "clientId": "pharmacy-42",
+  "generatedAt": "2026-05-14T10:00:00.0000000+00:00",
+  "events": [
+    {
+      "eventId": "00000000-0000-4000-8000-000000010001",
+      "sessionId": "session-screen-1",
+      "sequence": 0,
+      "occurredAt": "2026-05-14T10:00:00.0000000+00:00",
+      "type": "screen",
+      "name": "home_viewed",
+      "screen": "home",
+      "feature": null,
+      "durationMs": 120,
+      "properties": {
+        "referrer": "launcher",
+        "tab": "overview"
+      },
+      "items": null
+    }
+  ]
+}

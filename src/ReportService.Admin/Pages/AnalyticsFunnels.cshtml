@@ -1,0 +1,81 @@
+@page
+@model RSAAnalyticsFunnelsModel
+@using ReportService.Admin.ViewModels
+@{
+    ViewData["Title"] = "Analytics funnels";
+    var first = Model.Stats.Count > 0 ? Model.Stats[0].SessionsReached : 0;
+    string Conversion(long reached) => first <= 0 ? "—" : ((double)reached / first * 100).ToString("F1") + "%";
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Analytics funnels", $"Step-by-step session counts for operator-defined funnels. Window: last {Model.Window} days. Conversion is relative to step 0."))
+
+<p>
+    Each step shows how many distinct sessions completed that step (and all preceding steps) within the window.
+    Steps are matched in order by event name and type — a session must emit step 0's event before step 1, step 1 before step 2, and so on, determined by <code>sequence ASC, occurred_at ASC</code>.
+    Out-of-order events don't advance the funnel.
+    Conversion is always relative to step 0: 100% at step 0 means every session that started the funnel; a lower percentage at step N means that fraction of starters reached that step.
+    Use the platform filter to compare Android vs iOS drop-off — large divergences often point to a platform-specific UX bug.
+    Funnel definitions are managed here and in the <code>Analytics:SeedFunnels</code> config section; operator edits made on this page survive service restarts.
+</p>
+
+<form method="get" class="filters" aria-label="Funnel filters">
+    <label>Funnel
+        <select name="funnel">
+            @foreach (var d in Model.Definitions)
+            {
+                <option value="@d.FunnelKey" selected="@(Model.Selected is not null && string.Equals(d.FunnelKey, Model.Selected.FunnelKey, StringComparison.Ordinal))">@d.DisplayName</option>
+            }
+        </select>
+    </label>
+    <label>Platform
+        <select name="platform">
+            <option value="">all</option>
+            @foreach (var p in Model.AvailablePlatforms)
+            {
+                <option value="@p" selected="@(string.Equals(Model.Platform, p, StringComparison.OrdinalIgnoreCase))">@p</option>
+            }
+        </select>
+    </label>
+    <button type="submit" class="primary">Apply</button>
+</form>
+
+@if (Model.Definitions.Count == 0)
+{
+    <p class="muted">No funnels defined. The funnel worker seeds default definitions on first start; if it hasn't run yet, restart the service or wait one funnel interval.</p>
+}
+else if (Model.Selected is null)
+{
+    <p class="muted">Funnel not found.</p>
+}
+else
+{
+    <section class="card">
+        <h2>@Model.Selected.DisplayName <span class="mono muted">(@Model.Selected.FunnelKey)</span></h2>
+        <table>
+            <thead>
+                <tr>
+                    <th scope="col">#</th>
+                    <th scope="col">Step</th>
+                    <th scope="col">Event</th>
+                    <th scope="col">Type</th>
+                    <th scope="col">Sessions</th>
+                    <th scope="col">Conversion</th>
+                </tr>
+            </thead>
+            <tbody>
+            @for (var i = 0; i < Model.Stats.Count; i++)
+            {
+                var s = Model.Stats[i];
+                var def = Model.Selected.Steps[i];
+                <tr>
+                    <td>@i</td>
+                    <td>@def.Name</td>
+                    <td class="mono">@def.EventName</td>
+                    <td class="mono">@(def.EventType ?? "(any)")</td>
+                    <td>@s.SessionsReached.ToString("N0")</td>
+                    <td>@Conversion(s.SessionsReached)</td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </section>
+}

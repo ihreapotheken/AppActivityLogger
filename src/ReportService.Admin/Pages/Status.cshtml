@@ -80,7 +80,57 @@
     <ul class="kv">
         <li><span>Auth abuse DB</span><code>@Model.AuthAbuseDbPath</code> · @RSAByteFormatter.Format(Model.AuthAbuseDbSize)</li>
         <li><span>Audit log DB</span><code>@Model.AuditDbPath</code> · @RSAByteFormatter.Format(Model.AuditDbSize) · @Model.AuditCount entries</li>
+        <li><span>Analytics DB</span><code>@Model.AnalyticsDbPath</code> · @RSAByteFormatter.Format(Model.AnalyticsDbSize)</li>
     </ul>
+</section>
+
+<section class="card">
+    <h2>v2 analytics</h2>
+    @if (!Model.AnalyticsEnabled)
+    {
+        <p class="muted">Analytics ingestion is disabled (<code>Analytics:Enabled=false</code>). Set it to true to expose <code>POST /api/v2/analytics/events</code>.</p>
+    }
+    else if (Model.AnalyticsSnapshot is null)
+    {
+        <p class="muted">Analytics enabled but the store is unavailable; check application logs.</p>
+    }
+    else
+    {
+        <ul class="kv">
+            <li><span>Last aggregated</span>
+                @if (Model.AnalyticsSnapshot.LastAggregatedAt is { } a) { <span class="mono">@a.AsLocalTime()</span> } else { <span class="muted">never</span> }
+            </li>
+            <li><span>Dead-letter total</span>@Model.AnalyticsSnapshot.DeadLetterTotal.ToString("N0")</li>
+            <li><span>Distinct SDK versions seen</span>@Model.AnalyticsSnapshot.SdkVersionsSeen.Count</li>
+        </ul>
+        @if (Model.AnalyticsPlatforms.Count > 0)
+        {
+            <table>
+                <thead>
+                    <tr>
+                        <th scope="col">Platform</th>
+                        <th scope="col">Batches</th>
+                        <th scope="col">Accepted</th>
+                        <th scope="col">Rejected</th>
+                        <th scope="col">Last received</th>
+                    </tr>
+                </thead>
+                <tbody>
+                @foreach (var p in Model.AnalyticsPlatforms)
+                {
+                    <tr>
+                        <td class="mono">@p.Platform</td>
+                        <td>@p.Batches.ToString("N0")</td>
+                        <td>@p.AcceptedEvents.ToString("N0")</td>
+                        <td>@p.RejectedEvents.ToString("N0")</td>
+                        <td class="mono">@(p.LastReceivedAt is { } lr ? lr.AsLocalTime() : "—")</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        }
+        <p class="muted"><a asp-page="/AnalyticsHealth">Analytics health →</a> for dead-letter samples and per-reason breakdown.</p>
+    }
 </section>
 
 <section class="card">

@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.OpenApi.Models;
+using ReportService.Analytics;
 using ReportService.Audit;
 using ReportService.Endpoints;
 using ReportService.Hosting;
@@ -30,8 +31,13 @@ var proxyHeaders = builder.Configuration
     .GetSection(RSCProxyHeadersOptions.SectionName)
     .Get<RSCProxyHeadersOptions>() ?? new RSCProxyHeadersOptions();
 
+var analyticsOptions = builder.Configuration
+    .GetSection(RSCAnalyticsOptions.SectionName)
+    .Get<RSCAnalyticsOptions>() ?? new RSCAnalyticsOptions();
+
 builder.Services.AddSingleton(options);
 builder.Services.AddSingleton(proxyHeaders);
+builder.Services.AddSingleton(analyticsOptions);
 
 builder.WebHost.ConfigureKestrel(k => RSCHostingExtensions.ConfigureHardenedKestrel(k, maxRequestBodySize: options.MaxUploadBytes));
 
@@ -58,6 +64,19 @@ else
 }
 builder.Services.AddSingleton<RSReportIngestionService>();
 builder.Services.AddSingleton<RSCIForcedReportStore, RSCSqliteForcedReportStore>();
+
+// v2 analytics pipeline. Enabled by default; toggled off via Analytics:Enabled=false.
+builder.Services.AddSingleton<RSCAnalyticsIdentifierHasher>();
+builder.Services.AddSingleton<RSCAnalyticsValidator>();
+builder.Services.AddSingleton<RSCIAnalyticsStore, RSCSqliteAnalyticsStore>();
+builder.Services.AddSingleton<RSAnalyticsIngestionService>();
+if (analyticsOptions.Enabled)
+{
+    builder.Services.AddHostedService<RSCAnalyticsAggregationWorker>();
+    builder.Services.AddHostedService<RSCAnalyticsRetentionWorker>();
+    builder.Services.AddHostedService<RSCAnalyticsCohortWorker>();
+    builder.Services.AddHostedService<RSCAnalyticsFunnelWorker>();
+}
 builder.Services.AddSingleton<RSCServiceTelemetry>();
 builder.Services.AddSingleton<RSAcceptHeaderFilter>();
 builder.Services.AddSingleton<RSCIAuditLog, RSCSqliteAuditLog>();
@@ -357,6 +376,7 @@ app.MapGet("/api/health/ready", (RSCServiceTelemetry telemetry, RSCReportService
     .Produces(StatusCodes.Status503ServiceUnavailable);
 
 app.MapProblemReportEndpoints();
+app.MapAnalyticsEndpoints();
 
 app.Run();
 

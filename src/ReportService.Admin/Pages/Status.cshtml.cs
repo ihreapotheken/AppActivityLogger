@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using ReportService.Admin.Services;
+using ReportService.Analytics;
 using ReportService.Audit;
 using ReportService.Observability;
 using ReportService.Options;
@@ -16,40 +17,52 @@ namespace ReportService.Admin.Pages;
 public sealed class RSAStatusModel : PageModel
 {
     private readonly RSCReportServiceOptions _options;
+    private readonly RSCAnalyticsOptions _analyticsOptions;
     private readonly RSCComponentHealth _health;
     private readonly RSCServiceTelemetry _telemetry;
     private readonly RSCIAuditLog _audit;
     private readonly RSCRetentionService _retention;
     private readonly IRSAReportIndexAccessor _indexAccessor;
+    private readonly RSCIAnalyticsStore _analyticsStore;
 
     public RSAStatusModel(
         RSCReportServiceOptions options,
+        RSCAnalyticsOptions analyticsOptions,
         RSCComponentHealth health,
         RSCServiceTelemetry telemetry,
         RSCIAuditLog audit,
         RSCRetentionService retention,
-        IRSAReportIndexAccessor indexAccessor)
+        IRSAReportIndexAccessor indexAccessor,
+        RSCIAnalyticsStore analyticsStore)
     {
         _options = options;
+        _analyticsOptions = analyticsOptions;
         _health = health;
         _telemetry = telemetry;
         _audit = audit;
         _retention = retention;
         _indexAccessor = indexAccessor;
+        _analyticsStore = analyticsStore;
     }
 
     public RSCIndexStatusReport? IndexStatus { get; private set; }
     public string ReportsRoot => Path.GetFullPath(_options.ReportsRoot);
     public string AuthAbuseDbPath => RSCStatePaths.Resolve(_options.AuthAbuseDbPath, _options.ReportsRoot);
     public string AuditDbPath => RSCStatePaths.Resolve(_options.AuditDbPath, _options.ReportsRoot);
+    public string AnalyticsDbPath => RSCStatePaths.Resolve(_analyticsOptions.SqliteDbPath, _options.ReportsRoot);
     public string BackupRoot => RSCStatePaths.Resolve(_options.BackupRoot, _options.ReportsRoot);
     public long AuthAbuseDbSize => FileSize(AuthAbuseDbPath);
     public long AuditDbSize => FileSize(AuditDbPath);
+    public long AnalyticsDbSize => FileSize(AnalyticsDbPath);
     public IReadOnlyDictionary<string, RSCComponentHealth.Entry> Health => _health.Snapshot();
     public RSCRetentionStats Retention { get; private set; } = default!;
     public int AuditCount { get; private set; }
     public string Version => _telemetry.Version;
     public TimeSpan Uptime => TimeSpan.FromSeconds(_telemetry.UptimeSeconds);
+
+    public bool AnalyticsEnabled => _analyticsOptions.Enabled;
+    public RSCAnalyticsHealthSnapshot? AnalyticsSnapshot { get; private set; }
+    public IReadOnlyList<RSCAnalyticsPlatformSummary> AnalyticsPlatforms { get; private set; } = Array.Empty<RSCAnalyticsPlatformSummary>();
 
     public async Task OnGetAsync(CancellationToken ct)
     {
@@ -60,6 +73,20 @@ public sealed class RSAStatusModel : PageModel
         }
         AuditCount = await _audit.CountAsync(ct).ConfigureAwait(false);
         Retention = _retention.GetStats();
+
+        if (AnalyticsEnabled)
+        {
+            try
+            {
+                AnalyticsSnapshot = await _analyticsStore.GetHealthSnapshotAsync(5, ct).ConfigureAwait(false);
+                AnalyticsPlatforms = await _analyticsStore.GetPlatformSummariesAsync(ct).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Analytics being unavailable shouldn't break the Status page. The health card
+                // will simply show "n/a" so the operator notices in context.
+            }
+        }
     }
 
     private static long FileSize(string path)

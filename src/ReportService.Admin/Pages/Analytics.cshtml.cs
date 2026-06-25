@@ -45,7 +45,7 @@ public sealed class RSAAnalyticsModel : PageModel
 
     public async Task OnGetAsync(CancellationToken ct)
     {
-        Dashboard = _analytics.Build(CanonicalPlatform);
+        Dashboard = await _analytics.BuildAsync(CanonicalPlatform, ct).ConfigureAwait(false);
         // The scope-tab platform (URL ?platform=) and the bound filter share one query field.
         // Razor's binding gives Filter.Platform the same string, so the listing already inherits
         // the scope. No extra wiring needed.

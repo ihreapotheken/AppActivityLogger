@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "batchId": "00000000-0000-4000-8000-000000000005",
+  "platform": "android",
+  "sdkVersion": "1.0.0",
+  "hostAppVersion": "5.6.7",
+  "anonymousId": "anon-stable-per-install",
+  "clientId": null,
+  "generatedAt": "2026-05-14T10:00:00.0000000+00:00",
+  "events": [
+    {
+      "eventId": "00000000-0000-4000-8000-000000050001",
+      "sessionId": "session-lc-1",
+      "sequence": 0,
+      "occurredAt": "2026-05-14T10:00:00.0000000+00:00",
+      "type": "lifecycle",
+      "name": "session_start",
+      "screen": null,
+      "feature": null,
+      "durationMs": null,
+      "properties": {
+        "cold_start": "true",
+        "host_app_state": "foreground"
+      },
+      "items": null
+    },
+    {
+      "eventId": "00000000-0000-4000-8000-000000050002",
+      "sessionId": "session-lc-1",
+      "sequence": 1,
+      "occurredAt": "2026-05-14T10:00:00.0000000+00:00",
+      "type": "lifecycle",
+      "name": "session_end",
+      "screen": null,
+      "feature": null,
+      "durationMs": 84321,
+      "properties": {
+        "exit_reason": "user_backgrounded"
+      },
+      "items": null
+    }
+  ]
+}

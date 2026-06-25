@@ -17,8 +17,10 @@ ops/
 tests/
 ReportService.sln
 
-# Dev-only config (Production config is baked in; Development overrides are not needed)
-**/appsettings.Development.json
+# appsettings.Development.json IS shipped: the docker-compose dev stack runs with
+# ASPNETCORE_ENVIRONMENT=Development and relies on it for worker cadences, retention, and
+# logging. It is inert under Production/Staging (those environments never load it), so it
+# carries no cost in the prod/staging images built from the same Dockerfile.
 
 # Misc junk
 **/.DS_Store

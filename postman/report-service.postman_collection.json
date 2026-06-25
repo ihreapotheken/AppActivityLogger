@@ -2,15 +2,15 @@
   "info": {
     "_postman_id": "8f1c0aa0-0000-4000-8000-report-service",
     "name": "report-service",
-    "description": "Manual smoke + fixture collection for the report-service ingestion + read surface.\n\nIngestion endpoints require the `apiKey` header (env var `{{apiKey}}`). Health endpoints are anonymous.\n\nImports cleanly into Postman, Bruno (`Import → Postman Collection`), Insomnia, and Hoppscotch — the v2.1.0 Postman Collection format is the open de-facto interchange format.\n\nEdit the `report-service · local` environment to point at a different host / apiKey when targeting staging.",
+    "description": "Smoke + fixture collection for the report-service ingestion + admin read surface.\n\n**Auth**\n- SDK-facing endpoints (`/api/v1/*`, `/api/v2/*`): `apiKey` header (`{{apiKey}}`)\n- Admin endpoints (`/admin/api/*`, Razor pages): session cookie via DevAutoSignIn (Development only). Run the **Admin — sign in** request first; Postman stores the cookie automatically.\n\n**Import** cleanly into Postman, Bruno (`Import → Postman Collection`), Insomnia, and Hoppscotch — v2.1.0 Postman Collection format.\n\nEdit the `report-service · local` environment for a different host or apiKey.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
     "type": "apikey",
     "apikey": [
-      { "key": "key", "value": "apiKey", "type": "string" },
-      { "key": "value", "value": "{{apiKey}}", "type": "string" },
-      { "key": "in", "value": "header", "type": "string" }
+      { "key": "key",   "value": "apiKey",       "type": "string" },
+      { "key": "value", "value": "{{apiKey}}",   "type": "string" },
+      { "key": "in",    "value": "header",        "type": "string" }
     ]
   },
   "event": [
@@ -19,9 +19,8 @@
       "script": {
         "type": "text/javascript",
         "exec": [
-          "// Default assertion every request inherits: response is non-5xx and arrived in <5s.",
           "pm.test('response is not 5xx', () => pm.expect(pm.response.code).to.be.lessThan(500));",
-          "pm.test('response under 5s', () => pm.expect(pm.response.responseTime).to.be.below(5000));"
+          "pm.test('response under 5s',   () => pm.expect(pm.response.responseTime).to.be.below(5000));"
         ]
       }
     }
@@ -29,7 +28,7 @@
   "item": [
     {
       "name": "Health",
-      "description": "Anonymous liveness + readiness probes. The container's healthcheck hits `/healthz`; the API surface offers richer `/api/health` and `/api/health/ready`.",
+      "description": "Anonymous liveness + readiness probes.",
       "item": [
         {
           "name": "Liveness · /healthz",
@@ -37,11 +36,7 @@
             "auth": { "type": "noauth" },
             "method": "GET",
             "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/healthz",
-              "host": ["{{baseUrl}}"],
-              "path": ["healthz"]
-            }
+            "url": { "raw": "{{baseUrl}}/healthz", "host": ["{{baseUrl}}"], "path": ["healthz"] }
           }
         },
         {
@@ -50,11 +45,7 @@
             "auth": { "type": "noauth" },
             "method": "GET",
             "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/health",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "health"]
-            }
+            "url": { "raw": "{{baseUrl}}/api/health", "host": ["{{baseUrl}}"], "path": ["api","health"] }
           }
         },
         {
@@ -63,10 +54,341 @@
             "auth": { "type": "noauth" },
             "method": "GET",
             "header": [],
+            "url": { "raw": "{{baseUrl}}/api/health/ready", "host": ["{{baseUrl}}"], "path": ["api","health","ready"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin — sign in",
+      "description": "In Development mode (DevAutoSignIn=true) the first request to any admin page sets the session cookie automatically. Run this once before any /admin/api/* request so Postman picks up the cookie.\n\nIf running against staging/prod you must supply a real admin session instead.",
+      "item": [
+        {
+          "name": "Prime DevAutoSignIn cookie",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('admin page reachable (2xx or 3xx)', () => pm.expect(pm.response.code).to.be.below(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/", "host": ["{{baseUrl}}"], "path": [""] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Analytics v2 — Ingestion",
+      "description": "POST batches to the v2 analytics pipeline at /api/v2/analytics/events.\n\nRequires: apiKey header. All events are validated server-side; rejected events land in the dead-letter queue visible on /AnalyticsHealth.",
+      "item": [
+        {
+          "name": "Submit valid batch (3 events)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted',     () => pm.response.to.have.status(202));",
+                  "const j = pm.response.json();",
+                  "pm.test('batchId returned',  () => pm.expect(j.batchId).to.be.a('string').and.not.be.empty);",
+                  "pm.test('not batch-rejected', () => pm.expect(j.batchRejected).to.be.false);",
+                  "pm.test('no events rejected', () => pm.expect(j.rejectedCount).to.equal(0));",
+                  "// accepted + duplicate = 3 on both first run and idempotent re-run",
+                  "pm.test('all 3 events accounted for', () => pm.expect(j.acceptedCount + j.duplicateCount).to.equal(3));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"schemaVersion\": 1,\n  \"batchId\": \"postman-batch-valid-001\",\n  \"platform\": \"android\",\n  \"sdkVersion\": \"2.0.0\",\n  \"hostAppVersion\": \"4.5.0\",\n  \"anonymousId\": \"postman-anon-001\",\n  \"clientId\": null,\n  \"generatedAt\": \"{{$isoTimestamp}}\",\n  \"events\": [\n    {\n      \"eventId\": \"postman-evt-001\",\n      \"sessionId\": \"postman-session-001\",\n      \"sequence\": 1,\n      \"occurredAt\": \"{{$isoTimestamp}}\",\n      \"type\": \"lifecycle\",\n      \"name\": \"session_start\",\n      \"properties\": { \"cold_start\": \"false\", \"host_app_state\": \"foreground\" }\n    },\n    {\n      \"eventId\": \"postman-evt-002\",\n      \"sessionId\": \"postman-session-001\",\n      \"sequence\": 2,\n      \"occurredAt\": \"{{$isoTimestamp}}\",\n      \"type\": \"screen\",\n      \"name\": \"screen_view\",\n      \"screen\": \"home\",\n      \"properties\": { \"device_model\": \"Postman\", \"os_version\": \"test\" }\n    },\n    {\n      \"eventId\": \"postman-evt-003\",\n      \"sessionId\": \"postman-session-001\",\n      \"sequence\": 3,\n      \"occurredAt\": \"{{$isoTimestamp}}\",\n      \"type\": \"error\",\n      \"name\": \"sdk_batch_http_error\",\n      \"feature\": \"sdk\",\n      \"properties\": { \"status_code\": \"503\", \"events_count\": \"12\", \"retryable\": \"true\" }\n    }\n  ]\n}"
+            },
             "url": {
-              "raw": "{{baseUrl}}/api/health/ready",
+              "raw": "{{baseUrl}}/api/v2/analytics/events",
               "host": ["{{baseUrl}}"],
-              "path": ["api", "health", "ready"]
+              "path": ["api","v2","analytics","events"]
+            }
+          }
+        },
+        {
+          "name": "Submit batch — schema version rejected",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted',      () => pm.response.to.have.status(202));",
+                  "const j = pm.response.json();",
+                  "pm.test('batch rejected',     () => pm.expect(j.batchRejected).to.be.true);",
+                  "pm.test('schema version reason', () => pm.expect(j.batchRejectReason).to.include('schema_version'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"schemaVersion\": 99,\n  \"batchId\": \"postman-batch-bad-schema-001\",\n  \"platform\": \"android\",\n  \"sdkVersion\": \"2.0.0\",\n  \"hostAppVersion\": \"4.5.0\",\n  \"anonymousId\": \"postman-anon-001\",\n  \"generatedAt\": \"{{$isoTimestamp}}\",\n  \"events\": [\n    {\n      \"eventId\": \"postman-evt-bad-001\",\n      \"sessionId\": \"postman-session-bad\",\n      \"sequence\": 1,\n      \"occurredAt\": \"{{$isoTimestamp}}\",\n      \"type\": \"screen\",\n      \"name\": \"screen_view\",\n      \"properties\": {}\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v2/analytics/events",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v2","analytics","events"]
+            }
+          }
+        },
+        {
+          "name": "Submit batch — PII key rejected",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted',         () => pm.response.to.have.status(202));",
+                  "const j = pm.response.json();",
+                  "pm.test('batch not rejected',    () => pm.expect(j.batchRejected).to.be.false);",
+                  "pm.test('one event rejected',    () => pm.expect(j.rejectedCount).to.equal(1));",
+                  "pm.test('zero accepted',         () => pm.expect(j.acceptedCount).to.equal(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"schemaVersion\": 1,\n  \"batchId\": \"postman-batch-pii-001\",\n  \"platform\": \"android\",\n  \"sdkVersion\": \"2.0.0\",\n  \"hostAppVersion\": \"4.5.0\",\n  \"anonymousId\": \"postman-anon-002\",\n  \"generatedAt\": \"{{$isoTimestamp}}\",\n  \"events\": [\n    {\n      \"eventId\": \"postman-evt-pii-001\",\n      \"sessionId\": \"postman-session-pii\",\n      \"sequence\": 1,\n      \"occurredAt\": \"{{$isoTimestamp}}\",\n      \"type\": \"action\",\n      \"name\": \"user_action\",\n      \"properties\": { \"email\": \"user@example.com\" }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v2/analytics/events",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v2","analytics","events"]
+            }
+          }
+        },
+        {
+          "name": "Submit SDK error events (sdk_batch_http_error + sdk_api_http_error)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted',       () => pm.response.to.have.status(202));",
+                  "const j = pm.response.json();",
+                  "pm.test('not batch-rejected',  () => pm.expect(j.batchRejected).to.be.false);",
+                  "pm.test('no events rejected',  () => pm.expect(j.rejectedCount).to.equal(0));",
+                  "pm.test('2 events accounted for', () => pm.expect(j.acceptedCount + j.duplicateCount).to.equal(2));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"schemaVersion\": 1,\n  \"batchId\": \"postman-batch-sdk-errors-001\",\n  \"platform\": \"ios\",\n  \"sdkVersion\": \"2.0.0-ios\",\n  \"hostAppVersion\": \"4.5.0-ios\",\n  \"anonymousId\": \"postman-anon-ios-001\",\n  \"clientId\": null,\n  \"generatedAt\": \"{{$isoTimestamp}}\",\n  \"events\": [\n    {\n      \"eventId\": \"postman-sdk-err-001\",\n      \"sessionId\": \"sdk-diag-postman-test\",\n      \"sequence\": 1,\n      \"occurredAt\": \"{{$isoTimestamp}}\",\n      \"type\": \"error\",\n      \"name\": \"sdk_batch_http_error\",\n      \"feature\": \"sdk\",\n      \"properties\": { \"status_code\": \"429\", \"events_count\": \"20\", \"retryable\": \"true\" }\n    },\n    {\n      \"eventId\": \"postman-sdk-err-002\",\n      \"sessionId\": \"sdk-diag-postman-test\",\n      \"sequence\": 2,\n      \"occurredAt\": \"{{$isoTimestamp}}\",\n      \"type\": \"error\",\n      \"name\": \"sdk_api_http_error\",\n      \"feature\": \"sdk\",\n      \"properties\": { \"status_code\": \"401\", \"error_class\": \"HttpError\" }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v2/analytics/events",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v2","analytics","events"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Analytics v2 — Admin exports",
+      "description": "NDJSON streaming exports for offline analysis. Requires the admin session cookie — run **Admin — sign in / Prime DevAutoSignIn cookie** first.\n\nEach line of the response is a standalone JSON object; pipe through `jq` or import as a newline-delimited JSON file. Capped at 50,000 rows per request.",
+      "item": [
+        {
+          "name": "Events NDJSON — all (first 500)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('NDJSON content type', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('ndjson'));",
+                  "const lines = pm.response.text().split('\\n').filter(l => l.trim());",
+                  "pm.test('at least one line', () => pm.expect(lines.length).to.be.above(0));",
+                  "pm.test('first line is valid JSON with eventId', () => {",
+                  "    const obj = JSON.parse(lines[0]);",
+                  "    pm.expect(obj).to.have.property('eventId');",
+                  "    pm.expect(obj).to.have.property('type');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/api/analytics/events.ndjson?limit=500",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin","api","analytics","events.ndjson"],
+              "query": [{ "key": "limit", "value": "500" }]
+            }
+          }
+        },
+        {
+          "name": "Events NDJSON — error type only",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const lines = pm.response.text().split('\\n').filter(l => l.trim());",
+                  "pm.test('all rows are type=error', () => {",
+                  "    lines.forEach(l => {",
+                  "        const obj = JSON.parse(l);",
+                  "        pm.expect(obj.type).to.equal('error');",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/api/analytics/events.ndjson?type=error&limit=200",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin","api","analytics","events.ndjson"],
+              "query": [
+                { "key": "type",  "value": "error" },
+                { "key": "limit", "value": "200" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Events NDJSON — SDK error events only",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const lines = pm.response.text().split('\\n').filter(l => l.trim());",
+                  "pm.test('all rows are sdk_batch_http_error', () => {",
+                  "    lines.forEach(l => {",
+                  "        const obj = JSON.parse(l);",
+                  "        pm.expect(obj.name).to.equal('sdk_batch_http_error');",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/api/analytics/events.ndjson?type=error&name=sdk_batch_http_error&limit=100",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin","api","analytics","events.ndjson"],
+              "query": [
+                { "key": "type",  "value": "error" },
+                { "key": "name",  "value": "sdk_batch_http_error" },
+                { "key": "limit", "value": "100" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Sessions NDJSON — all (first 200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('NDJSON content type', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('ndjson'));",
+                  "const lines = pm.response.text().split('\\n').filter(l => l.trim());",
+                  "pm.test('at least one session row', () => pm.expect(lines.length).to.be.above(0));",
+                  "pm.test('first row has sessionId field', () => {",
+                  "    const obj = JSON.parse(lines[0]);",
+                  "    pm.expect(obj).to.have.property('sessionId');",
+                  "    pm.expect(obj).to.have.property('platform');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/api/analytics/sessions.ndjson?limit=200",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin","api","analytics","sessions.ndjson"],
+              "query": [{ "key": "limit", "value": "200" }]
+            }
+          }
+        },
+        {
+          "name": "Sessions NDJSON — android only",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const lines = pm.response.text().split('\\n').filter(l => l.trim());",
+                  "pm.test('all rows are android', () => {",
+                  "    lines.forEach(l => {",
+                  "        const obj = JSON.parse(l);",
+                  "        pm.expect(obj.platform).to.equal('android');",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/api/analytics/sessions.ndjson?platform=android&limit=100",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin","api","analytics","sessions.ndjson"],
+              "query": [
+                { "key": "platform", "value": "android" },
+                { "key": "limit",    "value": "100" }
+              ]
             }
           }
         }
@@ -74,7 +396,7 @@
     },
     {
       "name": "Ingestion — JSON crash reports",
-      "description": "JSON ingestion endpoint (kind=crash). One POST per crash; the body is the canonical `RSCProblemReport` envelope. `stackTrace` is the only field the report-detail page renders verbatim.",
+      "description": "JSON ingestion endpoint (kind=crash). One POST per crash; the body is the canonical `RSCProblemReport` envelope.",
       "item": [
         {
           "name": "Android JVM crash · /api/v1/reports",
@@ -94,9 +416,7 @@
           ],
           "request": {
             "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" }
-            ],
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"platform\": \"android\",\n  \"kind\": \"crash\",\n  \"title\": \"java.lang.RuntimeException\",\n  \"message\": \"Automatic crash report\\nThread: main\\nReason: UNCAUGHT_EXCEPTION\\nSDK related: false\\nMessage: Postman fixture crash\",\n  \"deviceModel\": \"{{deviceModel}}\",\n  \"appVersion\": \"{{appVersion}}\",\n  \"source\": \"SDK\",\n  \"pharmacyId\": \"{{pharmacyId}}\",\n  \"userId\": \"{{installUserId}}\",\n  \"labels\": [\"SDKV2\", \"fixture\", \"postman\"],\n  \"stackTrace\": \"java.lang.RuntimeException: Postman fixture crash\\n\\tat de.example.fixture.PostmanCrasherKt.crashNow(PostmanCrasherKt.kt:42)\\n\\tat de.example.fixture.MainActivity.onCreate(MainActivity.kt:17)\\n\\tat android.app.Activity.performCreate(Activity.java:8595)\",\n  \"occurredAt\": \"2026-05-12T10:00:00Z\"\n}"
@@ -104,7 +424,7 @@
             "url": {
               "raw": "{{baseUrl}}/api/v1/reports",
               "host": ["{{baseUrl}}"],
-              "path": ["api", "v1", "reports"]
+              "path": ["api","v1","reports"]
             }
           }
         },
@@ -123,9 +443,7 @@
           ],
           "request": {
             "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" }
-            ],
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"platform\": \"ios\",\n  \"kind\": \"crash\",\n  \"title\": \"DemoTriggeredCrash.postman_fixture: Postman fixture crash\",\n  \"message\": \"Postman iOS fixture\",\n  \"deviceModel\": \"iPhone\",\n  \"appVersion\": \"0.0.1\",\n  \"source\": \"demo-app\",\n  \"labels\": [\"SDKV2\", \"crash\", \"fixture\"],\n  \"userId\": \"{{installUserId}}\",\n  \"stackTrace\": \"DemoTriggeredCrash.postman_fixture: Postman fixture crash\\n0   IASDK                postmanFixtureCrash()\\n1   DemoCrashHook        emit(trigger:message:)\",\n  \"occurredAt\": \"2026-05-12T10:01:00Z\"\n}"
@@ -133,49 +451,7 @@
             "url": {
               "raw": "{{baseUrl}}/api/v1/reports",
               "host": ["{{baseUrl}}"],
-              "path": ["api", "v1", "reports"]
-            }
-          }
-        },
-        {
-          "name": "Flutter host crash · /api/v1/reports",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"platform\": \"android\",\n  \"kind\": \"crash\",\n  \"title\": \"java.lang.RuntimeException\",\n  \"message\": \"Automatic crash report\\nThread: main\\nReason: UNCAUGHT_EXCEPTION\\nSDK related: false\\nMessage: Host app simulated crash from FlutterDemo MainActivity\",\n  \"deviceModel\": \"{{deviceModel}}\",\n  \"appVersion\": \"1.0.0 (SDK 2.3.41)\",\n  \"source\": \"SDK\",\n  \"pharmacyId\": \"\",\n  \"userId\": \"{{installUserId}}\",\n  \"labels\": [\"SDKV2\", \"1.0.0 (SDK 2.3.41)\", \"6001\"],\n  \"stackTrace\": \"java.lang.RuntimeException: Host app simulated crash from FlutterDemo MainActivity\\n\\tat com.example.appsdk_v2_flutter_plugin_example.MainActivity$configureFlutterEngine$1.onMethodCall(MainActivity.kt:23)\",\n  \"occurredAt\": \"2026-05-12T10:02:00Z\"\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/reports",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "v1", "reports"]
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "Ingestion — Analytics events",
-      "description": "kind=analytics events flow through the same `/api/v1/reports` endpoint. They show up on `/Analytics`, not `/Errors`.",
-      "item": [
-        {
-          "name": "Screen view event",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"platform\": \"android\",\n  \"kind\": \"analytics\",\n  \"title\": \"screen_view\",\n  \"message\": \"User landed on the pharmacy detail screen\",\n  \"deviceModel\": \"{{deviceModel}}\",\n  \"appVersion\": \"{{appVersion}}\",\n  \"source\": \"SDK\",\n  \"pharmacyId\": \"{{pharmacyId}}\",\n  \"userId\": \"{{installUserId}}\",\n  \"labels\": [\"SDKV2\", \"analytics\", \"screen_view\"],\n  \"eventProperties\": {\n    \"screen\": \"PharmacyDetail\",\n    \"referrer\": \"Apofinder\"\n  },\n  \"occurredAt\": \"2026-05-12T10:03:00Z\"\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/reports",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "v1", "reports"]
+              "path": ["api","v1","reports"]
             }
           }
         }
@@ -183,7 +459,7 @@
     },
     {
       "name": "Ingestion — Multipart Report a Problem",
-      "description": "The partner endpoint the IA SDK calls. Multipart form-data with `json` part (required) + optional `file` gzip attachment. Crash uploads and user-initiated RaP submissions both flow through here.\n\nFor uploads with a file: edit the `file` form field's `src` to a real local path. For the simple Postman-only smoke (no file), the JSON-only path on /api/v1/reports is easier.",
+      "description": "The partner endpoint the IA SDK calls. Multipart form-data with `json` part (required) + optional `file` gzip attachment.",
       "item": [
         {
           "name": "User-initiated RaP (no attachment)",
@@ -204,37 +480,7 @@
             "url": {
               "raw": "{{baseUrl}}/partners/api/v2/report-problem",
               "host": ["{{baseUrl}}"],
-              "path": ["partners", "api", "v2", "report-problem"]
-            }
-          }
-        },
-        {
-          "name": "Crash upload with gzip log (file required)",
-          "description": "Replace the `file` field's `src` with a local `.log.gz` path (e.g. the one Android SDK's CrashReportUploader writes to the cache dir).",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "body": {
-              "mode": "formdata",
-              "formdata": [
-                {
-                  "key": "json",
-                  "value": "{\"platform\":\"android\",\"kind\":\"crash\",\"title\":\"java.lang.RuntimeException\",\"message\":\"Automatic crash report\\nThread: main\\nReason: UNCAUGHT_EXCEPTION\\nSDK related: true\\nMessage: Postman multipart fixture\",\"deviceModel\":\"{{deviceModel}}\",\"appVersion\":\"{{appVersion}}\",\"source\":\"SDK\",\"pharmacyId\":\"{{pharmacyId}}\",\"userId\":\"{{installUserId}}\",\"labels\":[\"SDKV2\",\"crash\",\"fixture\"]}",
-                  "type": "text",
-                  "contentType": "application/json"
-                },
-                {
-                  "key": "file",
-                  "type": "file",
-                  "src": "",
-                  "contentType": "application/gzip"
-                }
-              ]
-            },
-            "url": {
-              "raw": "{{baseUrl}}/partners/api/v2/report-problem",
-              "host": ["{{baseUrl}}"],
-              "path": ["partners", "api", "v2", "report-problem"]
+              "path": ["partners","api","v2","report-problem"]
             }
           }
         }
@@ -242,7 +488,7 @@
     },
     {
       "name": "Reports browsing",
-      "description": "Read-side: list stored reports per platform + fetch individual reports by file name. The admin UI calls the same endpoints internally.",
+      "description": "Read-side: list stored reports per platform + fetch individual reports by file name.",
       "item": [
         {
           "name": "List reports for {{platform}}",
@@ -252,20 +498,20 @@
             "url": {
               "raw": "{{baseUrl}}/api/problem-reports/{{platform}}",
               "host": ["{{baseUrl}}"],
-              "path": ["api", "problem-reports", "{{platform}}"]
+              "path": ["api","problem-reports","{{platform}}"]
             }
           }
         },
         {
           "name": "Download a report JSON",
-          "description": "Uses `lastFileName` set by the 'Android JVM crash' test script. Run that request first to populate it.",
+          "description": "Uses `lastFileName` set by the 'Android JVM crash' test script. Run that request first.",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/problem-reports/{{platform}}/{{lastFileName}}",
               "host": ["{{baseUrl}}"],
-              "path": ["api", "problem-reports", "{{platform}}", "{{lastFileName}}"]
+              "path": ["api","problem-reports","{{platform}}","{{lastFileName}}"]
             }
           }
         }
@@ -273,7 +519,7 @@
     },
     {
       "name": "Forced reports",
-      "description": "Mobile clients call `/api/v1/forced-reports/{id}` on every backend fetch with their stable identifier. The admin operator adds ids through `/ForcedReports`; this endpoint returns `forced=true` for those ids and the SDK then submits a forced RaP.",
+      "description": "Mobile clients call this on every backend fetch. The admin operator adds ids through /ForcedReports; this returns forced=true for those ids.",
       "item": [
         {
           "name": "Check by id (probably false)",
@@ -283,7 +529,7 @@
             "url": {
               "raw": "{{baseUrl}}/api/v1/forced-reports/{{forcedReportId}}",
               "host": ["{{baseUrl}}"],
-              "path": ["api", "v1", "forced-reports", "{{forcedReportId}}"]
+              "path": ["api","v1","forced-reports","{{forcedReportId}}"]
             }
           }
         }
@@ -291,10 +537,6 @@
     }
   ],
   "variable": [
-    {
-      "key": "lastFileName",
-      "value": "",
-      "type": "string"
-    }
+    { "key": "lastFileName", "value": "", "type": "string" }
   ]
 }

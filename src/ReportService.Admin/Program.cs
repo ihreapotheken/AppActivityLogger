@@ -9,8 +9,10 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Authorization;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.OpenApi.Models;
+using ReportService.Admin;
 using ReportService.Admin.Options;
 using ReportService.Admin.Services;
+using ReportService.Analytics;
 using ReportService.Audit;
 using ReportService.Endpoints;
 using ReportService.Hosting;
@@ -41,9 +43,14 @@ var proxyHeaders = builder.Configuration
     .GetSection(RSCProxyHeadersOptions.SectionName)
     .Get<RSCProxyHeadersOptions>() ?? new RSCProxyHeadersOptions();
 
+var analyticsOptions = builder.Configuration
+    .GetSection(RSCAnalyticsOptions.SectionName)
+    .Get<RSCAnalyticsOptions>() ?? new RSCAnalyticsOptions();
+
 builder.Services.AddSingleton(reportOptions);
 builder.Services.AddSingleton(adminOptions);
 builder.Services.AddSingleton(proxyHeaders);
+builder.Services.AddSingleton(analyticsOptions);
 
 // Share the same storage wiring as the ingestion service so both services read the same files and
 // (optionally) the same SQLite index.
@@ -79,13 +86,43 @@ builder.Services.AddHostedService<RSCRetentionBackgroundService>();
 builder.Services.AddSingleton<RSReportIngestionService>();
 builder.Services.AddSingleton<RSAcceptHeaderFilter>();
 
+// v2 analytics pipeline. The merged process hosts both ingestion + admin views over the same
+// analytics SQLite store, so wiring is identical to the standalone ingestion's.
+builder.Services.AddSingleton<RSCAnalyticsIdentifierHasher>();
+builder.Services.AddSingleton<RSCAnalyticsValidator>();
+builder.Services.AddSingleton<RSCIAnalyticsStore, RSCSqliteAnalyticsStore>();
+builder.Services.AddSingleton<RSAnalyticsIngestionService>();
+if (analyticsOptions.Enabled)
+{
+    builder.Services.AddHostedService<RSCAnalyticsAggregationWorker>();
+    builder.Services.AddHostedService<RSCAnalyticsRetentionWorker>();
+    builder.Services.AddHostedService<RSCAnalyticsCohortWorker>();
+    builder.Services.AddHostedService<RSCAnalyticsFunnelWorker>();
+}
+
 // Admin presentation services. The index accessor is registered unconditionally — when
 // Storage != "SqliteIndex" it returns null/false and pages handle the absence uniformly. The
 // previous pattern (services.GetService(typeof(...)) inside each page constructor) is gone.
 builder.Services.AddSingleton<IRSAReportIndexAccessor>(sp =>
     new RSAReportIndexAccessor(sp.GetService<RSCResilientReportIndex>()));
 builder.Services.AddSingleton<IRSADashboardService, RSADashboardService>();
-builder.Services.AddSingleton<IRSAAnalyticsDashboardService, RSAReportStoreAnalyticsDashboardService>();
+// One-shot importer that converts kind = "analytics" problem reports into v2 events. Registered
+// unconditionally so the Maintenance page can offer the action even when analytics is disabled —
+// the handler itself checks the runtime state.
+builder.Services.AddSingleton<RSAAnalyticsLegacyImporter>();
+
+// Pick the analytics dashboard backend based on whether the v2 pipeline is enabled. With the
+// pipeline on, the dashboard reads rollup tables (cheap, scales with activity). Without it, the
+// legacy report-store implementation continues to scan stored JSON for the kind = "analytics"
+// rows. Both render the same RSAAnalyticsDashboardVM, so the page itself is unchanged.
+if (analyticsOptions.Enabled)
+{
+    builder.Services.AddSingleton<IRSAAnalyticsDashboardService, RSAAnalyticsStoreDashboardService>();
+}
+else
+{
+    builder.Services.AddSingleton<IRSAAnalyticsDashboardService, RSAReportStoreAnalyticsDashboardService>();
+}
 builder.Services.AddSingleton<IRSAErrorDashboardService, RSAReportStoreErrorDashboardService>();
 builder.Services.AddSingleton<IRSAReportListingService, RSAReportListingService>();
 builder.Services.AddSingleton<IRSAStatsService, RSAStatsService>();
@@ -394,10 +431,21 @@ app.MapGet("/api/health/ready", (RSCServiceTelemetry telemetry, RSCReportService
 
 // SDK-facing ingestion routes. Mounted last so URL collisions with Razor pages would surface
 // before this point — there are none today (Razor pages live at `/`, `/Reports`, etc.; ingestion
-// uses `/partners/api/v2/...` and `/api/v1/...`).
+// uses `/partners/api/v2/...`, `/api/v1/...`, and `/api/v2/analytics/...`).
 app.MapProblemReportEndpoints();
+app.MapAnalyticsEndpoints();
+
+// Admin-only NDJSON exports. The global authorization fallback policy gates these the same as
+// the Razor pages — anonymous callers are bounced to /Login.
+app.MapAdminAnalyticsExport();
 
 app.MapRazorPages();
+
+if (app.Environment.IsDevelopment())
+{
+    await ReportService.Admin.Services.RSAAnalyticsDevDataSeeder.SeedAsync(
+        app.Services, startupLogger, CancellationToken.None);
+}
 
 app.Run();
 

@@ -1,0 +1,81 @@
+@page
+@model RSAAnalyticsRetentionModel
+@using ReportService.Admin.ViewModels
+@{
+    ViewData["Title"] = "Analytics retention";
+    string Pct(double v) => (v * 100).ToString("F1") + "%";
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Analytics retention", $"D1 / D7 / D30 retention by install cohort. Cohorts younger than the window can't have observed it yet and are excluded. Window: last {Model.WindowDays} days."))
+
+<p>
+    <strong>D1</strong> retention asks: of all users whose first event fell on a given install day, what fraction returned with at least one event the next day?
+    <strong>D7</strong> and <strong>D30</strong> apply the same logic at 7 and 30 days after install.
+    The weighted summary at the top averages across all cohorts old enough to have observed each window — a cohort installed yesterday is excluded from D7 because it's impossible for it to have reached day 7 yet.
+    The <em>cohorts used</em> figure shows how many install-day buckets contributed to each mean.
+    A cohort of size N with 0 retained users is still displayed — it's valid data that those users churned.
+    The hash version column reflects which pepper key was active when the cohort was last computed;
+    after a pepper rotation the anonymous ID hashes change, making pre- and post-rotation cohorts incomparable without a full rebuild.
+</p>
+
+<form method="get" class="filters" aria-label="Retention filters">
+    <label>Platform
+        <select name="platform">
+            <option value="">all</option>
+            @foreach (var p in Model.AvailablePlatforms)
+            {
+                <option value="@p" selected="@(string.Equals(Model.Platform, p, StringComparison.OrdinalIgnoreCase))">@p</option>
+            }
+        </select>
+    </label>
+    <button type="submit" class="primary">Apply</button>
+</form>
+
+<section class="card">
+    <h2>Weighted summary</h2>
+    <ul class="kv">
+        <li><span>D1</span>@Pct(Model.Summary.Day1) <span class="muted">(over @Model.Summary.CohortsUsedDay1.ToString("N0") cohorts)</span></li>
+        <li><span>D7</span>@Pct(Model.Summary.Day7) <span class="muted">(over @Model.Summary.CohortsUsedDay7.ToString("N0") cohorts)</span></li>
+        <li><span>D30</span>@Pct(Model.Summary.Day30) <span class="muted">(over @Model.Summary.CohortsUsedDay30.ToString("N0") cohorts)</span></li>
+    </ul>
+</section>
+
+<section class="card">
+    <h2>Cohorts</h2>
+    @if (Model.Cohorts.Count == 0)
+    {
+        <p class="muted">No cohorts in the window. The cohort worker writes one row per (platform, install_day) on every tick.</p>
+    }
+    else
+    {
+        <table>
+            <thead>
+                <tr>
+                    <th scope="col">Install day</th>
+                    <th scope="col">Platform</th>
+                    <th scope="col">Cohort</th>
+                    <th scope="col">D1</th>
+                    <th scope="col">D7</th>
+                    <th scope="col">D30</th>
+                    <th scope="col">Hash v.</th>
+                    <th scope="col">Computed</th>
+                </tr>
+            </thead>
+            <tbody>
+            @foreach (var c in Model.Cohorts)
+            {
+                string Rate(long r) => c.CohortSize <= 0 ? "—" : ((double)r / c.CohortSize * 100).ToString("F1") + "%";
+                <tr>
+                    <td class="mono">@c.InstallDay.ToString("yyyy-MM-dd")</td>
+                    <td class="mono">@c.Platform</td>
+                    <td>@c.CohortSize.ToString("N0")</td>
+                    <td>@Rate(c.Day1Retained) <span class="muted">(@c.Day1Retained.ToString("N0"))</span></td>
+                    <td>@Rate(c.Day7Retained) <span class="muted">(@c.Day7Retained.ToString("N0"))</span></td>
+                    <td>@Rate(c.Day30Retained) <span class="muted">(@c.Day30Retained.ToString("N0"))</span></td>
+                    <td class="mono">@c.HashVersion</td>
+                    <td class="mono">@c.ComputedAt.AsLocalTime()</td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    }
+</section>

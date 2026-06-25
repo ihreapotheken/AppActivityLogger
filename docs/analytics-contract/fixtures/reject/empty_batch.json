@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "batchId": "00000000-0000-4000-8000-000000000102",
+  "platform": "android",
+  "sdkVersion": "1.0.0",
+  "hostAppVersion": "5.6.7",
+  "anonymousId": "anon-stable-per-install",
+  "clientId": null,
+  "generatedAt": "2026-05-14T10:00:00.0000000+00:00",
+  "events": []
+}

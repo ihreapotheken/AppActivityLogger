@@ -1,0 +1,147 @@
+@page
+@model RSAAnalyticsHealthModel
+@using ReportService.Admin.ViewModels
+@{
+    ViewData["Title"] = "Analytics health";
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Analytics health", "Dead-letter counts, schema version, recent rejections — for SDK developers and operators."))
+
+<p>
+    The dead-letter queue captures every event or batch the pipeline rejected, together with a machine-readable reason code.
+    Common reasons to watch for:
+    <code>type_unknown</code> — the SDK sent an event type not in the server's canonical set (usually a new event kind shipped before the server was updated);
+    <code>pii_key_forbidden</code> — a property key matched the PII deny-list (fix in the SDK, not the server);
+    <code>clock_skew</code> — the device clock was off by more than 24 hours (common on emulators or after timezone changes);
+    <code>schema_version_unsupported</code> — the SDK is speaking a schema version outside the server's accepted range, rejecting the whole batch.
+    A non-zero dead-letter total is normal during SDK development; it should trend to zero as the SDK stabilises.
+    The SDK versions table helps track rollout progress — old versions with high rejection rates are the first place to investigate a spike.
+</p>
+
+<section class="card">
+    <h2>Pipeline</h2>
+    <ul class="kv">
+        <li><span>Enabled</span>
+            @if (Model.VM.AnalyticsEnabled) { <span class="badge badge-ok">on</span> } else { <span class="badge badge-bad">off</span> }
+        </li>
+        <li><span>Schema version</span>@Model.VM.SchemaVersion</li>
+        <li><span>Last aggregated</span>
+            @if (Model.VM.LastAggregatedAt is { } a) { <span class="mono">@a.AsLocalTime()</span> } else { <span class="muted">never</span> }
+        </li>
+        <li><span>Dead-letter total</span>@Model.VM.Snapshot.DeadLetterTotal.ToString("N0")</li>
+    </ul>
+</section>
+
+<section class="card">
+    <h2>Per-platform</h2>
+    <table>
+        <thead>
+            <tr>
+                <th scope="col">Platform</th>
+                <th scope="col">Batches</th>
+                <th scope="col">Accepted</th>
+                <th scope="col">Rejected</th>
+                <th scope="col">Last received</th>
+            </tr>
+        </thead>
+        <tbody>
+        @foreach (var p in Model.VM.PlatformSummaries)
+        {
+            <tr>
+                <td class="mono">@p.Platform</td>
+                <td>@p.Batches.ToString("N0")</td>
+                <td>@p.AcceptedEvents.ToString("N0")</td>
+                <td>@p.RejectedEvents.ToString("N0")</td>
+                <td class="mono">@(p.LastReceivedAt is { } lr ? lr.AsLocalTime() : "—")</td>
+            </tr>
+        }
+        @if (Model.VM.PlatformSummaries.Count == 0)
+        {
+            <tr><td colspan="5" class="muted">no batches received yet</td></tr>
+        }
+        </tbody>
+    </table>
+</section>
+
+<section class="card">
+    <h2>Dead letters by reason</h2>
+    <table>
+        <thead>
+            <tr>
+                <th scope="col">Reason</th>
+                <th scope="col">Count</th>
+            </tr>
+        </thead>
+        <tbody>
+        @foreach (var kv in Model.VM.Snapshot.DeadLettersByReason.OrderByDescending(k => k.Value))
+        {
+            <tr>
+                <td class="mono">@kv.Key</td>
+                <td>@kv.Value.ToString("N0")</td>
+            </tr>
+        }
+        @if (Model.VM.Snapshot.DeadLettersByReason.Count == 0)
+        {
+            <tr><td colspan="2" class="muted">no rejections in retention window</td></tr>
+        }
+        </tbody>
+    </table>
+</section>
+
+<section class="card">
+    <h2>SDK versions seen</h2>
+    <table>
+        <thead>
+            <tr>
+                <th scope="col">SDK version</th>
+                <th scope="col">Batches</th>
+            </tr>
+        </thead>
+        <tbody>
+        @foreach (var kv in Model.VM.Snapshot.SdkVersionsSeen)
+        {
+            <tr>
+                <td class="mono">@kv.Key</td>
+                <td>@kv.Value.ToString("N0")</td>
+            </tr>
+        }
+        @if (Model.VM.Snapshot.SdkVersionsSeen.Count == 0)
+        {
+            <tr><td colspan="2" class="muted">no batches received yet</td></tr>
+        }
+        </tbody>
+    </table>
+</section>
+
+<section class="card">
+    <h2>Recent dead-letter samples</h2>
+    @if (Model.VM.Snapshot.RecentSamples.Count == 0)
+    {
+        <p class="muted">no recent rejections to show</p>
+    }
+    else
+    {
+        <table>
+            <thead>
+                <tr>
+                    <th scope="col">Received</th>
+                    <th scope="col">Platform</th>
+                    <th scope="col">Reason</th>
+                    <th scope="col">Detail</th>
+                    <th scope="col">Event ID</th>
+                </tr>
+            </thead>
+            <tbody>
+            @foreach (var s in Model.VM.Snapshot.RecentSamples)
+            {
+                <tr>
+                    <td class="mono">@s.ReceivedAt.AsLocalTime()</td>
+                    <td class="mono">@s.Platform</td>
+                    <td class="mono">@s.Reason</td>
+                    <td>@s.Detail</td>
+                    <td class="mono">@(s.EventId ?? "(batch)")</td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    }
+</section>

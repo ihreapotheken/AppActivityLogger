@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "batchId": "00000000-0000-4000-8000-000000000007",
+  "platform": "ios",
+  "sdkVersion": "1.0.0",
+  "hostAppVersion": "5.6.7",
+  "anonymousId": "anon-stable-per-install",
+  "clientId": null,
+  "generatedAt": "2026-05-14T10:00:00.0000000+00:00",
+  "events": [
+    {
+      "eventId": "00000000-0000-4000-8000-000000070001",
+      "sessionId": "session-err-1",
+      "sequence": 4,
+      "occurredAt": "2026-05-14T10:00:00.0000000+00:00",
+      "type": "error",
+      "name": "network_error_shown",
+      "screen": "prescription_scan",
+      "feature": "prescriptions",
+      "durationMs": null,
+      "properties": {
+        "error_class": "NetworkUnreachable",
+        "retry_offered": "true",
+        "status_code": "0"
+      },
+      "items": null
+    }
+  ]
+}

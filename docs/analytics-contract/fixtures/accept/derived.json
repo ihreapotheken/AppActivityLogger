@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "batchId": "00000000-0000-4000-8000-000000000006",
+  "platform": "android",
+  "sdkVersion": "1.0.0",
+  "hostAppVersion": "5.6.7",
+  "anonymousId": "anon-stable-per-install",
+  "clientId": null,
+  "generatedAt": "2026-05-14T10:00:00.0000000+00:00",
+  "events": [
+    {
+      "eventId": "00000000-0000-4000-8000-000000060001",
+      "sessionId": "session-derived-1",
+      "sequence": 9,
+      "occurredAt": "2026-05-14T10:00:00.0000000+00:00",
+      "type": "derived",
+      "name": "funnel_step_reached",
+      "screen": "cart_view",
+      "feature": "otc",
+      "durationMs": null,
+      "properties": {
+        "funnel_key": "otc_purchase",
+        "step_index": "2",
+        "step_name": "add_to_cart"
+      },
+      "items": null
+    }
+  ]
+}

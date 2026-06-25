@@ -19,6 +19,10 @@ public class IngestionAppFactory : WebApplicationFactory<Program>
     /// <summary>Transforms the default <c>RSCReportServiceOptions</c>; typically <c>baseline with { ... }</c>.</summary>
     public Func<RSCReportServiceOptions, RSCReportServiceOptions>? Configure { get; set; }
 
+    /// <summary>Optional override for <c>RSCAnalyticsOptions</c>. The analytics DB lands under the
+    /// per-test <see cref="ReportsRoot"/> so concurrent tests don't share state.</summary>
+    public Func<RSCAnalyticsOptions, RSCAnalyticsOptions>? ConfigureAnalytics { get; set; }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment(Environments.Development);
@@ -43,6 +47,17 @@ public class IngestionAppFactory : WebApplicationFactory<Program>
 
             services.RemoveAll<RSCReportServiceOptions>();
             services.AddSingleton(opts);
+
+            var analytics = new RSCAnalyticsOptions
+            {
+                // Each test gets its own DB file under the per-test temp root.
+                SqliteDbPath = $"analytics-{Guid.NewGuid():N}.db",
+                IdentifierHashPepper = "test-pepper",
+            };
+            if (ConfigureAnalytics is not null) analytics = ConfigureAnalytics(analytics);
+
+            services.RemoveAll<RSCAnalyticsOptions>();
+            services.AddSingleton(analytics);
         });
     }
 

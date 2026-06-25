@@ -13,6 +13,13 @@
 }
 @await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Analytics", subtitle))
 
+<p>
+    DAU counts distinct anonymous IDs with at least one event in the last 24 hours; MAU uses a 30-day rolling window.
+    Session length is the gap between <code>session_start</code> and <code>session_end</code> lifecycle events.
+    Retention figures are cohort-weighted means — see <a asp-page="/AnalyticsRetention">Retention</a> for the per-install-day breakdown.
+    All tiles are driven by the v2 analytics pipeline; the submissions table at the bottom is the legacy <code>kind = "analytics"</code> raw-report store.
+</p>
+
 <nav class="scope-tabs" aria-label="Platform scope">
     <a asp-page="/Analytics" class="@(scope is null ? "active" : null)">All platforms</a>
     <a asp-page="/Analytics" asp-route-platform="ios" class="@(scope == "ios" ? "active" : null)">iOS</a>

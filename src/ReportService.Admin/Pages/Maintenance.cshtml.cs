@@ -7,6 +7,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using ReportService.Admin.Services;
 using ReportService.Admin.ViewModels;
+using ReportService.Analytics;
 using ReportService.Audit;
 using ReportService.Options;
 using ReportService.Storage;
@@ -27,6 +28,9 @@ public sealed class RSAMaintenanceModel : PageModel
     private readonly IRSAReportIndexAccessor _indexAccessor;
     private readonly RSCIAuditLog _audit;
     private readonly RSCRetentionService _retention;
+    private readonly RSAAnalyticsLegacyImporter _analyticsImporter;
+    private readonly RSCIAnalyticsStore _analyticsStore;
+    private readonly RSCAnalyticsOptions _analyticsOptions;
     private readonly ILogger<RSAMaintenanceModel> _logger;
 
     public RSAMaintenanceModel(
@@ -35,6 +39,9 @@ public sealed class RSAMaintenanceModel : PageModel
         IRSAReportIndexAccessor indexAccessor,
         RSCIAuditLog audit,
         RSCRetentionService retention,
+        RSAAnalyticsLegacyImporter analyticsImporter,
+        RSCIAnalyticsStore analyticsStore,
+        RSCAnalyticsOptions analyticsOptions,
         ILogger<RSAMaintenanceModel> logger)
     {
         _store = store;
@@ -42,8 +49,13 @@ public sealed class RSAMaintenanceModel : PageModel
         _indexAccessor = indexAccessor;
         _audit = audit;
         _retention = retention;
+        _analyticsImporter = analyticsImporter;
+        _analyticsStore = analyticsStore;
+        _analyticsOptions = analyticsOptions;
         _logger = logger;
     }
+
+    public int AnalyticsHashVersion => _analyticsOptions.IdentifierHashVersion;
 
     public bool IndexAvailable => _indexAccessor.Maintenance is not null;
     public string BackupRoot => RSCStatePaths.Resolve(_options.BackupRoot, _options.ReportsRoot);
@@ -409,6 +421,60 @@ public sealed class RSAMaintenanceModel : PageModel
         {
             try { if (System.IO.File.Exists(p)) System.IO.File.Delete(p); } catch { /* best-effort */ }
         }
+    }
+
+    public async Task<IActionResult> OnPostRotatePepperAsync([FromForm] string? confirm, CancellationToken ct)
+    {
+        // The pepper rotation here is *retrospective cleanup*. The actual pepper value lives in
+        // Analytics:IdentifierHashPepper and is read at startup; the operator must update config and
+        // restart the service before triggering this action. What we do here is purge orphaned
+        // user-day rows: rollups under the old hash version can no longer be merged with the new
+        // hashes (raw IDs were never stored), so they're discarded.
+        //
+        // Guarded by a confirm token so the destructive purge cannot fire accidentally.
+        if (!string.Equals(confirm, "ROTATE", StringComparison.Ordinal))
+        {
+            await _audit.RecordAsync(HttpContext, "analytics.rotate-pepper", success: false,
+                details: "missing or wrong confirm token");
+            TempData["Flash"] = "Pepper rotation refused: type ROTATE in the confirmation field to proceed.";
+            return RedirectToPage();
+        }
+
+        try
+        {
+            var purged = await _analyticsStore.PurgeUserDaysBelowHashVersionAsync(
+                _analyticsOptions.IdentifierHashVersion, ct).ConfigureAwait(false);
+            await _audit.RecordAsync(HttpContext, "analytics.rotate-pepper", success: true,
+                details: $"purged_user_days={purged} new_hash_version={_analyticsOptions.IdentifierHashVersion}");
+            TempData["Flash"] =
+                $"Pepper rotation complete: purged {purged} stale user-day rows. Cohorts will start fresh under hash_version={_analyticsOptions.IdentifierHashVersion}.";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Pepper rotation purge failed");
+            await _audit.RecordAsync(HttpContext, "analytics.rotate-pepper", success: false, details: ex.Message);
+            TempData["Flash"] = "Pepper rotation failed — see logs.";
+        }
+        return RedirectToPage();
+    }
+
+    public async Task<IActionResult> OnPostImportAnalyticsAsync(CancellationToken ct)
+    {
+        try
+        {
+            var report = await _analyticsImporter.ImportAsync(ct).ConfigureAwait(false);
+            await _audit.RecordAsync(HttpContext, "analytics.legacy-import", success: true,
+                details: $"scanned={report.Scanned} converted={report.Converted} skipped={report.Skipped} failed={report.Failed}");
+            TempData["Flash"] =
+                $"Legacy analytics import: scanned {report.Scanned}, converted {report.Converted}, skipped {report.Skipped} non-analytics, {report.Failed} failed.";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Legacy analytics import failed");
+            await _audit.RecordAsync(HttpContext, "analytics.legacy-import", success: false, details: ex.Message);
+            TempData["Flash"] = "Legacy analytics import failed — see logs.";
+        }
+        return RedirectToPage();
     }
 
     private RSCIReportIndexMaintenance? RequireMaintenance() => _indexAccessor.Maintenance;

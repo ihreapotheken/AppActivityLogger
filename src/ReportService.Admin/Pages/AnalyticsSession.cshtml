@@ -1,0 +1,49 @@
+@page
+@model RSAAnalyticsSessionModel
+@using ReportService.Admin.ViewModels
+@{
+    ViewData["Title"] = $"Session {Model.Id}";
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Session timeline", $"Events recorded for session {Model.Id} on {Model.Platform}."))
+
+<p class="muted">
+    <a asp-page="/AnalyticsSessions">← back to sessions</a>
+    · <a asp-page="/AnalyticsEvents" asp-route-session="@Model.Id">filter events for this session →</a>
+</p>
+
+@if (Model.Timeline.Count == 0)
+{
+    <p class="muted">No events found for this session. It may have been purged by retention.</p>
+}
+else
+{
+    <table>
+        <thead>
+            <tr>
+                <th scope="col">#</th>
+                <th scope="col">Occurred</th>
+                <th scope="col">Type</th>
+                <th scope="col">Name</th>
+                <th scope="col">Screen</th>
+                <th scope="col">Feature</th>
+                <th scope="col">Duration</th>
+            </tr>
+        </thead>
+        <tbody>
+        @{ var i = 0; }
+        @foreach (var e in Model.Timeline)
+        {
+            i++;
+            <tr>
+                <td>@i</td>
+                <td class="mono">@e.OccurredAt.AsLocalTime()</td>
+                <td class="mono">@e.Type</td>
+                <td class="mono">@e.Name</td>
+                <td class="mono">@(e.Screen ?? "—")</td>
+                <td class="mono">@(e.Feature ?? "—")</td>
+                <td>@(e.DurationMs is { } ms ? ms.ToString("N0") + " ms" : "—")</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
