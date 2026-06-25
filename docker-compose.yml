@@ -58,5 +58,32 @@ services:
           # stream + bucket on disk.
           memory: 1G
 
+  # Opt-in public ingress via Cloudflare Tunnel. Off unless the operator runs the stack with
+  # `--profile tunnel`, so the default `up` keeps the loopback-only posture.
+  #
+  # The sibling container reaches report-service over the compose network at
+  # http://report-service:8080 — no host port hop, no NAT, and no dependency on whatever loopback
+  # the host happens to bind. The host-port mapping above stays unaffected.
+  #
+  # Default command opens a fresh quick tunnel each start, yielding an ephemeral
+  # *.trycloudflare.com hostname. Override CLOUDFLARED_COMMAND in the env file to a named-tunnel
+  # invocation (`tunnel --no-autoupdate run --token <token>`) to bind the service to a stable
+  # hostname on your own Cloudflare-managed domain.
+  cloudflared:
+    profiles: ["tunnel"]
+    image: cloudflare/cloudflared:2026.6.1
+    command: ${CLOUDFLARED_COMMAND:-tunnel --no-autoupdate --url http://report-service:8080}
+    restart: unless-stopped
+    depends_on:
+      report-service:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
 volumes:
   reports:

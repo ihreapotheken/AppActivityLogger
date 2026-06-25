@@ -101,6 +101,23 @@ Two named Docker stacks share the compose file but get isolated host ports, isol
 
 Each stack reports its environment label on `/api/health` and in a coloured badge at the top-left of the admin UI, so it's obvious which one a request is hitting.
 
+### Public access via Cloudflare Tunnel (optional)
+
+For demos, mobile-SDK testing from off-network devices, or any other case where the loopback bind isn't enough, the compose file ships a `cloudflared` sibling service behind a `tunnel` profile. It only starts when explicitly requested, so the default `up` keeps the host-loopback posture intact.
+
+```bash
+./scripts/stack.sh production up      # ingestion API on 127.0.0.1:8080 (unchanged)
+./scripts/tunnel.sh up                # adds cloudflared and prints the public URL
+./scripts/tunnel.sh down              # removes the tunnel, leaves report-service running
+```
+
+The sibling container reaches `report-service` over the compose network at `http://report-service:8080`, so no host-port hop is involved. Two modes:
+
+- **Quick tunnel (default)** — ephemeral `*.trycloudflare.com` URL, no Cloudflare account required, hostname changes on every restart. Useful for short-lived demos.
+- **Named tunnel** — stable hostname on your own Cloudflare-managed domain. Set `CLOUDFLARED_COMMAND=tunnel --no-autoupdate run --token <token>` in `.env` (see [.env.example](.env.example) for the `cloudflared tunnel login` / `create` / `token` sequence), then `./scripts/tunnel.sh up`. Survives restarts and host reboots.
+
+`scripts/tunnel.sh logs` follows the cloudflared container output; in quick-tunnel mode `scripts/tunnel.sh url` reprints the last URL parsed from those logs.
+
 ## 3. Configuration
 
 All settings live in the `ReportService` section of [appsettings.json](src/ReportService/appsettings.json) and bind to [RSCReportServiceOptions](src/ReportService.Core/Options/RSCReportServiceOptions.cs) at startup.
