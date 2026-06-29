@@ -10,21 +10,56 @@
     --surface: #ffffff;
     --surface-alt: #fafbfc;
     --border: #d7dae0;
-    --accent: #2851a3;
-    --accent-bg: #eef;
+    /* Brand accent — the Ihre Apotheken logo red. Drives links, primary buttons, active nav,
+       focus rings, chart fills, etc. (everything reads from this token, so the theme is one edit). */
+    --accent: #d43034;
+    --accent-bg: #fdecec;
     --danger: #a52b2b;
     --danger-bg: #fdecec;
     --success: #1b5e20;
     --success-bg: #e6f5ea;
     --success-border: #2e7d32;
 
-    /* Channel badges */
-    --badge-multipart-bg: #eef4ff;
-    --badge-multipart-fg: #1f3d7a;
-    --badge-multipart-border: #b6c5e6;
-    --badge-json-bg: #fff5e1;
-    --badge-json-fg: #6a4a00;
-    --badge-json-border: #e3c46a;
+    /* Soft-danger family — the desaturated red shared by the "danger" chip/tile and the wipe-all
+       zone, distinct from the saturated --danger button red. */
+    --danger-soft-fg: #7a1f1f;
+    --danger-soft-border: #e5b8b8;
+    --danger-soft-bg: #fff7f7;
+    /* Soft-warning (amber) family — the log "warnings" tile. */
+    --warn-soft-fg: #7a4f1f;
+    --warn-soft-bg: #fbf2dc;
+    --warn-soft-border: #e5d2b1;
+    /* Text on a saturated accent/danger fill (primary buttons, active tabs, focused skip-link). */
+    --on-accent: #ffffff;
+
+    /* Dark code surface shared by the JSON dump, logcat viewer, and rendered-doc code blocks. */
+    --code-bg: #0f1115;
+    --code-fg: #d8dde5;
+    --code-muted: #6f7787;
+
+    /* Categorical chart palette — assigned by index to donut slices / bar series. A monochromatic
+       ramp of the brand red (--accent): no second hue, so the charts read as the Ihre Apotheken
+       brand colour rather than a rainbow (or a red+yellow fast-food pairing). The order alternates
+       dark/light so adjacent slices stay distinguishable; two-category charts use 1 & 2 (brand red
+       vs a light rose tint). */
+    --chart-1: #d43034;
+    --chart-2: #f0a8a4;
+    --chart-3: #8c2230;
+    --chart-4: #e8807b;
+    --chart-5: #b04848;
+    --chart-6: #5e2a30;
+    /* Trend line + its soft area fill (uses the brand accent). */
+    --chart-line: var(--accent);
+
+    /* Channel badges/chips (multipart = SDK, json = API). Neutral two-tone: a cool slate-grey vs a
+       warm taupe-grey — quiet metadata that stays legible and two-way distinct without competing
+       with the brand red (the only "loud" colour in the table). */
+    --badge-multipart-bg: #eef1f4;
+    --badge-multipart-fg: #3f4a57;
+    --badge-multipart-border: #cbd3dc;
+    --badge-json-bg: #f4f1ec;
+    --badge-json-fg: #5c5043;
+    --badge-json-border: #ddd5c9;
 
     /* Spacing scale */
     --space-1: 0.25rem;
@@ -44,4 +79,8 @@
     --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     --content-max: 1100px;
     --side-width: 220px;
+
+    /* Inline-SVG dropdown caret, defined once so every <select> shares one affordance (base
+       selects + the filter/form-row bars all reference this instead of re-embedding the SVG). */
+    --select-caret: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath fill='%235c616b' d='M1 1l5 5 5-5'/%3E%3C/svg%3E");
 }

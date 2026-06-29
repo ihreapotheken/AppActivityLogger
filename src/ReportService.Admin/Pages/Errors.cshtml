@@ -14,40 +14,37 @@
             _ => "Crashes and errors from ingested crash reports (iOS + Android).",
         };
     var heading = drilledIn ? "Signature detail" : "Error reporting";
+
+    // Error-rate trend points (only shown on the non-drilled dashboard). The service already buckets
+    // by day/week/month for the selected range and pre-formats each label, so just map them across.
+    var errorRatePoints = Model.Dashboard.ErrorRate
+        .Select(p => new RSALinePoint(p.Label, p.Count))
+        .ToList();
+    // Thin the x-axis labels so a 30-day / weekly / monthly series stays legible (~12 labels max).
+    var labelStep = Math.Max(1, (int)Math.Ceiling(errorRatePoints.Count / 12.0));
+
+    var rowDeleteUrl = $"/Errors{Model.Filter.ToQueryString(1)}&handler=DeleteOne";
 }
 @await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM(heading, subtitle))
 
 @if (!drilledIn)
 {
-<nav class="scope-tabs" aria-label="Platform scope">
-    <a asp-page="/Errors" class="@(scope is null ? "active" : null)">All platforms</a>
-    <a asp-page="/Errors" asp-route-platform="ios" class="@(scope == "ios" ? "active" : null)">iOS</a>
-    <a asp-page="/Errors" asp-route-platform="android" class="@(scope == "android" ? "active" : null)">Android</a>
-</nav>
+@await Html.PartialAsync("_ScopeTabs", new RSAScopeTabsVM("/Errors", scope))
 
 <section class="tiles" aria-label="Error summary">
-    <div class="tile">
-        <div class="tile-label">Crashes (24h)</div>
-        <div class="tile-value">@Model.Dashboard.CrashesLast24h.ToString("N0")</div>
-    </div>
-    <div class="tile">
-        <div class="tile-label">Errors (24h)</div>
-        <div class="tile-value">@Model.Dashboard.ErrorsLast24h.ToString("N0")</div>
-    </div>
-    <div class="tile">
-        <div class="tile-label">Affected users</div>
-        <div class="tile-value">@Model.Dashboard.AffectedUsers.ToString("N0")</div>
-    </div>
+    <tile label="Crashes (24h)">@Model.Dashboard.CrashesLast24h.ToString("N0")</tile>
+    <tile label="Errors (24h)">@Model.Dashboard.ErrorsLast24h.ToString("N0")</tile>
+    <tile label="Affected users">@Model.Dashboard.AffectedUsers.ToString("N0")</tile>
 </section>
 
 <h2>Platforms</h2>
 <table>
     <thead>
         <tr>
-            <th scope="col">Platform</th>
-            <th scope="col">Crashes (24h)</th>
-            <th scope="col">Errors (24h)</th>
-            <th scope="col">Affected users</th>
+            <th scope="col" tip="Platform the crash reports were ingested from (iOS or Android)." sort="text">Platform</th>
+            <th scope="col" tip="Crash-kind reports received on this platform in the last 24 hours." sort="num">Crashes (24h)</th>
+            <th scope="col" tip="Non-crash error reports received on this platform in the last 24 hours." sort="num">Errors (24h)</th>
+            <th scope="col" tip="Distinct users impacted by crashes or errors on this platform in the last 24 hours." sort="num">Affected users</th>
             <th scope="col"></th>
         </tr>
     </thead>
@@ -70,10 +67,10 @@
 <table>
     <thead>
         <tr>
-            <th scope="col">Signature</th>
-            <th scope="col">Occurrences</th>
-            <th scope="col">By channel</th>
-            <th scope="col">Affected users</th>
+            <th scope="col" tip="Topmost stack frame extracted at ingest; the fault site reports are bucketed by." sort="text">Signature</th>
+            <th scope="col" tip="Total crash reports bucketed under this signature." sort="num">Occurrences</th>
+            <th scope="col" tip="Split of occurrences by ingestion channel: m = multipart (SDK), j = JSON (API).">By channel</th>
+            <th scope="col" tip="Distinct users impacted by this signature." sort="num">Affected users</th>
         </tr>
     </thead>
     <tbody>
@@ -89,48 +86,61 @@
     </tbody>
 </table>
 
-<h2>Error rate · last 7 days</h2>
-<table>
-    <thead>
-        <tr>
-            @for (var i = Model.Dashboard.ErrorRateLast7Days.Count - 1; i >= 0; i--)
-            {
-                <th scope="col">@(i == 0 ? "today" : $"-{i}d")</th>
-            }
-        </tr>
-    </thead>
-    <tbody>
-        <tr>
-            @for (var i = Model.Dashboard.ErrorRateLast7Days.Count - 1; i >= 0; i--)
-            {
-                <td>@Model.Dashboard.ErrorRateLast7Days[i].ToString("N0")</td>
-            }
-        </tr>
-    </tbody>
-</table>
+<h2>Error rate · @Model.RangeLabel</h2>
+<form method="get" class="filters" asp-page="/Errors" aria-label="Error rate range" data-auto-submit>
+    @* Preserve the platform scope so changing the range keeps the iOS/Android tab. *@
+    @if (scope is not null)
+    {
+        <input type="hidden" name="platform" value="@scope" />
+    }
+    <label>
+        <span>Range <span class="hint" tabindex="0" role="tooltip" aria-label="Time span the error-rate chart covers. Pick a preset or choose Custom and set the dates below." data-tip="Time span the error-rate chart covers. Pick a preset or choose Custom and set the dates below.">?</span></span>
+        <select name="range">
+            <option value="7d"     selected="@(Model.SelectedRange == RSAErrorRateRange.Last7Days)">Last 7 days</option>
+            <option value="30d"    selected="@(Model.SelectedRange == RSAErrorRateRange.Last30Days)">Last 30 days</option>
+            <option value="3m"     selected="@(Model.SelectedRange == RSAErrorRateRange.Last3Months)">Last 3 months</option>
+            <option value="6m"     selected="@(Model.SelectedRange == RSAErrorRateRange.Last6Months)">Last 6 months</option>
+            <option value="1y"     selected="@(Model.SelectedRange == RSAErrorRateRange.LastYear)">Last year</option>
+            <option value="custom" selected="@(Model.SelectedRange == RSAErrorRateRange.Custom)">Custom…</option>
+        </select>
+    </label>
+    <label>
+        <span>From (UTC) <span class="hint" tabindex="0" role="tooltip" aria-label="Custom range start date. Only used when Range is Custom." data-tip="Custom range start date. Only used when Range is Custom.">?</span></span>
+        <input type="date" name="rateFrom" value="@(Model.RateFrom?.ToString("yyyy-MM-dd"))" />
+    </label>
+    <label>
+        <span>To (UTC) <span class="hint" tabindex="0" role="tooltip" aria-label="Custom range end date (inclusive). Only used when Range is Custom." data-tip="Custom range end date (inclusive). Only used when Range is Custom.">?</span></span>
+        <input type="date" name="rateTo" value="@(Model.RateTo?.ToString("yyyy-MM-dd"))" />
+    </label>
+    <button type="submit" class="primary">Apply</button>
+</form>
+@await Html.PartialAsync("_LineChart", new RSALineChartVM(
+    errorRatePoints, ValueNoun: "reports", LabelStep: labelStep,
+    AriaLabel: $"Crash and error reports per bucket over the {Model.RangeLabel}"))
+<p class="legend">Crash + error reports received over the @Model.RangeLabel (UTC) — hover a point for the exact count.</p>
 
 <details class="collapsible-section">
     <summary><h2>Recent errors <span class="muted small">(@Model.Dashboard.RecentErrors.Count)</span></h2></summary>
     @if (Model.Dashboard.RecentErrors.Count == 0)
     {
-        <p class="muted">No errors reported yet.</p>
+        <empty-state>No errors reported yet.</empty-state>
     }
     else
     {
         <table>
             <thead>
                 <tr>
-                    <th scope="col">When</th>
-                    <th scope="col">Platform</th>
-                    <th scope="col">Channel</th>
-                    <th scope="col">Signature</th>
+                    <th scope="col" tip="When the error occurred, shown in your local time." sort="date">When</th>
+                    <th scope="col" tip="Platform the error was reported from (iOS or Android)." sort="text">Platform</th>
+                    <th scope="col" tip="Ingestion channel: multipart (SDK) or json (API).">Channel</th>
+                    <th scope="col" tip="Topmost stack frame extracted at ingest; the fault site." sort="text">Signature</th>
                 </tr>
             </thead>
             <tbody>
                 @foreach (var r in Model.Dashboard.RecentErrors)
                 {
                     <tr>
-                        <td class="mono">@r.OccurredAt.AsLocalTime()</td>
+                        <td class="mono" data-sort-value="@r.OccurredAt.UtcDateTime.ToString("o")">@r.OccurredAt.AsLocalTime()</td>
                         <td class="mono"><a asp-page="/Errors" asp-route-platform="@r.Platform">@r.Platform</a></td>
                         <td class="mono">@(string.Equals(r.Channel, "json", StringComparison.OrdinalIgnoreCase)
                             ? Html.Raw("<span class=\"chip chip-channel-j\">json</span>")
@@ -161,21 +171,25 @@
     · source: <span class="mono">@(Model.Listing.UsedIndex ? "sqlite index" : "filesystem scan")</span>
 </p>
 
+@await Html.PartialAsync("_DeleteFilteredBar", new RSADeleteBarVM(
+    $"/Errors{Model.Filter.ToQueryString(1)}&handler=DeleteMatching", Model.Listing.TotalMatched, "crash report"))
+
 @if (Model.Listing.Items.Count == 0)
 {
-    <p class="muted">No crash reports match the current filter. Crash auto-uploads arrive with <code>kind = "crash"</code>.</p>
+    <empty-state>No crash reports match the current filter. Crash auto-uploads arrive with <code>kind = "crash"</code>.</empty-state>
 }
 else
 {
     <table>
         <thead>
             <tr>
-                <th scope="col">Submitted</th>
-                <th scope="col">Platform</th>
-                <th scope="col">Channel</th>
-                <th scope="col">File</th>
-                <th scope="col">Top frame</th>
-                <th scope="col">Size</th>
+                <th scope="col" tip="When the crash report was submitted, shown in your local time.">Submitted</th>
+                <th scope="col" tip="Platform the crash report came from (iOS or Android).">Platform</th>
+                <th scope="col" tip="Ingestion channel: multipart (SDK) or json (API).">Channel</th>
+                <th scope="col" tip="Stored crash report file name; links to the full report.">File</th>
+                <th scope="col" tip="Topmost stack frame extracted at ingest, or — if none.">Top frame</th>
+                <th scope="col" tip="On-disk size of the stored crash report.">Size</th>
+                <th scope="col" aria-label="Delete"></th>
             </tr>
         </thead>
         <tbody>
@@ -188,20 +202,14 @@ else
                     <td class="mono"><a asp-page="/Report" asp-route-platform="@r.Platform" asp-route-fileName="@r.FileName">@r.FileName</a></td>
                     <td class="mono">@(r.TopFrame ?? "—")</td>
                     <td>@RSAByteFormatter.Format(r.SizeBytes)</td>
+                    <td>@await Html.PartialAsync("_RowDelete", new RSARowDeleteVM(rowDeleteUrl, r.Platform, r.FileName))</td>
                 </tr>
             }
         </tbody>
     </table>
 
-    <nav class="pager" aria-label="Pagination">
-        @if (Model.Listing.PageNumber > 1)
-        {
-            <a href="@Model.Filter.ToQueryString(Model.Listing.PageNumber - 1)">← previous</a>
-        }
-        <span class="muted">page @Model.Listing.PageNumber / @Model.Listing.TotalPages</span>
-        @if (Model.Listing.PageNumber < Model.Listing.TotalPages)
-        {
-            <a href="@Model.Filter.ToQueryString(Model.Listing.PageNumber + 1)">next →</a>
-        }
-    </nav>
+    @await Html.PartialAsync("_Pager", new RSAPagerVM(
+        Model.Listing.PageNumber > 1 ? Model.Filter.ToQueryString(Model.Listing.PageNumber - 1) : null,
+        Model.Listing.PageNumber < Model.Listing.TotalPages ? Model.Filter.ToQueryString(Model.Listing.PageNumber + 1) : null,
+        $"page {Model.Listing.PageNumber} / {Model.Listing.TotalPages}"))
 }

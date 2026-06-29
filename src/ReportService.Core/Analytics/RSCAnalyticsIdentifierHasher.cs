@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Extensions.Logging;
 using ReportService.Options;
 
 namespace ReportService.Analytics;
@@ -20,11 +21,19 @@ public sealed class RSCAnalyticsIdentifierHasher
 {
     private readonly byte[] _pepperBytes;
     private readonly int _version;
+    private readonly bool _pepperEmpty;
+    private readonly ILogger<RSCAnalyticsIdentifierHasher>? _logger;
+    private int _unkeyedWarningEmitted;
 
-    public RSCAnalyticsIdentifierHasher(RSCAnalyticsOptions options)
+    public RSCAnalyticsIdentifierHasher(
+        RSCAnalyticsOptions options,
+        ILogger<RSCAnalyticsIdentifierHasher>? logger = null)
     {
-        _pepperBytes = Encoding.UTF8.GetBytes(options.IdentifierHashPepper ?? string.Empty);
+        var pepper = options.IdentifierHashPepper ?? string.Empty;
+        _pepperBytes = Encoding.UTF8.GetBytes(pepper);
+        _pepperEmpty = pepper.Length == 0;
         _version = options.IdentifierHashVersion;
+        _logger = logger;
     }
 
     public int Version => _version;
@@ -34,6 +43,21 @@ public sealed class RSCAnalyticsIdentifierHasher
     public string? Hash(string? raw)
     {
         if (string.IsNullOrEmpty(raw)) return null;
+
+        // Runtime guard: an empty pepper degrades the keyed hash to a plain SHA-256 of the raw
+        // identifier, which is rainbow-table-reversible for predictable id spaces (account/order
+        // ids). The empty-pepper path is kept working for dev/tests, but we warn ONCE so an operator
+        // who never set Analytics:IdentifierHashPepper sees that stored identifier hashes are
+        // unkeyed. (A startup fail-fast is wired separately in the host's Program.cs.)
+        if (_pepperEmpty &&
+            _logger is not null &&
+            Interlocked.Exchange(ref _unkeyedWarningEmitted, 1) == 0)
+        {
+            _logger.LogWarning(
+                "Analytics identifier hashing is UNKEYED: IdentifierHashPepper is empty, so stored " +
+                "anonymousId/clientId hashes are plain SHA-256 and may be reversible for predictable " +
+                "identifier spaces. Set Analytics:IdentifierHashPepper to a strong secret.");
+        }
 
         Span<byte> hash = stackalloc byte[32];
         using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);

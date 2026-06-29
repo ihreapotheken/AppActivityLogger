@@ -1,0 +1,18 @@
+@*
+    "Delete all matching" control for a filtered listing. Renders only when there are matches.
+    Manual action URL (filter query + &handler=DeleteMatching) so the page's [FromQuery] filter
+    rebinds on POST; explicit antiforgery token (no asp-* attrs, so no duplicate token). The
+    data-confirm prompt states the exact count — the safety gate (shown via the shared
+    confirmation modal, confirm-dialog.js) before a bulk delete.
+*@
+@model RSADeleteBarVM
+@if (Model.MatchCount > 0)
+{
+    <form method="post" action="@Model.PostUrl" class="delete-bar"
+          data-confirm="Permanently delete @Model.MatchCount.ToString("N0") @Model.Noun matching the current filter, including any attachments? This cannot be undone."
+          data-confirm-label="Delete @Model.MatchCount.ToString("N0") matching">
+        @Html.AntiForgeryToken()
+        <button type="submit" class="danger">Delete @Model.MatchCount.ToString("N0") matching</button>
+        <span class="muted small">removes every @Model.Noun matching the filters above (newest first, up to 5,000 per pass)</span>
+    </form>
+}

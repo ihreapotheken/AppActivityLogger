@@ -7,6 +7,12 @@ namespace ReportService.Admin.Services;
 /// <summary>
 /// Seeds realistic analytics data based on what the Android and iOS SDKs actually emit.
 /// Idempotent — all IDs are deterministic, so re-runs produce zero duplicate rows.
+///
+/// Magnitudes and timings are jittered through a <see cref="StableRng"/> seeded from a stable hash
+/// of the session id (NOT <see cref="object.GetHashCode"/>, which is salted per-process). The jitter
+/// is therefore deterministic: the same (platform, label, idx, day) always yields the same values,
+/// event count and ids, so re-runs INSERT OR IGNORE over identical rows and the dataset stays
+/// idempotent — it just loses the tell-tale arithmetic regularity of a pure `seed % N` seeder.
 /// </summary>
 internal static class RSAAnalyticsDevDataSeeder
 {
@@ -125,6 +131,20 @@ internal static class RSAAnalyticsDevDataSeeder
         return DefaultSeedScale;
     }
 
+    // Deterministic, cross-run-stable RNG keyed off an opaque string (a session id). string.GetHashCode
+    // is salted per-process and would re-jitter the same session differently on every restart, breaking
+    // the idempotency contract; FNV-1a is stable, so the same key always seeds the same sequence.
+    private static Random StableRng(string seedKey)
+    {
+        uint hash = 2166136261;
+        foreach (var ch in seedKey)
+        {
+            hash ^= ch;
+            hash *= 16777619;
+        }
+        return new Random(unchecked((int)hash));
+    }
+
     // ── Entry point ────────────────────────────────────────────────────────
     public static async Task SeedAsync(IServiceProvider sp, ILogger logger, CancellationToken ct)
     {
@@ -156,21 +176,31 @@ internal static class RSAAnalyticsDevDataSeeder
                     if (daysBack < 0) continue;
 
                     var dayStart  = now.AddDays(-daysBack);
-                    var dayTag    = $"{daysBack:D3}";
+                    // Tag IDs with the ABSOLUTE day (not days-back) so the seed is anchored to real
+                    // dates. A same-day restart re-derives identical IDs (INSERT OR IGNORE = no
+                    // duplicates), but a restart on a later day produces fresh IDs for the new days,
+                    // topping the dataset up to "today". With a days-back tag the dates froze at the
+                    // first seed, so DAU/today metrics went to 0 as wall-clock time advanced.
+                    var dayTag    = dayStart.ToString("yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture);
                     var isCold    = offset == 0;
 
                     for (int sIdx = 0; sIdx < spec.SessionsPerDay; sIdx++)
                     {
-                        // Spread sessions across the day: morning / afternoon / evening
-                        double hour = sIdx switch { 0 => 7.5, 1 => 14.0, _ => 20.0 };
-                        var start = dayStart.AddHours(hour).AddMinutes(spec.Idx % 53);
-
                         var sessionId = $"s-{platform[..3]}-{spec.Label}-{spec.Idx:D3}-{dayTag}-{sIdx}";
                         var batchId   = $"b-{platform[..3]}-{spec.Label}-{spec.Idx:D3}-{dayTag}-{sIdx}";
                         var flowKey   = (spec.Idx * 17 + daysBack * 11 + sIdx * 7) % FlowCount;
 
-                        var sessionEvents = BuildSession(sessionId, start, platform, flowKey,
-                                                         isCold && sIdx == 0, spec.Idx);
+                        // One deterministic RNG per session drives every jittered value below.
+                        var rng = StableRng(sessionId);
+
+                        // Anchor sessions to morning / afternoon / evening, then jitter ±1.5h with a
+                        // random minute so they don't all land on the same clock tick every day.
+                        double baseHour = sIdx switch { 0 => 7.5, 1 => 14.0, _ => 20.0 };
+                        var start = dayStart.AddHours(baseHour + (rng.NextDouble() * 3.0 - 1.5))
+                                            .AddMinutes(rng.Next(0, 60));
+
+                        var ctx = BuildSession(sessionId, start, platform, flowKey,
+                                               isCold && sIdx == 0, spec.Idx, rng);
 
                         var batch = new RSCAnalyticsBatch(
                             SchemaVersion:  1,
@@ -181,16 +211,19 @@ internal static class RSAAnalyticsDevDataSeeder
                             AnonymousId:    anonId,
                             ClientId:       null,
                             GeneratedAt:    start.ToString("O"),
-                            Events:         sessionEvents);
+                            Events:         ctx.Events);
 
-                        var receivedAt = start.AddMinutes(12);
+                        // Receive the batch a couple of minutes after the session actually ends. Jittered
+                        // gaps mean sessions no longer have a fixed length, so anchor to the real end
+                        // rather than the old fixed start+12m (which could land mid-session now).
+                        var receivedAt = ctx.End.AddMinutes(1 + rng.Next(0, 4));
                         var verdict    = validator.Validate(batch, receivedAt);
                         var anonHash   = hasher.Hash(anonId);
 
                         await store.WriteBatchAsync(batch, anonHash, null, verdict, receivedAt, ct)
                                    .ConfigureAwait(false);
                         batches++;
-                        events += sessionEvents.Count;
+                        events += ctx.Events.Count;
                     }
                 }
             }
@@ -266,10 +299,10 @@ internal static class RSAAnalyticsDevDataSeeder
     // ── Session builder ────────────────────────────────────────────────────
     private const int FlowCount = 18;
 
-    private static List<RSCAnalyticsEvent> BuildSession(
-        string sessionId, DateTimeOffset start, string platform, int flowKey, bool coldStart, int seed)
+    private static Ctx BuildSession(
+        string sessionId, DateTimeOffset start, string platform, int flowKey, bool coldStart, int seed, Random rng)
     {
-        var ctx = new Ctx(sessionId, start);
+        var ctx = new Ctx(sessionId, start, rng);
 
         if (coldStart)
             ctx.E("lifecycle", "sdk_initialized", props: new()
@@ -284,9 +317,9 @@ internal static class RSAAnalyticsDevDataSeeder
             ["cold_start"]     = coldStart ? "true" : "false",
             ["host_app_state"] = "foreground",
         });
-        ctx.E("screen", "screen_view", screen: "home", durationMs: 1200 + seed % 900);
+        ctx.E("screen", "screen_view", screen: "home", durationMs: 1200);
         ctx.E("engagement", "scroll",  screen: "home",
-            props: new() { ["depth_pct"] = $"{25 + seed % 60}" });
+            props: new() { ["depth_pct"] = $"{ctx.RandInt(15, 95)}" });
 
         switch (flowKey)
         {
@@ -310,11 +343,11 @@ internal static class RSAAnalyticsDevDataSeeder
             default: FlowBrowseOnly(ctx, seed);                       break;
         }
 
-        ctx.E("screen", "screen_exit", screen: "home", durationMs: 600 + seed % 500);
+        ctx.E("screen", "screen_exit", screen: "home", durationMs: 600);
         ctx.E("lifecycle", "session_end", durationMs: ctx.ElapsedMs,
             props: new() { ["exit_reason"] = "background", ["duration_ms"] = ctx.ElapsedMs.ToString() });
 
-        return ctx.Events;
+        return ctx;
     }
 
     // ── Flows ──────────────────────────────────────────────────────────────
@@ -324,13 +357,14 @@ internal static class RSAAnalyticsDevDataSeeder
         var p1  = Products[s % Products.Length];
         var p2  = Products[(s + 3) % Products.Length];
         var q   = OtcQueries[s % OtcQueries.Length];
-        var qty = 1 + s % 3;
+        var qty = c.RandInt(1, 3);
+        var resultCount = c.RandInt(6, 27);
 
         c.E("screen", "screen_view",         screen: "otc",                feature: "otc", durationMs: 700);
         c.E("action", "otc_search_submitted", screen: "otc_search",         feature: "otc",
-            props: new() { ["query_length"] = q.Length.ToString(), ["result_count"] = $"{6 + s % 22}" });
+            props: new() { ["query_length"] = q.Length.ToString(), ["result_count"] = $"{resultCount}" });
         c.E("screen", "otc_result_view",      screen: "otc_search_results", feature: "otc",
-            props: new() { ["result_count"] = $"{6 + s % 22}" }, durationMs: 1800);
+            props: new() { ["result_count"] = $"{resultCount}" }, durationMs: 1800);
         c.E("action", "otc_product_select",   screen: "otc_search_results", feature: "otc",
             props: new() { ["item_id"] = p1.Pzn, ["list_position"] = $"{s % 8}" });
         c.E("screen", "otc_product_view",     screen: "otc_product_detail", feature: "otc",
@@ -374,12 +408,13 @@ internal static class RSAAnalyticsDevDataSeeder
     {
         var p = Products[(s + 2) % Products.Length];
         var q = OtcQueries[(s + 1) % OtcQueries.Length];
+        var resultCount = c.RandInt(4, 21);
 
         c.E("screen", "screen_view",         screen: "otc",                feature: "otc", durationMs: 500);
         c.E("action", "otc_search_submitted", screen: "otc_search",         feature: "otc",
-            props: new() { ["query_length"] = q.Length.ToString(), ["result_count"] = $"{4 + s % 18}" });
+            props: new() { ["query_length"] = q.Length.ToString(), ["result_count"] = $"{resultCount}" });
         c.E("screen", "otc_result_view",      screen: "otc_search_results", feature: "otc",
-            props: new() { ["result_count"] = $"{4 + s % 18}" }, durationMs: 1500);
+            props: new() { ["result_count"] = $"{resultCount}" }, durationMs: 1500);
         c.E("screen", "otc_product_view",     screen: "otc_product_detail", feature: "otc",
             props: new() { ["item_id"] = p.Pzn, ["category"] = p.Cat }, durationMs: 2800);
         c.E("ecommerce", "add_to_cart", feature: "otc",
@@ -623,16 +658,17 @@ internal static class RSAAnalyticsDevDataSeeder
             props: new() { ["element_id"] = "banner_otc", ["interaction_kind"] = "tap" });
         c.E("screen",     "screen_view",          screen: "otc",              durationMs: 1400);
         c.E("engagement", "scroll",               screen: "otc",
-            props: new() { ["depth_pct"] = $"{40 + s % 50}" });
+            props: new() { ["depth_pct"] = $"{c.RandInt(30, 90)}" });
         c.E("screen",     "screen_exit",          screen: "otc",              durationMs: 1400);
         c.E("screen",     "screen_view",          screen: "pharmacy_search",  durationMs: 1900);
         c.E("screen",     "screen_exit",          screen: "pharmacy_search",  durationMs: 1900);
     }
 
     // ── Event context ──────────────────────────────────────────────────────
-    private sealed class Ctx(string sessionId, DateTimeOffset start)
+    private sealed class Ctx(string sessionId, DateTimeOffset start, Random rng)
     {
         private readonly DateTimeOffset _start = start;
+        private readonly Random         _rng   = rng;
         private DateTimeOffset _ts  = start;
         private int            _seq;
 
@@ -640,10 +676,22 @@ internal static class RSAAnalyticsDevDataSeeder
         public List<RSCAnalyticsEvent> Events { get; } = [];
         public long ElapsedMs => (long)(_ts - _start).TotalMilliseconds;
 
+        /// <summary>Timestamp just past the last emitted event — i.e. when the session ended.</summary>
+        public DateTimeOffset End => _ts;
+
+        /// <summary>Random integer in [minInclusive, maxInclusive] from the session's deterministic RNG.</summary>
+        public int RandInt(int minInclusive, int maxInclusive) => _rng.Next(minInclusive, maxInclusive + 1);
+
         public void E(string type, string name, string? screen = null, string? feature = null,
             long? durationMs = null, Dictionary<string, string>? props = null,
             List<RSCAnalyticsItem>? items = null)
         {
+            // Treat a caller-supplied screen/engagement duration as a baseline and scatter it ±~30%
+            // so dwell times stop falling into tight arithmetic bands. Lifecycle durations carry the
+            // real elapsed time (session_end) and must stay exact so they match the duration_ms prop.
+            if (durationMs is { } d && type != "lifecycle")
+                durationMs = (long)Math.Round(d * (0.75 + _rng.NextDouble() * 0.6));
+
             Events.Add(new RSCAnalyticsEvent(
                 EventId:    $"{sessionId}-{_seq:D3}",
                 SessionId:  sessionId,
@@ -655,7 +703,8 @@ internal static class RSAAnalyticsDevDataSeeder
                 Properties: props,
                 Items: items?.AsReadOnly()));
             _seq++;
-            _ts = _ts.AddSeconds(12 + _seq * 2);
+            // Natural, non-monotonic spacing (~5-22s) instead of the old fixed 12 + seq*2 ramp.
+            _ts = _ts.AddSeconds(5 + _rng.Next(0, 13) + _rng.NextDouble() * 4.0);
         }
     }
 }

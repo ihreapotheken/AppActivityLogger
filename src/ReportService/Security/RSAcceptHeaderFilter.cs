@@ -39,6 +39,10 @@ public sealed class RSAcceptHeaderFilter : IEndpointFilter
             }
         }
 
-        return Results.StatusCode(StatusCodes.Status406NotAcceptable);
+        // Return RFC 7807 problem+json rather than a bare status so SDK clients that branch on
+        // response shape see the same body contract as every other client-error path (400/413/415).
+        return Results.Problem(
+            detail: "No acceptable media type. This endpoint produces application/json or application/problem+json.",
+            statusCode: StatusCodes.Status406NotAcceptable);
     }
 }

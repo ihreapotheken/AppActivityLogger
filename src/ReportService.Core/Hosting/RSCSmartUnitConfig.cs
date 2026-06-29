@@ -58,6 +58,11 @@ public static class RSCSmartUnitConfig
         Map(translated, "REPORT_API_KEY",                    "ReportService:ApiKey");
         Map(translated, "REPORT_ENVIRONMENT",                "ReportService:Environment");
 
+        // Analytics identifier-hash pepper. Keys the SHA-256 of every anonymousId so stored
+        // anonymous_id_hash values can't be rainbow-tabled back to raw ids. Production refuses to
+        // boot the analytics pipeline without it (see RSCSecretValidation in both Program.cs).
+        Map(translated, "ANALYTICS_HASH_PEPPER",             "Analytics:IdentifierHashPepper");
+
         // Admin surface.
         Map(translated, "ADMIN_KEY",                         "Admin:AdminKey");
         Map(translated, "ADMIN_SESSION_MINUTES",             "Admin:SessionMinutes");

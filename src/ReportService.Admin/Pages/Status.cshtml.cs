@@ -5,6 +5,7 @@ using ReportService.Audit;
 using ReportService.Observability;
 using ReportService.Options;
 using ReportService.Storage;
+using ReportService.Storage.ApiKeys;
 using ReportService.Storage.Retention;
 
 namespace ReportService.Admin.Pages;
@@ -24,6 +25,7 @@ public sealed class RSAStatusModel : PageModel
     private readonly RSCRetentionService _retention;
     private readonly IRSAReportIndexAccessor _indexAccessor;
     private readonly RSCIAnalyticsStore _analyticsStore;
+    private readonly RSCIApiKeyStore _apiKeyStore;
 
     public RSAStatusModel(
         RSCReportServiceOptions options,
@@ -33,7 +35,8 @@ public sealed class RSAStatusModel : PageModel
         RSCIAuditLog audit,
         RSCRetentionService retention,
         IRSAReportIndexAccessor indexAccessor,
-        RSCIAnalyticsStore analyticsStore)
+        RSCIAnalyticsStore analyticsStore,
+        RSCIApiKeyStore apiKeyStore)
     {
         _options = options;
         _analyticsOptions = analyticsOptions;
@@ -43,6 +46,7 @@ public sealed class RSAStatusModel : PageModel
         _retention = retention;
         _indexAccessor = indexAccessor;
         _analyticsStore = analyticsStore;
+        _apiKeyStore = apiKeyStore;
     }
 
     public RSCIndexStatusReport? IndexStatus { get; private set; }
@@ -50,10 +54,13 @@ public sealed class RSAStatusModel : PageModel
     public string AuthAbuseDbPath => RSCStatePaths.Resolve(_options.AuthAbuseDbPath, _options.ReportsRoot);
     public string AuditDbPath => RSCStatePaths.Resolve(_options.AuditDbPath, _options.ReportsRoot);
     public string AnalyticsDbPath => RSCStatePaths.Resolve(_analyticsOptions.SqliteDbPath, _options.ReportsRoot);
+    public string ApiKeysDbPath => RSCStatePaths.Resolve(_options.ApiKeysDbPath, _options.ReportsRoot);
     public string BackupRoot => RSCStatePaths.Resolve(_options.BackupRoot, _options.ReportsRoot);
     public long AuthAbuseDbSize => FileSize(AuthAbuseDbPath);
     public long AuditDbSize => FileSize(AuditDbPath);
     public long AnalyticsDbSize => FileSize(AnalyticsDbPath);
+    public long ApiKeysDbSize => FileSize(ApiKeysDbPath);
+    public int ActiveApiKeyCount { get; private set; }
     public IReadOnlyDictionary<string, RSCComponentHealth.Entry> Health => _health.Snapshot();
     public RSCRetentionStats Retention { get; private set; } = default!;
     public int AuditCount { get; private set; }
@@ -72,6 +79,7 @@ public sealed class RSAStatusModel : PageModel
             catch { /* health surfaces it */ }
         }
         AuditCount = await _audit.CountAsync(ct).ConfigureAwait(false);
+        ActiveApiKeyCount = await _apiKeyStore.CountActiveAsync(ct).ConfigureAwait(false);
         Retention = _retention.GetStats();
 
         if (AnalyticsEnabled)

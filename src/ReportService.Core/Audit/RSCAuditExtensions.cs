@@ -20,6 +20,12 @@ public static class RSCAuditExtensions
             Target: target,
             Details: details,
             Success: success);
-        return log.RecordAsync(entry, ctx.RequestAborted);
+        // Deliberately NOT ctx.RequestAborted. Audit rows for destructive actions are written
+        // after the action has already completed, so if the operator's browser disconnects the
+        // request token is already cancelled and the audit insert would be dropped — leaving a
+        // wipe/restore/rotate with no trace. The audit log must outlive the request lifetime, so
+        // persistence runs under CancellationToken.None (the store still bounds the write with its
+        // own SQLite command timeout).
+        return log.RecordAsync(entry, CancellationToken.None);
     }
 }

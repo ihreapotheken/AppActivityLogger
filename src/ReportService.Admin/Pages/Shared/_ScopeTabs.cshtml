@@ -1,0 +1,11 @@
+@*
+    Platform-scope selector (All / iOS / Android) shared by the Analytics and Errors dashboards.
+    The owning page passes its own route name + the canonical platform so the right tab is active
+    and the links point back at the right page.
+*@
+@model ReportService.Admin.ViewModels.RSAScopeTabsVM
+<nav class="scope-tabs" aria-label="Platform scope">
+    <a asp-page="@Model.PageName" class="@(Model.CurrentScope is null ? "active" : null)">All platforms</a>
+    <a asp-page="@Model.PageName" asp-route-platform="ios" class="@(Model.CurrentScope == "ios" ? "active" : null)">iOS</a>
+    <a asp-page="@Model.PageName" asp-route-platform="android" class="@(Model.CurrentScope == "android" ? "active" : null)">Android</a>
+</nav>

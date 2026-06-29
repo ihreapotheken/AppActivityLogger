@@ -139,20 +139,11 @@
         <h2>Log attachment summary</h2>
         <p class="muted">Extracted at ingest from the gzip attachment (iOS plaintext <code>LogEntry</code> array). Counts per level + total HTTP events; the raw attachment is downloadable above.</p>
         <div class="tiles tiles-compact">
-            <div class="tile">
-                <div class="tile-label">Total entries</div>
-                <div class="tile-value">@logSummary.TotalEntries.ToString("N0")</div>
-            </div>
-            <div class="tile">
-                <div class="tile-label">HTTP events</div>
-                <div class="tile-value">@logSummary.HttpEventCount.ToString("N0")</div>
-            </div>
+            <tile label="Total entries">@logSummary.TotalEntries.ToString("N0")</tile>
+            <tile label="HTTP events">@logSummary.HttpEventCount.ToString("N0")</tile>
             @if (logSummary.Earliest is { } e1 && logSummary.Latest is { } e2)
             {
-                <div class="tile">
-                    <div class="tile-label">Window</div>
-                    <div class="tile-value mono">@((e2 - e1).ToString(@"hh\:mm\:ss"))</div>
-                </div>
+                <tile label="Window" value-class="mono">@((e2 - e1).ToString(@"hh\:mm\:ss"))</tile>
             }
         </div>
         @if (logSummary.ByLevel.Count > 0)
@@ -191,12 +182,12 @@
             {
                 <section class="logcat-overview" aria-label="Log summary">
                     <div class="tiles tiles-compact">
-                        <div class="tile"><div class="tile-label">Total lines</div><div class="tile-value">@ov.TotalLines.ToString("N0")</div></div>
-                        <div class="tile tile-error"><div class="tile-label">Errors</div><div class="tile-value">@ov.ErrorCount.ToString("N0")</div></div>
-                        <div class="tile tile-warn"><div class="tile-label">Warnings</div><div class="tile-value">@ov.WarnCount.ToString("N0")</div></div>
-                        <div class="tile"><div class="tile-label">Info</div><div class="tile-value">@ov.InfoCount.ToString("N0")</div></div>
-                        <div class="tile"><div class="tile-label">Debug</div><div class="tile-value">@ov.DebugCount.ToString("N0")</div></div>
-                        <div class="tile"><div class="tile-label">Verbose</div><div class="tile-value">@ov.VerboseCount.ToString("N0")</div></div>
+                        <tile label="Total lines">@ov.TotalLines.ToString("N0")</tile>
+                        <tile label="Errors" variant="error">@ov.ErrorCount.ToString("N0")</tile>
+                        <tile label="Warnings" variant="warn">@ov.WarnCount.ToString("N0")</tile>
+                        <tile label="Info">@ov.InfoCount.ToString("N0")</tile>
+                        <tile label="Debug">@ov.DebugCount.ToString("N0")</tile>
+                        <tile label="Verbose">@ov.VerboseCount.ToString("N0")</tile>
                     </div>
                     @if (ov.FirstTimestamp is not null || ov.LastTimestamp is not null)
                     {
@@ -215,28 +206,58 @@
                     }
                 </section>
             }
-            <details class="logcat-details">
-                <summary>Full attachment log (@Model.LogcatLines.Count.ToString("N0") lines) — expand to view, filter, or search</summary>
-                <div class="logcat-controls" role="region" aria-label="Logcat filter">
+            <details class="logcat-details" id="log" @(Model.HasLogFilter || Model.LogPageNumber > 1 ? "open" : null)>
+                <summary>Full attachment log (@Model.LogTotalLines.ToString("N0") lines) — expand to view, filter, or search</summary>
+                @* Server-side filter: a GET form (like every other listing) reloads with the level +
+                   search as query params, so only the matching page of lines is sent to the browser. *@
+                <form method="get" class="logcat-controls" role="search" aria-label="Logcat filter"
+                      asp-page="/Report" asp-route-platform="@Model.Platform" asp-route-fileName="@Model.FileName">
                     <label>Level
-                        <select id="logcat-level" aria-label="Log level filter">
-                            <option value="">all</option>
-                            <option value="error">error</option>
-                            <option value="warn">warn</option>
-                            <option value="info">info</option>
-                            <option value="debug">debug</option>
-                            <option value="verbose">verbose</option>
+                        <select name="logLevel" aria-label="Log level filter">
+                            @foreach (var lvl in new[] { "", "error", "warn", "info", "debug", "verbose", "other" })
+                            {
+                                <option value="@lvl" selected="@(string.Equals(Model.LogLevel ?? "", lvl, StringComparison.Ordinal))">@(lvl.Length == 0 ? "all" : lvl)</option>
+                            }
                         </select>
                     </label>
                     <label>Search (case-insensitive substring or /regex/)
-                        <input id="logcat-search" type="text" placeholder="e.g. NullPointer  or  /pharmacyId=\d+/" />
+                        <input type="text" name="logSearch" value="@Model.LogSearch" placeholder="e.g. NullPointer  or  /pharmacyId=\d+/" />
                     </label>
-                    <span class="logcat-count muted" id="logcat-count">@Model.LogcatLines.Count lines</span>
-                    <button type="button" id="logcat-clear" class="btn">Clear</button>
-                </div>
-                <pre class="logcat" aria-label="Logcat content"><code id="logcat-body">@foreach (var line in Model.LogcatLines)
-{<text><span class="logcat-line logcat-@line.Level" data-level="@line.Level"><span class="logcat-num">@line.Number</span><span class="logcat-text">@line.Text</span></span>
+                    <button type="submit" class="primary">Filter</button>
+                    @if (Model.HasLogFilter)
+                    {
+                        <a class="btn" asp-page="/Report" asp-route-platform="@Model.Platform" asp-route-fileName="@Model.FileName">Clear</a>
+                    }
+                    <span class="logcat-count muted">
+                        @(Model.HasLogFilter
+                            ? $"{Model.LogMatchCount:N0} of {Model.LogTotalLines:N0} lines"
+                            : $"{Model.LogTotalLines:N0} lines")
+                    </span>
+                </form>
+                @if (Model.LogMatchCount == 0)
+                {
+                    <empty-state>No log lines match this filter.</empty-state>
+                }
+                else
+                {
+                    @if (Model.LogTotalPages > 1)
+                    {
+                        var firstLine = ((Model.LogPageNumber - 1) * RSAReportModel.LogPageSize) + 1;
+                        var lastLine = Math.Min(Model.LogPageNumber * RSAReportModel.LogPageSize, Model.LogMatchCount);
+                        <p class="muted">Showing @firstLine.ToString("N0")–@lastLine.ToString("N0") of @Model.LogMatchCount.ToString("N0") matching lines · page @Model.LogPageNumber / @Model.LogTotalPages</p>
+                    }
+                    <pre class="logcat" aria-label="Logcat content"><code>@foreach (var line in Model.LogcatPage)
+{<text><span class="logcat-line logcat-@line.Level"><span class="logcat-num">@line.Number</span><span class="logcat-text">@line.Text</span></span>
 </text>}</code></pre>
+                    @if (Model.LogTotalPages > 1)
+                    {
+                        @await Html.PartialAsync("_Pager", new RSAPagerVM(
+                            Model.LogPageNumber > 1 ? Model.BuildLogHref(Model.LogPageNumber - 1) : null,
+                            Model.LogPageNumber < Model.LogTotalPages ? Model.BuildLogHref(Model.LogPageNumber + 1) : null,
+                            $"page {Model.LogPageNumber} / {Model.LogTotalPages}",
+                            AriaLabel: "Log pagination"))
+                    }
+                }
             </details>
         }
     </section>
@@ -249,7 +270,8 @@
         <a class="btn" asp-page-handler="DownloadAttachment" asp-route-platform="@Model.Platform" asp-route-fileName="@Model.FileName">Download gzip</a>
     }
     <form method="post" asp-page-handler="Delete" class="inline"
-          onsubmit="return confirm('Permanently delete @Model.FileName and its attachment? This cannot be undone.');">
+          data-confirm="Permanently delete @Model.FileName and its attachment? This cannot be undone."
+          data-confirm-label="Delete report">
         @Html.AntiForgeryToken()
         <input type="hidden" name="platform" value="@Model.Platform" />
         <input type="hidden" name="fileName" value="@Model.FileName" />
@@ -257,9 +279,3 @@
     </form>
 </div>
 
-@if (Model.LogcatAvailable)
-{
-    @section Scripts {
-        <script src="~/js/logcat.js" asp-append-version="true"></script>
-    }
-}

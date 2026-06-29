@@ -50,6 +50,13 @@ LOG_DIR="/var/log/report-service"
 UNIT_SRC="${SCRIPT_DIR}/report-service.service"
 UNIT_DST="/etc/systemd/system/report-service.service"
 PUBLISH_DIR="${SCRIPT_DIR}/publish"
+# Helper scripts the watchdog unit invokes, installed alongside the binaries at
+# a stable path the unit files reference (/opt/report-service/ops/...).
+OPS_DST="${INSTALL_DIR}/ops"
+OPS_SCRIPTS=(healthcheck.sh watchdog.sh)
+# Health-watchdog units installed next to the main unit. report-service.service
+# is handled separately above so its presence is validated explicitly.
+EXTRA_UNITS=(report-service-watchdog.service report-service-watchdog.timer report-service-restart.service)
 
 log()  { printf '[install] %s\n' "$*"; }
 fail() { printf '[install] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -137,14 +144,34 @@ else
     chmod 0600 "$ENV_FILE"
 fi
 
-# --- unit file -----------------------------------------------------------
+# --- watchdog helper scripts --------------------------------------------
+# Installed AFTER the publish rsync above (which uses --delete and would
+# otherwise wipe this subdir) so they survive every re-run.
+log "installing watchdog scripts -> ${OPS_DST}"
+install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_GROUP" "$OPS_DST"
+for script in "${OPS_SCRIPTS[@]}"; do
+    [[ -f "${SCRIPT_DIR}/${script}" ]] || fail "missing helper script ${SCRIPT_DIR}/${script}"
+    install -m 0750 -o "$SERVICE_USER" -g "$SERVICE_GROUP" "${SCRIPT_DIR}/${script}" "${OPS_DST}/${script}"
+done
+
+# --- unit files ----------------------------------------------------------
 log "installing unit -> ${UNIT_DST}"
 install -m 0644 -o root -g root "$UNIT_SRC" "$UNIT_DST"
+for unit in "${EXTRA_UNITS[@]}"; do
+    [[ -f "${SCRIPT_DIR}/${unit}" ]] || fail "missing unit ${SCRIPT_DIR}/${unit}"
+    log "installing unit -> /etc/systemd/system/${unit}"
+    install -m 0644 -o root -g root "${SCRIPT_DIR}/${unit}" "/etc/systemd/system/${unit}"
+done
 
 log "systemctl daemon-reload"
 systemctl daemon-reload
 log "systemctl enable report-service"
 systemctl enable report-service >/dev/null
+# Enable the hang-watchdog timer now (it's safe before the service starts —
+# OnBootSec/first tick just probes and no-ops until the service is up). The
+# restart/watchdog .service units are pulled in on demand and aren't enabled.
+log "systemctl enable --now report-service-watchdog.timer"
+systemctl enable --now report-service-watchdog.timer >/dev/null
 
 cat <<EOF
 
@@ -157,4 +184,7 @@ Next steps:
   3. Check status / logs:
        systemctl status report-service
        journalctl -u report-service -f
+  4. The health watchdog (restarts the service if it hangs) is already enabled:
+       systemctl status report-service-watchdog.timer
+       journalctl -u report-service-watchdog.service -f
 EOF

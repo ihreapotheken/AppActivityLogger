@@ -51,7 +51,7 @@ public class AdminCmsTests
         Assert.Equal(HttpStatusCode.OK, dash.StatusCode);
         var dashHtml = await dash.Content.ReadAsStringAsync();
         Assert.Contains("Dashboard", dashHtml);
-        Assert.Contains("Reports stored", dashHtml);
+        Assert.Contains("All reports", dashHtml);
         Assert.Contains("Health", dashHtml);
 
         var status = await client.GetAsync("/Status");

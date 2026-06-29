@@ -25,22 +25,32 @@ public sealed class RSCRetentionService
     /// </summary>
     private const double SizeTargetFraction = 0.95;
 
+    /// <summary>
+    /// When the disk-pressure guard fires, free 10% more than the strict deficit so a sweep that
+    /// just passed doesn't immediately re-trigger on the next tick. Proportional to the deficit so
+    /// it stays small.
+    /// </summary>
+    private const double DiskFreeCushionFraction = 0.10;
+
     private readonly RSCIReportStore _store;
     private readonly RSCReportServiceOptions _options;
     private readonly RSCIAuditLog _audit;
     private readonly ILogger<RSCRetentionService> _logger;
+    private readonly RSCIDiskSpaceProbe _diskProbe;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     public RSCRetentionService(
         RSCIReportStore store,
         RSCReportServiceOptions options,
         RSCIAuditLog audit,
-        ILogger<RSCRetentionService> logger)
+        ILogger<RSCRetentionService> logger,
+        RSCIDiskSpaceProbe diskProbe)
     {
         _store = store;
         _options = options;
         _audit = audit;
         _logger = logger;
+        _diskProbe = diskProbe;
     }
 
     /// <summary>
@@ -66,6 +76,10 @@ public sealed class RSCRetentionService
         var (reports, totalBytes) = CollectAndSum();
         DateTimeOffset? oldest = reports.Count > 0 ? reports[0].SubmittedAt : null;
         DateTimeOffset? newest = reports.Count > 0 ? reports[^1].SubmittedAt : null;
+        // Surface filesystem headroom on the dashboard regardless of whether the disk guard is
+        // armed — it's the number that matters for "will this box run out of space?", and the byte
+        // cap above only accounts for report blobs, not the DBs/backups sharing the volume.
+        var disk = _diskProbe.Probe(_options.ReportsRoot);
         return new RSCRetentionStats(
             UsedBytes: totalBytes,
             LimitBytes: _options.RetentionMaxBytes,
@@ -73,7 +87,9 @@ public sealed class RSCRetentionService
             Oldest: oldest,
             Newest: newest,
             Enabled: _options.RetentionEnabled,
-            MaxAgeDays: _options.RetentionMaxAgeDays);
+            MaxAgeDays: _options.RetentionMaxAgeDays,
+            DiskTotalBytes: disk?.TotalBytes,
+            DiskFreeBytes: disk?.FreeBytes);
     }
 
     private async Task<RSCRetentionReport> SweepCoreAsync(string actor, CancellationToken ct)
@@ -130,10 +146,11 @@ public sealed class RSCRetentionService
         if (maxBytes > 0 && currentTotal > maxBytes)
         {
             var target = (long)(maxBytes * SizeTargetFraction);
-            foreach (var r in reports)
+            for (var i = 0; i < reports.Count; i++)
             {
                 if (currentTotal <= target) break;
                 if (ct.IsCancellationRequested) break;
+                var r = reports[i];
                 if (string.IsNullOrEmpty(r.FileName)) continue; // already deleted by age pass
 
                 var size = r.SizeBytes + (r.AttachmentSizeBytes ?? 0);
@@ -142,7 +159,81 @@ public sealed class RSCRetentionService
                     deletedBySize++;
                     deletedBytes += size;
                     currentTotal -= size;
+                    reports[i] = r with { FileName = string.Empty }; // tombstone for the disk pass
                 }
+                else
+                {
+                    // The row was listed but couldn't be deleted (index/disk drift, or an IOException
+                    // in the file store). Its bytes are NOT reclaimable storage we can act on, so
+                    // subtract them from the running total anyway — otherwise the loop keeps counting
+                    // a stuck row toward usage and deletes the next (newer, in-policy) report to
+                    // compensate, purging healthy data to make up for an undeletable one.
+                    currentTotal -= size;
+                    reports[i] = r with { FileName = string.Empty }; // can't retry it in the disk pass either
+                    _logger.LogWarning(
+                        "Retention size pass could not delete {Platform}/{File} ({Size} bytes); excluding it from the running total so it can't force deletion of newer reports",
+                        r.Platform, r.FileName, size);
+                }
+            }
+        }
+
+        // ----- Pass 3: disk-pressure guard. Independent of the byte cap — it protects the actual
+        // filesystem from growth the cap can't see (analytics/audit DBs, backups, un-VACUUMed slack,
+        // or neighbours on a shared mount). Evicts oldest remaining blobs until free space / usage is
+        // back under the threshold (plus a small cushion), or we run out of report blobs to delete. --
+        var deletedByDisk = 0;
+        var minFreeDisk = Math.Max(0, _options.RetentionMinFreeDiskBytes);
+        var maxDiskPct = _options.RetentionMaxDiskUsagePercent is >= 1 and <= 99
+            ? _options.RetentionMaxDiskUsagePercent
+            : 0;
+        if ((minFreeDisk > 0 || maxDiskPct > 0) && !ct.IsCancellationRequested)
+        {
+            var disk = _diskProbe.Probe(_options.ReportsRoot);
+            if (disk is { } d && d.TotalBytes > 0)
+            {
+                var bytesToFree = DiskBytesToFree(d.TotalBytes, d.FreeBytes, minFreeDisk, maxDiskPct);
+                if (bytesToFree > 0)
+                {
+                    long freedForDisk = 0;
+                    for (var i = 0; i < reports.Count && freedForDisk < bytesToFree; i++)
+                    {
+                        if (ct.IsCancellationRequested) break;
+                        var r = reports[i];
+                        if (string.IsNullOrEmpty(r.FileName)) continue; // deleted by an earlier pass
+
+                        var size = r.SizeBytes + (r.AttachmentSizeBytes ?? 0);
+                        if (_store.Delete(r.Platform, r.FileName))
+                        {
+                            deletedByDisk++;
+                            deletedBytes += size;
+                            currentTotal -= size;
+                            freedForDisk += size;
+                            reports[i] = r with { FileName = string.Empty };
+                        }
+                        else
+                        {
+                            // Same drift handling as the size pass: treat the stuck row as freed so it
+                            // can't force deletion of newer reports.
+                            freedForDisk += size;
+                            currentTotal -= size;
+                            reports[i] = r with { FileName = string.Empty };
+                        }
+                    }
+
+                    if (freedForDisk < bytesToFree)
+                    {
+                        _logger.LogWarning(
+                            "Retention disk guard freed {Freed} of {Need} bytes on the {Root} filesystem then ran out of report blobs to delete. " +
+                            "Remaining pressure is from non-report data (analytics/audit DBs, backups, un-VACUUMed slack) — that needs a manual VACUUM/cleanup; deleting reports can't reclaim it.",
+                            freedForDisk, bytesToFree, _options.ReportsRoot);
+                    }
+                }
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Retention disk guard is armed but free space for {Root} could not be determined this sweep; skipping the disk pass",
+                    _options.ReportsRoot);
             }
         }
 
@@ -157,13 +248,14 @@ public sealed class RSCRetentionService
             LimitBytes: maxBytes,
             MaxAgeDays: maxAgeDays > 0 ? maxAgeDays : null,
             At: DateTimeOffset.UtcNow,
-            Elapsed: sw.Elapsed);
+            Elapsed: sw.Elapsed,
+            DeletedByDisk: deletedByDisk);
 
         if (report.DidWork)
         {
             _logger.LogWarning(
-                "Retention sweep deleted {Total} reports ({Bytes} bytes; {ByAge} aged, {BySize} oversize). Store {Before} → {After} bytes (cap {Cap}).",
-                report.DeletedTotal, report.DeletedBytes, report.DeletedByAge, report.DeletedBySize,
+                "Retention sweep deleted {Total} reports ({Bytes} bytes; {ByAge} aged, {BySize} oversize, {ByDisk} disk-pressure). Store {Before} → {After} bytes (cap {Cap}).",
+                report.DeletedTotal, report.DeletedBytes, report.DeletedByAge, report.DeletedBySize, report.DeletedByDisk,
                 report.BytesBefore, report.BytesAfter, maxBytes);
 
             await _audit.RecordAsync(new RSCAuditEntry(
@@ -172,12 +264,35 @@ public sealed class RSCRetentionService
                 RemoteAddress: "system",
                 Action: "retention.sweep",
                 Target: null,
-                Details: $"deleted={report.DeletedTotal} (age={report.DeletedByAge}, size={report.DeletedBySize}) " +
+                Details: $"deleted={report.DeletedTotal} (age={report.DeletedByAge}, size={report.DeletedBySize}, disk={report.DeletedByDisk}) " +
                          $"bytes={report.DeletedBytes} before={report.BytesBefore} after={report.BytesAfter} cap={maxBytes} max_age_days={maxAgeDays}",
                 Success: true), ct).ConfigureAwait(false);
         }
 
         return report;
+    }
+
+    /// <summary>
+    /// Bytes the disk pass must reclaim to satisfy whichever guard is breached (absolute free-bytes
+    /// floor and/or max-usage percent), taking the larger of the two, plus a small cushion. Returns
+    /// 0 when neither guard is breached.
+    /// </summary>
+    private static long DiskBytesToFree(long totalBytes, long freeBytes, long minFreeBytes, int maxUsagePercent)
+    {
+        long need = 0;
+
+        if (minFreeBytes > 0 && freeBytes < minFreeBytes)
+            need = Math.Max(need, minFreeBytes - freeBytes);
+
+        if (maxUsagePercent > 0)
+        {
+            var maxUsedBytes = (long)(totalBytes * (maxUsagePercent / 100.0));
+            var usedBytes = totalBytes - freeBytes;
+            if (usedBytes > maxUsedBytes)
+                need = Math.Max(need, usedBytes - maxUsedBytes);
+        }
+
+        return need <= 0 ? 0 : need + (long)(need * DiskFreeCushionFraction);
     }
 
     private (List<RSCStoredReport> Reports, long TotalBytes) CollectAndSum()

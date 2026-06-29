@@ -29,19 +29,19 @@
 
 @if (Model.Rows.Count == 0)
 {
-    <p class="muted">No sessions recorded yet. The aggregation worker upserts sessions as events flow in.</p>
+    <empty-state>No sessions recorded yet. The aggregation worker upserts sessions as events flow in.</empty-state>
 }
 else
 {
     <table>
         <thead>
             <tr>
-                <th scope="col">Last seen</th>
-                <th scope="col">Started</th>
-                <th scope="col">Platform</th>
-                <th scope="col">Events</th>
-                <th scope="col">Screens</th>
-                <th scope="col">Session</th>
+                <th scope="col" tip="Timestamp of the most recent event in this session (local time)">Last seen</th>
+                <th scope="col" tip="Timestamp of the first event in this session (local time)">Started</th>
+                <th scope="col" tip="Client platform reported by the SDK (e.g. android, ios)">Platform</th>
+                <th scope="col" tip="Total events aggregated into this session (deduplicated, retry-safe)">Events</th>
+                <th scope="col" tip="Distinct screens viewed during this session">Screens</th>
+                <th scope="col" tip="SDK sessionId; click to replay the full event timeline">Session</th>
             </tr>
         </thead>
         <tbody>
@@ -59,15 +59,8 @@ else
         </tbody>
     </table>
 
-    <nav class="pager" aria-label="Pagination">
-        @if (Model.PageNumber > 1)
-        {
-            <a href="@Model.BuildPageHref(Model.PageNumber - 1)">← previous</a>
-        }
-        <span class="muted">page @Math.Max(1, Model.PageNumber)</span>
-        @if (Model.Rows.Count == 50)
-        {
-            <a href="@Model.BuildPageHref(Model.PageNumber + 1)">next →</a>
-        }
-    </nav>
+    @await Html.PartialAsync("_Pager", new RSAPagerVM(
+        Model.PageNumber > 1 ? Model.BuildPageHref(Model.PageNumber - 1) : null,
+        Model.Rows.Count == 50 ? Model.BuildPageHref(Model.PageNumber + 1) : null,
+        $"page {Math.Max(1, Model.PageNumber)}"))
 }

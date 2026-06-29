@@ -1,0 +1,18 @@
+@*
+    Shared listing pager. The owning page computes PrevHref / NextHref (null → no link) and the
+    centre Label, so every server-paginated listing renders the same "← previous / page / next →"
+    nav. Replaces the near-identical block that used to be hand-rolled in Reports, ProblemReports,
+    Analytics, Errors, AnalyticsSessions, AnalyticsEvents, and the Stats Top-N buckets.
+*@
+@model ReportService.Admin.ViewModels.RSAPagerVM
+<nav class="pager@(string.IsNullOrEmpty(Model.ExtraClass) ? "" : " " + Model.ExtraClass)" aria-label="@Model.AriaLabel">
+    @if (Model.PrevHref is not null)
+    {
+        <a href="@Model.PrevHref">← previous</a>
+    }
+    <span class="muted">@Model.Label</span>
+    @if (Model.NextHref is not null)
+    {
+        <a href="@Model.NextHref">next →</a>
+    }
+</nav>

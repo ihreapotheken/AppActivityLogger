@@ -8,6 +8,15 @@ services:
       context: .
       target: admin
     image: report-service:local
+    labels:
+      # Marks this container for the opt-in `autoheal` sidecar (see the autoheal service below).
+      # Plain `restart: unless-stopped` only reacts to the process EXITING — a hung-but-alive host
+      # (deadlock, wedged thread pool, blocked on a stuck SQLite write) keeps the container
+      # "running" forever and is never recovered. The healthcheck below flips the container to
+      # `unhealthy`; autoheal watches for that label+status and restarts it. No-op unless the
+      # stack is brought up with `--profile autoheal`, so the default loopback dev stack is
+      # unaffected.
+      - autoheal=true
     ports:
       # Host-loopback bind so SDK clients on the host (Android emulator via 10.0.2.2, iOS sim via
       # localhost) reach it but external machines can't. Public deployments would put this behind
@@ -25,14 +34,20 @@ services:
       # channel, and show fast paginated counts. Filesystem-only mode persists the JSON but not
       # the ingestion_channel column.
       - ReportService__Storage=SqliteIndex
-      # Local-development cap. Production deploys override via the .env to a sane production value.
-      - ReportService__RateLimitPermitsPerMinute=600
-      # Development gives us the developer exception page; DevAutoSignIn (the explicit bypass
-      # flag) skips the login screen so an operator on the host never sees a password prompt.
-      # The host-port prefix above guarantees only loopback packets reach this container, so the
-      # bypass is bounded by network isolation, not application auth.
-      - ASPNETCORE_ENVIRONMENT=Development
-      - Admin__DevAutoSignIn=true
+      # The three values below are interpolation defaults: with no override (the local
+      # `HOST_PORT=8082 docker compose up` flow) they keep this a Development box with the auto
+      # sign-in bypass and a generous dev rate limit. They MUST be overridable, because
+      # scripts/stack.sh production|staging reuse this SAME compose file and only differ by -p /
+      # --env-file. Compose `environment:` literals ALWAYS win over `env_file:`, so a hardcoded
+      # `ASPNETCORE_ENVIRONMENT=Development` here would force prod/staging into Development too —
+      # bypassing cookie auth (DevAutoSignIn), skipping RSCSecretValidation, leaking the developer
+      # exception page, and running the dev-data seeders against real storage. Using
+      # `${VAR:-default}` instead lets the per-env file (.env / .env.staging) set
+      # ASPNETCORE_ENVIRONMENT=Production/Staging and ADMIN_DEV_AUTO_SIGN_IN=false. See .env.example
+      # for the production-safe values these MUST carry on any tunnelled / public deployment.
+      - ReportService__RateLimitPermitsPerMinute=${REPORT_RATE_LIMIT_PER_MINUTE:-600}
+      - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Development}
+      - Admin__DevAutoSignIn=${ADMIN_DEV_AUTO_SIGN_IN:-true}
     volumes:
       - reports:/srv/reports:rw
     restart: unless-stopped
@@ -65,6 +80,18 @@ services:
   # http://report-service:8080 — no host port hop, no NAT, and no dependency on whatever loopback
   # the host happens to bind. The host-port mapping above stays unaffected.
   #
+  # SECURITY — the tunnel reaches the app over the compose network, NOT via the 127.0.0.1 host
+  # port bind, so it deliberately escapes the loopback isolation the DevAutoSignIn bypass relies
+  # on. NEVER run the tunnel against a Development / DevAutoSignIn host: set
+  # ASPNETCORE_ENVIRONMENT=Production (or Staging) and ADMIN_DEV_AUTO_SIGN_IN=false in the
+  # --env-file before bringing the tunnel up, so real cookie auth gates the admin UI. As a
+  # defence-in-depth backstop the DevAutoSignIn middleware now only auto-signs-in LOOPBACK
+  # requests (src/ReportService.Admin/Program.cs), so even a misconfigured tunnelled Development
+  # host falls through to the login page for non-loopback callers. Note also that the tunnel
+  # collapses every public client to a single source IP at Kestrel — per-IP rate limiting and
+  # auth-abuse banning only stay per-real-client when ProxyHeaders is enabled with the compose
+  # network in KnownNetworks AND cloudflared forwards X-Forwarded-For (see .env.example).
+  #
   # Default command opens a fresh quick tunnel each start, yielding an ephemeral
   # *.trycloudflare.com hostname. Override CLOUDFLARED_COMMAND in the env file to a named-tunnel
   # invocation (`tunnel --no-autoupdate run --token <token>`) to bind the service to a stable
@@ -84,6 +111,40 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+
+  # Opt-in container watchdog. Vanilla Docker Compose has NO native "restart on unhealthy" — a
+  # healthcheck only sets the container's health status; nothing acts on it (that auto-restart
+  # behaviour exists only in Swarm/Kubernetes). This sidecar closes that gap: it polls the Docker
+  # API and restarts any container that is both labelled `autoheal=true` AND reports `unhealthy`.
+  # Together with `restart: unless-stopped` (crash recovery) this gives crash- AND hang-recovery.
+  #
+  # Off by default — like `tunnel`, it only starts with `--profile autoheal`, so the default
+  # loopback dev `up` keeps its minimal posture. Enable it on long-running prod/staging stacks:
+  #   scripts/stack.sh production --profile autoheal      # (or: docker compose --profile autoheal up -d)
+  #
+  # SECURITY — this is the one component that mounts the Docker socket, which is effectively root
+  # on the host. That is exactly why it is profile-gated rather than always-on: the default stack
+  # never exposes the socket. The mount is :ro as defence-in-depth (note: read-only on a socket
+  # node does not actually restrict API writes, but documents intent and blocks accidental file
+  # writes). Keep this sidecar's image pinned and updated; treat socket exposure as a deliberate,
+  # production-only trade for hang-recovery.
+  autoheal:
+    profiles: ["autoheal"]
+    image: willfarrell/autoheal:1.2.0
+    restart: unless-stopped
+    environment:
+      # Only touch containers we explicitly opted in via the `autoheal=true` label above.
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+      # Poll cadence (s). The app healthcheck runs every 30s with 3 retries, so an unhealthy flip
+      # takes up to ~90s to register; a 10s poll then reacts promptly without busy-spinning.
+      - AUTOHEAL_INTERVAL=10
+      # Give a freshly-(re)started container time to pass its start_period before we judge it.
+      - AUTOHEAL_START_PERIOD=30
+      - DOCKER_SOCK=/var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   reports:

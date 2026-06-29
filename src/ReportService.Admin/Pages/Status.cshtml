@@ -60,6 +60,13 @@
     <h2>Storage usage / retention</h2>
     <ul class="kv">
         <li><span>Used</span>@RSAByteFormatter.Format(Model.Retention.UsedBytes) / @RSAByteFormatter.Format(Model.Retention.LimitBytes) cap</li>
+        <li><span>Disk (volume)</span>
+            @if (Model.Retention.DiskFreeBytes is { } free && Model.Retention.DiskTotalBytes is { } total && total > 0)
+            {
+                <span class="@(Model.Retention.DiskUsedPercent >= 90 ? "badge badge-bad" : "")">@RSAByteFormatter.Format(free) free of @RSAByteFormatter.Format(total) (@Model.Retention.DiskUsedPercent?.ToString("0.0")% used)</span>
+            }
+            else { <span class="muted">unknown</span> }
+        </li>
         <li><span>Reports on disk</span>@Model.Retention.ReportCount</li>
         <li><span>Max age</span>@Model.Retention.MaxAgeDays days</li>
         <li><span>Oldest</span>
@@ -81,6 +88,7 @@
         <li><span>Auth abuse DB</span><code>@Model.AuthAbuseDbPath</code> · @RSAByteFormatter.Format(Model.AuthAbuseDbSize)</li>
         <li><span>Audit log DB</span><code>@Model.AuditDbPath</code> · @RSAByteFormatter.Format(Model.AuditDbSize) · @Model.AuditCount entries</li>
         <li><span>Analytics DB</span><code>@Model.AnalyticsDbPath</code> · @RSAByteFormatter.Format(Model.AnalyticsDbSize)</li>
+        <li><span>API keys DB</span><code>@Model.ApiKeysDbPath</code> · @RSAByteFormatter.Format(Model.ApiKeysDbSize) · @Model.ActiveApiKeyCount active</li>
     </ul>
 </section>
 
@@ -108,11 +116,11 @@
             <table>
                 <thead>
                     <tr>
-                        <th scope="col">Platform</th>
-                        <th scope="col">Batches</th>
-                        <th scope="col">Accepted</th>
-                        <th scope="col">Rejected</th>
-                        <th scope="col">Last received</th>
+                        <th scope="col" sort="text" tip="SDK platform the batches arrived from (e.g. android, ios).">Platform</th>
+                        <th scope="col" sort="num" tip="Number of ingestion batches received from this platform.">Batches</th>
+                        <th scope="col" sort="num" tip="Total events accepted (passed validation) across all batches.">Accepted</th>
+                        <th scope="col" sort="num" tip="Total events rejected (failed validation) across all batches.">Rejected</th>
+                        <th scope="col" sort="date" tip="Timestamp of the most recent batch received from this platform.">Last received</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -123,7 +131,7 @@
                         <td>@p.Batches.ToString("N0")</td>
                         <td>@p.AcceptedEvents.ToString("N0")</td>
                         <td>@p.RejectedEvents.ToString("N0")</td>
-                        <td class="mono">@(p.LastReceivedAt is { } lr ? lr.AsLocalTime() : "—")</td>
+                        <td class="mono" data-sort-value="@(p.LastReceivedAt is { } lrs ? lrs.UtcDateTime.ToString("o") : "")">@(p.LastReceivedAt is { } lr ? lr.AsLocalTime() : "—")</td>
                     </tr>
                 }
                 </tbody>
@@ -138,10 +146,10 @@
     <table>
         <thead>
             <tr>
-                <th scope="col">Component</th>
-                <th scope="col">State</th>
-                <th scope="col">Detail</th>
-                <th scope="col">At</th>
+                <th scope="col" sort="text" tip="Name of the background component or worker reporting health.">Component</th>
+                <th scope="col" tip="Current health: healthy, or degraded if the component last reported a fault.">State</th>
+                <th scope="col" tip="Latest status detail or error message from the component, if any.">Detail</th>
+                <th scope="col" sort="date" tip="Timestamp of the component's most recent health report.">At</th>
             </tr>
         </thead>
         <tbody>
@@ -160,7 +168,7 @@
                         }
                     </td>
                     <td>@kvp.Value.Detail</td>
-                    <td class="mono">@kvp.Value.At.AsLocalTime()</td>
+                    <td class="mono" data-sort-value="@kvp.Value.At.UtcDateTime.ToString("o")">@kvp.Value.At.AsLocalTime()</td>
                 </tr>
             }
             @if (Model.Health.Count == 0)

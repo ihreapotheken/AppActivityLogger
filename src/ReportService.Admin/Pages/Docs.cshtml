@@ -5,20 +5,75 @@
 @page "/Documentation"
 @model RSADocsModel
 @using ReportService.Admin.ViewModels
+@using ReportService.Admin.Services
 @{
-    ViewData["Title"] = Model.Readme?.Title ?? "Docs";
+    ViewData["Title"] = "Docs";
+    var chapters = Model.Docs?.Chapters ?? (IReadOnlyList<RSADocChapter>)Array.Empty<RSADocChapter>();
 }
 @await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM(
     "Docs",
-    "Project README bundled with this build."))
+    "Project documentation bundled with this build. Pick a chapter, then jump around with the table of contents."))
 
-<section class="card docs-content">
-    @if (Model.Readme is not null)
-    {
-        @Html.Raw(Model.Readme.HtmlBody)
-    }
-    else
-    {
-        <p class="muted">README not found in this build.</p>
-    }
-</section>
+@if (chapters.Count == 0)
+{
+    <empty-state>No documentation found in this build.</empty-state>
+}
+else
+{
+    <div class="docs">
+        <nav class="docs-tabs" role="tablist" aria-label="Documentation chapters">
+            @for (var i = 0; i < chapters.Count; i++)
+            {
+                var c = chapters[i];
+                var active = i == 0;
+                <button type="button" class="docs-tab@(active ? " is-active" : "")"
+                        role="tab" id="tab-@c.Slug" aria-controls="panel-@c.Slug"
+                        aria-selected="@(active ? "true" : "false")" tabindex="@(active ? "0" : "-1")"
+                        data-doc-tab="@c.Slug">@c.Label</button>
+            }
+        </nav>
+
+        <div class="docs-body">
+            <div class="docs-main">
+                @for (var i = 0; i < chapters.Count; i++)
+                {
+                    var c = chapters[i];
+                    var active = i == 0;
+                    <article class="docs-panel docs-content@(active ? " is-active" : "")"
+                             id="panel-@c.Slug" role="tabpanel" aria-labelledby="tab-@c.Slug"
+                             data-doc-panel="@c.Slug" hidden="@(active ? null : "hidden")">
+                        @Html.Raw(c.HtmlBody)
+                    </article>
+                }
+            </div>
+
+            <aside class="docs-aside" aria-label="On this page">
+                @for (var i = 0; i < chapters.Count; i++)
+                {
+                    var c = chapters[i];
+                    var active = i == 0;
+                    <nav class="docs-toc@(active ? " is-active" : "")" data-doc-toc="@c.Slug" hidden="@(active ? null : "hidden")">
+                        <p class="docs-toc-title">On this page</p>
+                        @if (c.Toc.Count == 0)
+                        {
+                            <p class="muted small">No sections.</p>
+                        }
+                        else
+                        {
+                            <ul>
+                                @foreach (var h in c.Toc)
+                                {
+                                    <li class="toc-l@(h.Level)"><a href="#@h.Id" data-toc-link="@h.Id">@h.Text</a></li>
+                                }
+                            </ul>
+                        }
+                    </nav>
+                }
+            </aside>
+        </div>
+    </div>
+}
+
+@section Scripts {
+    <script src="~/js/docs-tabs.js" asp-append-version="true"></script>
+}

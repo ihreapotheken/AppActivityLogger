@@ -43,11 +43,19 @@
     <PackageReference Include="Markdig" Version="0.37.0" />
   </ItemGroup>
 
-  <!-- Bundle the repo-root README into the admin's output so the /Documentation page can render
-       it without depending on the source tree at runtime (Docker images don't ship sources). -->
+  <!-- Bundle the repo-root README and the modular docs/guide/ chapters into the admin's output so
+       the /Documentation page can render the full documentation without depending on the source
+       tree at runtime (Docker images don't ship sources). RSADocsService renders README.md first,
+       then guide/*.md in filename order. -->
   <ItemGroup>
     <Content Include="..\..\README.md">
       <Link>admin-docs\README.md</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <Visible>false</Visible>
+    </Content>
+    <Content Include="..\..\docs\guide\*.md">
+      <Link>admin-docs\guide\%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
       <Visible>false</Visible>

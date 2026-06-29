@@ -30,6 +30,12 @@ public sealed record RSCAnalyticsEvent(
 /// Optional ecommerce/list payload attached to an event (e.g. cart, product list). The shape is
 /// intentionally narrow — anything richer goes in the parent event's <c>Properties</c> bag.
 /// </summary>
+/// <remarks>
+/// <c>ItemId</c> is required. Although the type is non-nullable, System.Text.Json does not enforce
+/// non-nullable reference types, so an <c>items[]</c> entry that omits <c>itemId</c> deserializes to
+/// null. The validator rejects any event carrying an item with a null/blank <c>ItemId</c>
+/// (<c>missing_required_field</c>) so the non-null contract holds for stored rows.
+/// </remarks>
 public sealed record RSCAnalyticsItem(
     string ItemId,
     string? Name,

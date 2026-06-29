@@ -132,14 +132,17 @@ public sealed class RSCSqliteIndexingReportStore : RSCIReportStore
     /// <inheritdoc />
     public bool Delete(string platform, string fileName)
     {
-        // Files go first (source of truth), then the index row. A swallowed index-delete is
-        // reconciled by the next List() call's drift fallback.
+        // Files go first (source of truth), then the index row. The index row carries the count +
+        // byte footprint, so removal goes through RecordLifetimeAndDeleteAsync — it banks that
+        // footprint into the lifetime-statistics rollup in the same transaction it deletes the row,
+        // so the totals outlive the report. A swallowed index-delete is reconciled by the next
+        // List() call's drift fallback.
         var deleted = _inner.Delete(platform, fileName);
         if (!deleted) return false;
 
         try
         {
-            _index.DeleteAsync(platform, fileName, CancellationToken.None).GetAwaiter().GetResult();
+            _index.RecordLifetimeAndDeleteAsync(platform, fileName, CancellationToken.None).GetAwaiter().GetResult();
         }
         catch (Exception ex)
         {
@@ -188,12 +191,17 @@ public sealed class RSCSqliteIndexingReportStore : RSCIReportStore
             using var raw = _inner.OpenRead(platform, attachmentFileName);
             if (raw is null) return null;
             using var gz = new GZipStream(raw, CompressionMode.Decompress, leaveOpen: false);
-            using var reader = new StreamReader(gz, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 4096, leaveOpen: false);
+            // Hard-cap the decompressed output so a gzip bomb (e.g. a 50 MiB gzip of zeros that
+            // expands to GBs) can't exhaust memory on the ingestion hot path.
+            using var bounded = new RSCBoundedReadStream(gz, MaxDecompressedBytes);
+            using var reader = new StreamReader(bounded, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 4096, leaveOpen: false);
 
             string? firstNonBlank = null;
             for (var i = 0; i < 256; i++)
             {
-                var line = reader.ReadLine();
+                // Cap characters read per line so a crafted attachment with no newline (one
+                // multi-GB "line") can't be buffered whole by ReadLine().
+                var line = ReadLineBounded(reader, MaxLineChars);
                 if (line is null) break;
                 if (string.IsNullOrWhiteSpace(line)) continue;
                 firstNonBlank ??= line.Trim();
@@ -207,6 +215,15 @@ public sealed class RSCSqliteIndexingReportStore : RSCIReportStore
             }
             return firstNonBlank is null ? null : Truncate(firstNonBlank, 256);
         }
+        catch (RSCDecompressionBudgetExceededException ex)
+        {
+            // Exceeding the budget is treated as "no top frame" — the file is already stored, so we
+            // must not fail the upload. Logged at Warning so a bomb attempt is visible.
+            _logger.LogWarning(ex,
+                "Decompressed attachment {Platform}/{Attachment} exceeded the {Budget}-byte budget; leaving top_frame null",
+                platform, attachmentFileName, MaxDecompressedBytes);
+            return null;
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(ex,
@@ -214,6 +231,29 @@ public sealed class RSCSqliteIndexingReportStore : RSCIReportStore
                 platform, attachmentFileName);
             return null;
         }
+    }
+
+    // Reads one line (terminated by \n / \r\n / \r / EOF) but never accumulates more than maxChars
+    // characters. Once the cap is hit the rest of the line is drained without buffering, so a
+    // newline-free payload behind the bounded stream can't materialise a giant string here either.
+    private static string? ReadLineBounded(TextReader reader, int maxChars)
+    {
+        var sb = new StringBuilder();
+        var any = false;
+        int ch;
+        while ((ch = reader.Read()) != -1)
+        {
+            any = true;
+            if (ch == '\n') break;
+            if (ch == '\r')
+            {
+                if (reader.Peek() == '\n') reader.Read();
+                break;
+            }
+            if (sb.Length < maxChars) sb.Append((char)ch);
+            // else: keep consuming until the line terminator, but stop growing the buffer.
+        }
+        return any ? sb.ToString() : null;
     }
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max];
@@ -232,8 +272,11 @@ public sealed class RSCSqliteIndexingReportStore : RSCIReportStore
             using var raw = _inner.OpenRead(platform, attachmentFileName);
             if (raw is null) return null;
             using var gz = new GZipStream(raw, CompressionMode.Decompress, leaveOpen: false);
+            // JsonDocument.Parse buffers the ENTIRE stream into memory, so it must read through the
+            // decompressed-byte cap: a gzip bomb is rejected before it is fully materialised.
+            using var bounded = new RSCBoundedReadStream(gz, MaxDecompressedBytes);
 
-            using var doc = JsonDocument.Parse(gz);
+            using var doc = JsonDocument.Parse(bounded);
             if (doc.RootElement.ValueKind != JsonValueKind.Array) return null;
 
             var byLevel = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -285,6 +328,15 @@ public sealed class RSCSqliteIndexingReportStore : RSCIReportStore
 
             return JsonSerializer.Serialize(summary, SummaryJson);
         }
+        catch (RSCDecompressionBudgetExceededException ex)
+        {
+            // Bomb / oversized payload — already stored, so don't fail the upload; just skip the
+            // summary. Warning level so the attempt is visible (vs. the Debug "non-array" skip below).
+            _logger.LogWarning(ex,
+                "Decompressed attachment {Platform}/{File} exceeded the {Budget}-byte budget; leaving log_summary_json null",
+                platform, attachmentFileName, MaxDecompressedBytes);
+            return null;
+        }
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "TryExtractLogSummary: skipping {Platform}/{File} (probably encrypted or non-array shape)", platform, attachmentFileName);
@@ -311,6 +363,18 @@ public sealed class RSCSqliteIndexingReportStore : RSCIReportStore
     }
 
     private const int MaxLogEntriesScanned = 50_000;
+
+    // Hard cap on bytes read out of the GZipStream while inspecting an attachment. The compressed
+    // attachment is already capped at RSCReportServiceOptions.MaxAttachmentBytes (50 MiB default);
+    // this bounds the DECOMPRESSED work so a high-ratio gzip bomb can't OOM the ingestion path.
+    // Sized at ~5x the 50 MiB compressed cap; well above any legitimate crash trace / log dump.
+    // Tests/docs referencing the decompression budget should use this 256 MiB value.
+    private const long MaxDecompressedBytes = 256L * 1024 * 1024;
+
+    // Max characters buffered for a single line during top-frame extraction (a stack frame line is
+    // tiny; this only guards against a newline-free payload behind the bounded stream).
+    private const int MaxLineChars = 8 * 1024;
+
     private static readonly JsonSerializerOptions SummaryJson = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = false,
@@ -329,4 +393,75 @@ public sealed class RSCSqliteIndexingReportStore : RSCIReportStore
         if (labels is null || labels.Count == 0) return null;
         return JsonSerializer.Serialize(labels);
     }
+}
+
+/// <summary>
+/// Thrown by <see cref="RSCBoundedReadStream"/> when a read would push the cumulative number of
+/// decompressed bytes past the configured budget. Callers in the attachment-inspection path treat
+/// this as "no summary / no top frame" (the file is already durably stored) rather than failing.
+/// </summary>
+public sealed class RSCDecompressionBudgetExceededException : Exception
+{
+    public RSCDecompressionBudgetExceededException(long budgetBytes)
+        : base($"decompressed output exceeded the {budgetBytes}-byte budget") { }
+}
+
+/// <summary>
+/// Read-only forwarding stream that throws <see cref="RSCDecompressionBudgetExceededException"/>
+/// once more than <c>maxBytes</c> bytes have been read from the inner stream. Used to wrap a
+/// <see cref="GZipStream"/> so a decompression bomb is rejected mid-read instead of being fully
+/// materialised (by <c>JsonDocument.Parse</c> or a giant <c>ReadLine</c>).
+/// </summary>
+internal sealed class RSCBoundedReadStream : Stream
+{
+    private readonly Stream _inner;
+    private readonly long _maxBytes;
+    private long _read;
+
+    public RSCBoundedReadStream(Stream inner, long maxBytes)
+    {
+        _inner = inner;
+        _maxBytes = maxBytes;
+    }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        var n = _inner.Read(buffer, offset, count);
+        Account(n);
+        return n;
+    }
+
+    public override int Read(Span<byte> buffer)
+    {
+        var n = _inner.Read(buffer);
+        Account(n);
+        return n;
+    }
+
+    public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        var n = await _inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+        Account(n);
+        return n;
+    }
+
+    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        => ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+    private void Account(int n)
+    {
+        if (n <= 0) return;
+        _read += n;
+        if (_read > _maxBytes) throw new RSCDecompressionBudgetExceededException(_maxBytes);
+    }
+
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => _read; set => throw new NotSupportedException(); }
+    public override void Flush() { }
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }

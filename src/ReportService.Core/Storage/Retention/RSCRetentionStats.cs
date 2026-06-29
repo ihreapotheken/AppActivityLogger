@@ -11,4 +11,13 @@ public sealed record RSCRetentionStats(
     DateTimeOffset? Oldest,
     DateTimeOffset? Newest,
     bool Enabled,
-    int MaxAgeDays);
+    int MaxAgeDays,
+    long? DiskTotalBytes = null,
+    long? DiskFreeBytes = null)
+{
+    /// <summary>Percent of the underlying filesystem in use, or null if disk space is unknown.</summary>
+    public double? DiskUsedPercent =>
+        DiskTotalBytes is > 0 && DiskFreeBytes is { } free
+            ? (DiskTotalBytes.Value - free) * 100.0 / DiskTotalBytes.Value
+            : null;
+}

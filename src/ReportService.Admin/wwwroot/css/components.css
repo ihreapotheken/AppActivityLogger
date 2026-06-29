@@ -16,7 +16,7 @@ button, .btn {
 button.primary, .btn.primary {
     background: var(--accent);
     border-color: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
 }
 button.danger, .btn.danger {
     background: var(--danger-bg);
@@ -56,8 +56,8 @@ select {
     -webkit-appearance: none;
     -moz-appearance: none;
     appearance: none;
-    /* Caret rendered as a small inline SVG so we don't depend on a font/icon asset. */
-    background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath fill='%235c616b' d='M1 1l5 5 5-5'/%3E%3C/svg%3E");
+    /* Shared inline-SVG caret (see --select-caret) so we don't depend on a font/icon asset. */
+    background-image: var(--select-caret);
     background-repeat: no-repeat;
     background-position: right 0.65rem center;
     background-size: 10px 7px;
@@ -79,25 +79,68 @@ input:focus, select:focus {
 .field label { display: block; margin-bottom: var(--space-1); font-weight: 500; }
 
 /* ---- Collapsible page sections ---- */
+/* Shared reveal: <details> can't transition its own height in CSS, but fading/sliding the panel in
+   on open removes the abrupt "snap". Open-direction only — the browser hides content instantly on
+   close, which no pure-CSS approach can animate. */
+@keyframes reveal-section {
+    from { opacity: 0; transform: translateY(-0.25rem); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* A section whose <h2> heading is itself the toggle (e.g. Errors → Recent errors). */
 details.collapsible-section { margin: var(--space-4) 0; }
 details.collapsible-section > summary {
     cursor: pointer;
     list-style: none;
     user-select: none;
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: var(--space-2);
+    width: fit-content;
 }
 details.collapsible-section > summary::-webkit-details-marker { display: none; }
 details.collapsible-section > summary::before {
     content: "▸";
     font-size: 0.85em;
     color: var(--fg-muted);
-    transition: transform 120ms ease;
+    transition: transform 0.15s ease;
     display: inline-block;
 }
 details.collapsible-section[open] > summary::before { transform: rotate(90deg); }
-details.collapsible-section > summary h2 { margin: 0; display: inline; }
+details.collapsible-section > summary h2 { margin: 0; display: inline; transition: color 0.12s ease; }
+details.collapsible-section > summary:hover h2 { color: var(--accent); }
+details.collapsible-section[open] > :not(summary) { animation: reveal-section 0.18s ease; }
+
+/* Always-visible "how to read this" note — a soft, accent-bordered info callout. */
+.hint-box {
+    margin: var(--space-4) 0;
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--accent-bg);
+    color: var(--fg);
+    font-size: 0.9rem;
+    line-height: 1.55;
+}
+/* Tidy the first/last child margins inside the box. */
+.hint-box > :first-child { margin-top: 0; }
+.hint-box > :last-child { margin-bottom: 0; }
+/* "Full details in Docs →" deep link, set off from the explanation above it. */
+.hint-box > .hint-docs {
+    margin-top: var(--space-3);
+    padding-top: var(--space-2);
+    border-top: 1px solid var(--border);
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+.hint-box > .hint-docs > a { color: var(--accent); text-decoration: none; }
+.hint-box > .hint-docs > a:hover { text-decoration: underline; }
+
+@media (prefers-reduced-motion: reduce) {
+    details.collapsible-section[open] > :not(summary) { animation: none; }
+    details.collapsible-section > summary::before { transition: none; }
+}
 
 /* ---- Upload grid (split host vs consumer mapping forms) ---- */
 .upload-grid {
@@ -146,14 +189,75 @@ th {
 }
 tr:last-child td { border-bottom: none; }
 
+/* ---- Standardised table headers: hover tooltips + click-to-sort ----
+   Emitted by RSATableHeaderTagHelper (tip="..." / sort="..."). Tooltips use the native `title`
+   attribute (browser-drawn, so never clipped by `table { overflow: hidden }`, no JS, CSP-safe).
+   Sorting is driven by sortable-tables.js toggling aria-sort — the caret below is pure CSS, no
+   inline styles. */
+th.th-help { cursor: help; }
+th.th-help:hover .th-label,
+th.th-help:hover .th-btn { text-decoration: underline dotted; text-underline-offset: 3px; }
+th.th-sortable { cursor: default; }
+th .th-btn {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: 0;
+    margin: 0;
+    padding: 0;
+    cursor: pointer;
+    text-transform: inherit;
+    letter-spacing: inherit;
+    font-weight: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+th .th-btn:hover { color: var(--fg); }
+th .th-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+th[aria-sort="ascending"] .th-btn,
+th[aria-sort="descending"] .th-btn { color: var(--fg); }
+/* Styled header tooltip (rendered on <body> by header-tooltips.js so the table's overflow can't
+   clip it). Positioned via JS; only the appearance lives here. */
+.th-tooltip {
+    position: fixed;
+    z-index: 1000;
+    max-width: 22rem;
+    padding: 0.45rem 0.65rem;
+    background: var(--fg);
+    color: #fff;
+    font-size: 0.78rem;
+    font-weight: 400;
+    line-height: 1.4;
+    letter-spacing: 0;
+    text-transform: none;
+    text-align: left;
+    border-radius: var(--radius-sm);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+    pointer-events: none;
+    white-space: normal;
+}
+.th-tooltip[hidden] { display: none; }
+
+.th-caret { font-size: 0.8em; line-height: 1; opacity: 0.4; }
+.th-caret::after { content: "\2195"; }                                   /* ↕ idle */
+th[aria-sort="ascending"]  .th-caret { opacity: 0.95; }
+th[aria-sort="ascending"]  .th-caret::after { content: "\25B2"; }        /* ▲ */
+th[aria-sort="descending"] .th-caret { opacity: 0.95; }
+th[aria-sort="descending"] .th-caret::after { content: "\25BC"; }        /* ▼ */
+
 /* ---- Utility text ---- */
 .muted { color: var(--fg-muted); }
 .mono { font-family: var(--font-mono); font-size: 0.92em; }
+/* Standard "no rows / nothing here" notice rendered by the <empty-state> tag helper, so every
+   listing's empty message reads the same and is restyled from one place. */
+.empty-state { color: var(--fg-muted); margin: var(--space-4) 0; }
+.empty-state code { font-size: 0.9em; }
 .crumbs { color: var(--fg-muted); margin-bottom: var(--space-1); font-size: 0.9rem; }
 .crumbs a { color: var(--fg-muted); }
 pre.report {
-    background: #0f1115;
-    color: #d8dde5;
+    background: var(--code-bg);
+    color: var(--code-fg);
     padding: var(--space-4) 1.2rem;
     border-radius: var(--radius-md);
     overflow-x: auto;
@@ -176,6 +280,21 @@ pre.report {
 }
 .tile-label { font-size: 0.75rem; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .tile-value { font-size: 1.5rem; font-weight: 600; margin-top: var(--space-1); }
+.tile-sub { font-size: 0.75rem; color: var(--fg-muted); margin-top: 2px; }
+
+/* Tiles that double as navigation buttons (dashboard "Submissions" row). */
+a.tile-link {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+    transition: border-color 0.12s ease, background 0.12s ease;
+}
+a.tile-link:hover {
+    border-color: var(--accent);
+    background: var(--accent-bg);
+    text-decoration: none;
+}
+a.tile-link .tile-value { color: var(--accent); }
 
 /* ---- Key-value lists (status / details) ---- */
 .kv { list-style: none; padding: 0; margin: 0; }
@@ -214,11 +333,20 @@ pre.report {
     padding: 2px 8px;
     font-size: 0.75rem;
 }
-.filters label { display: flex; flex-direction: column; font-size: 0.8rem; color: var(--fg-muted); }
+/* Shared inline-form controls for the filter bar and the in-card form rows. One box model
+   (2.4rem height, stripped native chrome, the shared --select-caret) keeps every control and its
+   submit button aligned across .filters and .form-row — previously two byte-identical blocks. */
+.filters label,
+.form-row label,
+.logcat-controls label { display: flex; flex-direction: column; font-size: 0.8rem; color: var(--fg-muted); }
 .filters input,
 .filters select,
 .filters button,
-.filters .btn {
+.filters .btn,
+.form-row input,
+.form-row select,
+.form-row button,
+.form-row .btn {
     height: 2.4rem;
     min-height: 2.4rem;
     box-sizing: border-box;
@@ -228,17 +356,20 @@ pre.report {
     line-height: 1.2;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    background: #fff;
+    background: var(--surface);
     color: var(--fg);
     appearance: none;
     -webkit-appearance: none;
     -moz-appearance: none;
 }
 .filters input,
-.filters select { margin-top: var(--space-1); }
-.filters select {
+.filters select,
+.form-row input,
+.form-row select { margin-top: var(--space-1); }
+.filters select,
+.form-row select {
     padding-right: 1.75rem;
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'><path fill='%23555' d='M2 4l4 4 4-4z'/></svg>");
+    background-image: var(--select-caret);
     background-repeat: no-repeat;
     background-position: right 0.5rem center;
     background-size: 0.7rem;
@@ -397,14 +528,14 @@ button.is-loading { opacity: 0.7; cursor: wait; }
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
 }
-.logcat-controls label { display: flex; flex-direction: column; font-size: 0.8rem; color: var(--fg-muted); flex: 1 1 auto; min-width: 12rem; }
+.logcat-controls label { flex: 1 1 auto; min-width: 12rem; } /* base label rule is shared above */
 .logcat-controls input, .logcat-controls select { margin-top: var(--space-1); }
 .logcat-controls .logcat-count { margin-left: auto; align-self: center; }
 .logcat-controls .btn { align-self: flex-end; }
 
 .logcat {
-    background: #0f1115;
-    color: #d8dde5;
+    background: var(--code-bg);
+    color: var(--code-fg);
     padding: var(--space-3) var(--space-4);
     border-radius: var(--radius-md);
     overflow: auto;
@@ -422,15 +553,15 @@ button.is-loading { opacity: 0.7; cursor: wait; }
     min-width: 3.5rem;
     text-align: right;
     margin-right: 0.6rem;
-    color: #6f7787;
+    color: var(--code-muted);
     user-select: none;
 }
 .logcat-error   { color: #ff8b8b; background: rgba(255, 70, 70, 0.06); }
 .logcat-warn    { color: #ffcd6f; }
 .logcat-info    { color: #9ad0ff; }
 .logcat-debug   { color: #b8c7d9; }
-.logcat-verbose { color: #6f7787; }
-.logcat-other   { color: #d8dde5; }
+.logcat-verbose { color: var(--code-muted); }
+.logcat-other   { color: var(--code-fg); }
 
 /* ---- Stats page ---- */
 .presets { display: flex; gap: var(--space-2); margin-left: auto; align-items: flex-end; }
@@ -441,15 +572,173 @@ button.is-loading { opacity: 0.7; cursor: wait; }
     padding: var(--space-3) var(--space-3) var(--space-2);
     overflow-x: auto;
 }
+/* SVG daily bar chart. A fixed-width viewBox scaled UNIFORMLY (height:auto, default
+   preserveAspectRatio) so the date labels never stretch horizontally — the previous
+   preserveAspectRatio="none" distorted them. Geometry is set via SVG attributes, not inline CSS,
+   to satisfy the admin CSP (style-src 'self'). */
 .bar-chart {
     display: block;
     width: 100%;
-    min-width: 480px;
-    height: 220px;
+    height: auto;
 }
-.bar-chart .bar-multipart { fill: var(--badge-multipart-fg); }
-.bar-chart .bar-json      { fill: var(--badge-json-fg); }
-.bar-chart .bar-label     { fill: var(--fg-muted); font-size: 10px; font-family: var(--font-mono); }
+/* On-brand chart palette (brand red / amber), matching the "By channel" donut — decoupled from the
+   blue/amber channel BADGE tokens, which keep their own table coding. */
+.bar-chart .bar-multipart { fill: var(--chart-1); }
+.bar-chart .bar-json      { fill: var(--chart-2); }
+.bar-chart .bar-label     { fill: var(--fg-muted); font-size: 9px; font-family: var(--font-mono); }
+
+/* ---- Shared chart chrome (bar / line / donut) ----------------------------------------------
+   Geometry is always set via SVG attributes (CSP-safe); these rules only colour + size. The hover
+   tooltip is rendered on <body> by chart-tooltips.js and positioned via the CSSOM. */
+.chart-tooltip {
+    position: fixed;
+    z-index: 1000;
+    max-width: 20rem;
+    padding: 0.4rem 0.6rem;
+    background: var(--fg);
+    color: #fff;
+    font-size: 0.78rem;
+    line-height: 1.4;
+    border-radius: var(--radius-sm);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+    pointer-events: none;
+    white-space: pre-line;
+}
+.chart-tooltip[hidden] { display: none; }
+
+/* Axis gridlines + tick labels shared by the bar and line charts. */
+.chart-grid { stroke: var(--border); stroke-width: 1; }
+.chart-baseline { stroke: var(--fg-muted); stroke-width: 1; }
+.chart-tick { fill: var(--fg-muted); font-size: 9px; font-family: var(--font-mono); }
+
+/* Categorical palette — one class colours a chart element three ways so the chart and its legend
+   stay in sync from a single index: `fill` for solid shapes (bars), `stroke` for ring segments
+   (donut slices, drawn with fill:none), and `background` for the HTML legend keys. */
+.chart-c1 { fill: var(--chart-1); stroke: var(--chart-1); background: var(--chart-1); }
+.chart-c2 { fill: var(--chart-2); stroke: var(--chart-2); background: var(--chart-2); }
+.chart-c3 { fill: var(--chart-3); stroke: var(--chart-3); background: var(--chart-3); }
+.chart-c4 { fill: var(--chart-4); stroke: var(--chart-4); background: var(--chart-4); }
+.chart-c5 { fill: var(--chart-5); stroke: var(--chart-5); background: var(--chart-5); }
+.chart-c6 { fill: var(--chart-6); stroke: var(--chart-6); background: var(--chart-6); }
+
+/* Bar chart: a transparent hit-rect spans each column so hovering anywhere over a day shows the
+   tooltip; the column dims slightly on hover as an affordance. */
+.bar-chart .bar-hit { fill: transparent; cursor: pointer; }
+.bar-chart .bar-group:hover .bar-multipart,
+.bar-chart .bar-group:hover .bar-json { opacity: 0.78; }
+.bar-chart .bar-value { fill: var(--fg-muted); font-size: 8.5px; font-family: var(--font-mono); }
+
+/* Several small charts laid out side by side (e.g. the Stats proportion donuts). */
+.charts-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: var(--space-4);
+    margin: var(--space-4) 0 var(--space-5);
+}
+.chart-card { margin: 0; }
+.chart-card h3 { margin: 0 0 var(--space-3); font-size: 1rem; }
+
+/* Trend variant: wider minimum so time-series line charts (e.g. "Activity over time") render
+   ~2-up on desktop instead of cramped 3-up, giving each chart roughly double the width — and a
+   readable height once the fixed-aspect SVG scales up. Stacks to 1-up on narrow viewports. */
+.charts-row--trend {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr));
+}
+
+/* ---- Line chart ---- */
+.line-chart { display: block; width: 100%; height: auto; }
+.line-chart .line-area { fill: var(--accent-bg); }
+.line-chart .line-path {
+    fill: none;
+    stroke: var(--chart-line);
+    stroke-width: 2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+}
+.line-chart .line-dot { fill: var(--surface); stroke: var(--chart-line); stroke-width: 2; cursor: pointer; }
+/* A full-height transparent band per point makes the whole column hoverable (the dots alone are a
+   ~2px target once scaled); the dot fills in as an affordance while hovering anywhere in its band. */
+.line-chart .line-hit { fill: transparent; cursor: pointer; }
+.line-chart .line-col:hover .line-dot,
+.line-chart .line-dot:focus { fill: var(--chart-line); }
+
+/* ---- Donut chart ---- */
+.donut { display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap; }
+.donut-chart { flex: 0 0 auto; width: 140px; height: 140px; }
+.donut-track { stroke: var(--border); }
+/* Slices are stroked rings: force fill:none so the palette class (which also sets fill, for bars)
+   can't turn a slice into a filled disc — the colour must come from its stroke. */
+.donut-slice { fill: none; cursor: pointer; transition: opacity 0.12s ease; }
+.donut-slice:hover { opacity: 0.8; }
+.donut-total { fill: var(--fg); font-size: 22px; font-weight: 600; }
+.donut-total-label { fill: var(--fg-muted); font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; }
+.donut-legend { list-style: none; margin: 0; padding: 0; flex: 1 1 8rem; min-width: 8rem; font-size: 0.85rem; }
+.donut-legend li { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) 0; }
+.donut-key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto; }
+.donut-key-label { color: var(--fg); }
+.donut-key-val { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+/* Keep the (often long) crash fault-site on one line with ellipsis — used by the dashboard's
+   "Latest submissions" and "Trending issues" tables. */
+.cell-frame {
+    max-width: 340px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.8rem;
+}
+
+/* Delete controls: the "delete all matching" bar above a listing, and the per-row delete link. */
+.delete-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+    margin: var(--space-3) 0;
+}
+.row-delete { display: inline; }
+.link-danger {
+    font: inherit;
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--danger);
+    cursor: pointer;
+}
+.link-danger:hover { text-decoration: underline; }
+
+/* "Trending issues" change indicator. More crashes is bad, so a rise is red and a fall is green. */
+.trend { font-weight: 600; white-space: nowrap; }
+.trend-up { color: var(--danger); }
+.trend-down { color: var(--success); }
+.trend-flat { color: var(--fg-muted); font-weight: 400; }
+
+/* Retention: prominent summary stats + a scannable heatmap on the cohort table. Bucket classes
+   (not inline styles) keep this CSP-compatible. */
+.ret-summary { display: flex; flex-wrap: wrap; gap: var(--space-3); }
+.ret-stat {
+    flex: 1 1 150px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+}
+.ret-stat .ret-k { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); }
+.ret-stat .ret-v { font-size: 1.7rem; font-weight: 600; line-height: 1.1; margin: 2px 0; }
+.ret-stat .ret-n { font-size: 0.75rem; color: var(--fg-muted); }
+.ret-cell { font-variant-numeric: tabular-nums; }
+/* Red → green retention heatmap (translucent so it works on light + dark surfaces). */
+.ret-c0 { background: rgba(214, 69, 69, 0.20); }
+.ret-c1 { background: rgba(224, 142, 52, 0.20); }
+.ret-c2 { background: rgba(214, 198, 60, 0.20); }
+.ret-c3 { background: rgba(120, 188, 88, 0.20); }
+.ret-c4 { background: rgba(58, 166, 85, 0.30); }
+
+/* Funnel: a per-step bar (SVG rect width attribute = conversion %, CSP-safe) and a drop-off cue. */
+.funnel-table .funnel-bar-cell { width: 34%; min-width: 160px; vertical-align: middle; }
+.funnel-bar { display: block; width: 100%; height: 12px; }
+.funnel-bar-track { fill: var(--border); }
+.funnel-bar-fill  { fill: var(--accent); }
+.funnel-drop { color: var(--danger); font-weight: 600; }
 .legend { font-size: 0.85rem; color: var(--fg-muted); }
 .swatch {
     display: inline-block;
@@ -459,8 +748,8 @@ button.is-loading { opacity: 0.7; cursor: wait; }
     vertical-align: -1px;
     margin: 0 var(--space-1) 0 var(--space-3);
 }
-.swatch-multipart { background: var(--badge-multipart-fg); }
-.swatch-json      { background: var(--badge-json-fg); }
+.swatch-multipart { background: var(--chart-1); }
+.swatch-json      { background: var(--chart-2); }
 
 .stats-grid {
     display: grid;
@@ -493,13 +782,13 @@ button.is-loading { opacity: 0.7; cursor: wait; }
     overflow-wrap: anywhere;
 }
 .stats-table .bar-col { width: 30%; }
+/* Top-N bar: an SVG so the proportional width is an attribute (CSP-safe), not an inline style. */
 .hbar {
-    display: inline-block;
+    display: block;
+    width: 100%;
     height: 8px;
-    background: var(--accent);
-    border-radius: 2px;
-    min-width: 2px;
 }
+.hbar-fill { fill: var(--accent); }
 
 /* ---- Accessibility: skip-to-content link ---- */
 .visually-hidden {
@@ -523,7 +812,7 @@ button.is-loading { opacity: 0.7; cursor: wait; }
     clip: auto;
     white-space: normal;
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
 }
 
 /* Platform-scope tabs used on Analytics + Errors dashboards. */
@@ -543,7 +832,7 @@ button.is-loading { opacity: 0.7; cursor: wait; }
 .scope-tabs a:hover { background: var(--accent-bg); }
 .scope-tabs a.active {
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
     border-color: var(--accent);
 }
 
@@ -568,7 +857,7 @@ button.is-loading { opacity: 0.7; cursor: wait; }
 .chip {
     display: inline-block;
     padding: 0.2rem 0.55rem;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     border: 1px solid var(--border);
     background: var(--surface);
     color: var(--fg-muted);
@@ -578,8 +867,8 @@ button.is-loading { opacity: 0.7; cursor: wait; }
 }
 a.chip:hover { background: var(--accent-bg); color: var(--fg); }
 .chip-platform { background: var(--accent-bg); color: var(--fg); border-color: var(--accent-bg); font-family: var(--font-mono); }
-.chip-type { font-family: var(--font-mono); border-color: #e5b8b8; background: #fdecec; color: #7a1f1f; }
-a.chip-type:hover { background: #fbdcdc; color: #7a1f1f; }
+.chip-type { font-family: var(--font-mono); border-color: var(--danger-soft-border); background: var(--danger-bg); color: var(--danger-soft-fg); }
+a.chip-type:hover { background: #fbdcdc; color: var(--danger-soft-fg); }
 .chip-channel { font-family: var(--font-mono); }
 .chip-attachment { background: #eef6ee; color: #1f5b1f; border-color: #cbe3cb; }
 .chip-label { background: var(--surface-alt); }
@@ -610,43 +899,15 @@ pre.report.stack {
     font-size: 0.88rem;
 }
 
-/* Inline form: a single-row form (label + control + button) used inside cards. Reuses the same
-   input/select/button height as the .filters bar so the button lines up with the dropdown. */
+/* Inline form: a single-row form (label + control + button) used inside cards. The control box
+   model + caret are shared with the .filters bar (see the consolidated rule above) so the button
+   lines up with the dropdown; only the bare flex container is unique to .form-row. */
 .form-row {
     display: flex;
     flex-wrap: wrap;
     align-items: flex-end;
     gap: var(--space-3);
     margin: var(--space-2) 0 0;
-}
-.form-row label { display: flex; flex-direction: column; font-size: 0.8rem; color: var(--fg-muted); }
-.form-row input,
-.form-row select,
-.form-row button,
-.form-row .btn {
-    height: 2.4rem;
-    min-height: 2.4rem;
-    box-sizing: border-box;
-    padding: 0 var(--space-2);
-    margin: 0;
-    font: inherit;
-    line-height: 1.2;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: #fff;
-    color: var(--fg);
-    appearance: none;
-    -webkit-appearance: none;
-    -moz-appearance: none;
-}
-.form-row input,
-.form-row select { margin-top: var(--space-1); }
-.form-row select {
-    padding-right: 1.75rem;
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'><path fill='%23555' d='M2 4l4 4 4-4z'/></svg>");
-    background-repeat: no-repeat;
-    background-position: right 0.5rem center;
-    background-size: 0.7rem;
 }
 
 /* ---- Attachment overview (Report detail) ---- */
@@ -658,10 +919,10 @@ pre.report.stack {
 }
 .tiles.tiles-compact .tile { padding: var(--space-2) var(--space-3); }
 .tiles.tiles-compact .tile-value { font-size: 1.15rem; }
-.tile-error { border-color: #e5b8b8; background: #fdecec; }
-.tile-error .tile-label { color: #7a1f1f; }
-.tile-warn { border-color: #e5d2b1; background: #fbf2dc; }
-.tile-warn .tile-label { color: #7a4f1f; }
+.tile-error { border-color: var(--danger-soft-border); background: var(--danger-bg); }
+.tile-error .tile-label { color: var(--danger-soft-fg); }
+.tile-warn { border-color: var(--warn-soft-border); background: var(--warn-soft-bg); }
+.tile-warn .tile-label { color: var(--warn-soft-fg); }
 .logcat-first-errors { font-size: 0.85rem; line-height: 1.45; max-height: 14rem; overflow: auto; }
 .logcat-details > summary {
     cursor: pointer;
@@ -676,35 +937,53 @@ pre.report.stack {
    impossible to confuse at a glance. */
 .env-badge {
     display: inline-block;
-    margin-left: var(--space-2);
-    padding: 2px 8px;
-    font-size: 0.75rem;
-    font-weight: 600;
+    padding: 0.12rem 0.5rem;
+    font-size: 0.62rem;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    border-radius: 999px;
-    border: 1px solid currentColor;
+    letter-spacing: 0.08em;
+    line-height: 1.35;
+    border-radius: var(--radius-pill);
+    background: var(--surface-alt);
+    color: var(--fg-muted);
 }
-.env-badge.env-production { color: #b9123e; background: #ffe5ed; }
-.env-badge.env-staging    { color: #5a3500; background: #ffeec5; }
+.env-badge.env-production  { color: #b9123e; background: #ffe5ed; }
+.env-badge.env-staging     { color: #5a3500; background: #ffeec5; }
+.env-badge.env-development { color: #1b5e20; background: #e6f5ea; }
 
 
 /* Per-channel chip palette — multipart (SDK) vs json (API). Used in the Errors top-N table
    to show how each fault site splits across ingestion paths, and in the recent-errors row to
-   tag a single occurrence's path. */
-.chip-channel-m { font-family: var(--font-mono); background: #e0f2fe; color: #075985; border-color: #7dd3fc; }
-.chip-channel-j { font-family: var(--font-mono); background: #fef3c7; color: #854d0e; border-color: #fcd34d; }
+   tag a single occurrence's path. Shares the one channel palette with the .badge-channel-*
+   pills (the --badge-multipart-* / --badge-json-* tokens) so the channel coding stays identical
+   everywhere, from a single source. */
+.chip-channel-m { font-family: var(--font-mono); background: var(--badge-multipart-bg); color: var(--badge-multipart-fg); border-color: var(--badge-multipart-border); }
+.chip-channel-j { font-family: var(--font-mono); background: var(--badge-json-bg); color: var(--badge-json-fg); border-color: var(--badge-json-border); }
 
 /* API explorer page — Swagger UI ships its own self-contained HTML at `/docs/`, so we render
-   it inside an iframe and let the admin shell (sidebar + page header) wrap it. The iframe
-   stretches to fill the viewport below the page header so the explorer reads as a real page,
-   not a widget squeezed into a card. */
-.api-docs-frame { padding: 0; overflow: hidden; }
+   it inside an iframe and let the admin shell (sidebar + page header) wrap it. The frame flexes
+   to fill all the height left below the page header — robust to the header/description size, with
+   no magic pixel offset. `main` becomes a flex column only on this page (scoped via :has), so the
+   change can't affect any other view. */
+body.shell:has(.api-docs-frame) main {
+    display: flex;
+    flex-direction: column;
+    min-height: calc(100vh - 2 * var(--space-5)); /* viewport minus main's top+bottom margins */
+    padding-bottom: var(--space-4);
+}
+.api-docs-frame {
+    flex: 1 1 auto;
+    display: flex;
+    margin-bottom: 0;
+    padding: 0;
+    overflow: hidden;
+    min-height: 600px;
+}
 .api-docs-frame iframe {
+    flex: 1 1 auto;
     display: block;
     width: 100%;
-    height: calc(100vh - 220px);
-    min-height: 600px;
+    min-height: 0;
     border: 0;
 }
 
@@ -722,6 +1001,7 @@ pre.report.stack {
     margin-top: var(--space-5);
     margin-bottom: var(--space-2);
     line-height: 1.3;
+    scroll-margin-top: var(--space-4); /* breathing room when a TOC anchor jumps to a heading */
 }
 .docs-content h1:first-child,
 .docs-content > :first-child { margin-top: 0; }
@@ -741,8 +1021,8 @@ pre.report.stack {
     border-radius: var(--radius-sm);
 }
 .docs-content pre {
-    background: #0f1115;
-    color: #d8dde5;
+    background: var(--code-bg);
+    color: var(--code-fg);
     padding: var(--space-3) 1rem;
     border-radius: var(--radius-md);
     overflow-x: auto;
@@ -769,13 +1049,144 @@ pre.report.stack {
 }
 .docs-content img { max-width: 100%; height: auto; }
 
+/* ---- Docs page: chapter tabs + content card + sticky "on this page" TOC ----
+   The tab bar (and its bottom divider) span the full width; only the content + TOC below are capped
+   and centred, so on large screens the tabs stay edge-to-edge while the reading column centres. */
+.docs-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-bottom: var(--space-4);
+    padding-bottom: var(--space-3);
+    border-bottom: 1px solid var(--border);
+}
+.docs-tab {
+    font: inherit;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--fg-muted);
+    background: var(--surface-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    padding: 0.3rem 0.85rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.docs-tab:hover { color: var(--fg); border-color: var(--fg-muted); }
+.docs-tab.is-active {
+    color: var(--on-accent);
+    background: var(--accent);
+    border-color: var(--accent);
+}
+.docs-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.docs-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 15rem;
+    gap: var(--space-5);
+    align-items: start;
+    max-width: 90rem;
+    margin-inline: auto;
+}
+.docs-main { min-width: 0; }
+.docs-panel {
+    margin: 0; /* fills its grid column — uses all the width next to the TOC */
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: var(--space-5);
+}
+.docs-panel[hidden], .docs-toc[hidden] { display: none; }
+
+/* Stretch the aside to the full grid-row height (overriding the row's `align-items: start`)
+   so the sticky TOC has a tall enough containing block to stay pinned through the whole
+   content scroll — without this it would scroll off after the aside's own short height. */
+.docs-aside { min-width: 0; align-self: stretch; }
+.docs-toc {
+    position: sticky;
+    top: var(--space-4);
+    font-size: 0.85rem;
+    max-height: calc(100vh - 2 * var(--space-5));
+    overflow-y: auto;
+}
+.docs-toc-title {
+    margin: 0 0 var(--space-2);
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--fg-muted);
+}
+.docs-toc ul { list-style: none; margin: 0; padding: 0; border-left: 1px solid var(--border); }
+.docs-toc li { margin: 0; }
+.docs-toc li a {
+    display: block;
+    padding: 0.25rem 0 0.25rem var(--space-3);
+    margin-left: -1px;
+    border-left: 2px solid transparent;
+    color: var(--fg-muted);
+    text-decoration: none;
+    line-height: 1.35;
+}
+.docs-toc li.toc-l3 a { padding-left: calc(var(--space-3) + var(--space-4)); font-size: 0.95em; }
+.docs-toc li a:hover { color: var(--fg); }
+.docs-toc li a.is-current {
+    color: var(--accent);
+    border-left-color: var(--accent);
+    font-weight: 600;
+}
+
+@media (max-width: 920px) {
+    .docs-body { grid-template-columns: 1fr; }
+    .docs-aside { display: none; } /* the sticky side TOC folds away on narrow viewports */
+}
+
 /* Wipe-all zone — visually quarantined from the rest of the maintenance actions so an operator
    doesn't fat-finger their way into deleting everything. */
 section.card.danger-zone {
-    border-color: #e5b8b8;
-    background: #fff7f7;
+    border-color: var(--danger-soft-border);
+    background: var(--danger-soft-bg);
 }
-section.card.danger-zone h2 { color: #7a1f1f; }
+section.card.danger-zone h2 { color: var(--danger-soft-fg); }
+
+/* ---- Confirmation modal ----
+ * Shared <dialog> behind every destructive form submit (delete one / delete matching / wipe all).
+ * Driven by confirm-dialog.js. Native <dialog> centres itself and handles focus + Escape; we only
+ * style the box and the backdrop. */
+.confirm-modal {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0;
+    max-width: 30rem;
+    width: calc(100% - var(--space-6));
+    background: var(--surface);
+    color: var(--fg);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.28);
+}
+.confirm-modal::backdrop {
+    background: rgba(15, 17, 21, 0.45);
+}
+.confirm-modal-card {
+    padding: var(--space-5);
+}
+.confirm-modal-title {
+    margin: 0 0 var(--space-3);
+    font-size: 1.05rem;
+    color: var(--danger-soft-fg);
+}
+.confirm-modal-message {
+    margin: 0 0 var(--space-5);
+    color: var(--fg);
+    line-height: 1.45;
+    /* Filenames/nouns are arbitrary; keep long strings from blowing out the dialog width. */
+    overflow-wrap: anywhere;
+}
+.confirm-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-3);
+}
 
 /* Per-level log chips on the Problem-reports listing + report-detail summary panel. Color
    palette matches the iOS LogEntryLevel cases — info/debug/warning/error read at a glance,
@@ -784,6 +1195,6 @@ section.card.danger-zone h2 { color: #7a1f1f; }
 .chip-loglevel-debug    { background: #f3f4f6; color: #374151; border-color: #d1d5db; }
 .chip-loglevel-info     { background: #eff6ff; color: #1e40af; border-color: #bfdbfe; }
 .chip-loglevel-warning  { background: #fffbeb; color: #92400e; border-color: #fde68a; }
-.chip-loglevel-error    { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
+.chip-loglevel-error,
 .chip-loglevel-deverror { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
 .chip-loglevel-preview  { background: #f5f3ff; color: #5b21b6; border-color: #ddd6fe; }

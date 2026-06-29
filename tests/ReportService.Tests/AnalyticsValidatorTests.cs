@@ -100,6 +100,20 @@ public class AnalyticsValidatorTests
     }
 
     [Fact]
+    public void Clock_skew_in_the_past_is_also_rejected()
+    {
+        // CODE-REVIEW finding #34: the skew check is symmetric — |occurredAt - receivedAt| — so a
+        // legitimately backfilled event (occurredAt 2 days ago) is rejected the same way a future
+        // one is. Pins the symmetric window so a future backfill allowance turns this red.
+        var v = Build(new RSCAnalyticsOptions { MaxClockSkewSeconds = 60 });
+        var past = MakeEvent() with { OccurredAt = Now.AddDays(-2).ToString("O") };
+        var batch = MakeBatch(past);
+        var r = v.Validate(batch, Now);
+        Assert.Single(r.Rejected);
+        Assert.Equal(RSCAnalyticsDeadLetterReasons.ClockSkew, r.Rejected[0].Reason);
+    }
+
+    [Fact]
     public void Too_many_events_rejects_batch()
     {
         var v = Build(new RSCAnalyticsOptions { MaxEventsPerBatch = 2 });

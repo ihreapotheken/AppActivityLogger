@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.OpenApi.Models;
 using ReportService.Analytics;
 using ReportService.Audit;
+using ReportService.DeepLinks;
 using ReportService.Endpoints;
 using ReportService.Hosting;
 using ReportService.Ingestion;
@@ -13,6 +14,7 @@ using ReportService.Observability;
 using ReportService.Options;
 using ReportService.Security;
 using ReportService.Storage;
+using ReportService.Storage.ApiKeys;
 using ReportService.Storage.Retention;
 using ReportService.Validation;
 
@@ -35,9 +37,14 @@ var analyticsOptions = builder.Configuration
     .GetSection(RSCAnalyticsOptions.SectionName)
     .Get<RSCAnalyticsOptions>() ?? new RSCAnalyticsOptions();
 
+var deepLinkOptions = builder.Configuration
+    .GetSection(RSCDeepLinkOptions.SectionName)
+    .Get<RSCDeepLinkOptions>() ?? new RSCDeepLinkOptions();
+
 builder.Services.AddSingleton(options);
 builder.Services.AddSingleton(proxyHeaders);
 builder.Services.AddSingleton(analyticsOptions);
+builder.Services.AddSingleton(deepLinkOptions);
 
 builder.WebHost.ConfigureKestrel(k => RSCHostingExtensions.ConfigureHardenedKestrel(k, maxRequestBodySize: options.MaxUploadBytes));
 
@@ -70,6 +77,10 @@ builder.Services.AddSingleton<RSCAnalyticsIdentifierHasher>();
 builder.Services.AddSingleton<RSCAnalyticsValidator>();
 builder.Services.AddSingleton<RSCIAnalyticsStore, RSCSqliteAnalyticsStore>();
 builder.Services.AddSingleton<RSAnalyticsIngestionService>();
+
+// Deferred deep linking. Own SQLite DB under ReportsRoot; serves the click-capture + match routes.
+builder.Services.AddSingleton<RSCIDeferredDeepLinkStore, RSCSqliteDeferredDeepLinkStore>();
+
 if (analyticsOptions.Enabled)
 {
     builder.Services.AddHostedService<RSCAnalyticsAggregationWorker>();
@@ -80,6 +91,7 @@ if (analyticsOptions.Enabled)
 builder.Services.AddSingleton<RSCServiceTelemetry>();
 builder.Services.AddSingleton<RSAcceptHeaderFilter>();
 builder.Services.AddSingleton<RSCIAuditLog, RSCSqliteAuditLog>();
+builder.Services.AddSingleton<RSCIDiskSpaceProbe, RSCDriveInfoDiskSpaceProbe>();
 builder.Services.AddSingleton<RSCRetentionService>();
 builder.Services.AddHostedService<RSCRetentionBackgroundService>();
 builder.Services.AddSingleton<RSCIAuthAbuseTracker>(sp => new RSCResilientAuthAbuseTracker(
@@ -89,15 +101,14 @@ builder.Services.AddSingleton<RSCIAuthAbuseTracker>(sp => new RSCResilientAuthAb
     sp.GetRequiredService<RSCComponentHealth>(),
     sp.GetRequiredService<ILogger<RSCResilientAuthAbuseTracker>>()));
 
+// Managed API-key store (admin/user keys, expiry, revocation). The auth handler + rate limiter
+// resolve keys through it; its in-memory cache keeps the hot path off the DB.
+builder.Services.AddSingleton<RSCIApiKeyStore, RSCSqliteApiKeyStore>();
+
 builder.Services
     .AddAuthentication(RSApiKeyAuthenticationOptions.Scheme)
     .AddScheme<RSApiKeyAuthenticationOptions, RSApiKeyAuthenticationHandler>(
         RSApiKeyAuthenticationOptions.Scheme, _ => { });
-
-// Defer ExpectedKey binding until the container is built so test hosts that swap the
-// RSCReportServiceOptions singleton via ConfigureTestServices see their replacement flow through.
-builder.Services.AddSingleton<Microsoft.Extensions.Options.IPostConfigureOptions<RSApiKeyAuthenticationOptions>>(
-    sp => new RSPostConfigureApiKey(sp.GetRequiredService<RSCReportServiceOptions>()));
 
 builder.Services.AddAuthorization(o =>
 {
@@ -109,12 +120,22 @@ builder.Services.AddAuthorization(o =>
         policy.AddAuthenticationSchemes(RSApiKeyAuthenticationOptions.Scheme);
         policy.RequireAuthenticatedUser();
     });
+    // Admin-only key management: same scheme, plus the admin role claim.
+    o.AddPolicy(RSEndpointConventions.ApiKeyAdminPolicy, policy =>
+    {
+        policy.AddAuthenticationSchemes(RSApiKeyAuthenticationOptions.Scheme);
+        policy.RequireAuthenticatedUser();
+        policy.RequireRole(RSCApiKeyRoles.Admin);
+    });
 });
 
 builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o =>
 {
     o.MultipartBodyLengthLimit = options.MaxUploadBytes;
-    o.ValueLengthLimit = 16 * 1024 * 1024;
+    // Bound a single non-file form value (the inline `json` part) at MaxJsonBytes so the framework
+    // rejects an oversized JSON field during multipart parse, instead of buffering up to a generic
+    // 16 MiB. The gzip attachment is a file part, governed by MultipartBodyLengthLimit above.
+    o.ValueLengthLimit = (int)Math.Clamp(options.MaxJsonBytes, 1, int.MaxValue);
     o.MemoryBufferThreshold = 64 * 1024;
 });
 
@@ -122,17 +143,10 @@ builder.Services.AddRateLimiter(rl =>
 {
     rl.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 
-    // Per-IP fixed-window limit — caps what a single source IP can send per minute.
-    rl.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
-        RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-            factory: _ => new FixedWindowRateLimiterOptions
-            {
-                PermitLimit = options.RateLimitPermitsPerMinute,
-                Window = TimeSpan.FromMinutes(1),
-                QueueLimit = 0,
-                AutoReplenishment = true
-            }));
+    // Per-key sliding-window limit — partitions by the resolved API key when present (each key gets
+    // its own budget), else by source IP. Sliding window removes the boundary burst of a fixed one.
+    // See RSCApiKeyRateLimiter for the partition logic shared with the merged admin host.
+    rl.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(RSCApiKeyRateLimiter.Partition);
 
     // Global concurrency cap for the write path — independent of source IP, so a distributed
     // DoS spread across many IPs still cannot spawn more than IngestConcurrency simultaneous
@@ -175,7 +189,17 @@ builder.Services.AddSwaggerGen(c =>
     {
         Title = "Report Ingestion Service",
         Version = "v1",
-        Description = "Ingests and serves Report-a-Problem submissions from mobile SDKs. Protected by the apiKey header."
+        Description = """
+            Ingests and serves Report-a-Problem submissions and analytics events from the Android/iOS
+            IA SDKs and trusted backends.
+
+            **Auth** — every ingestion route requires the `apiKey` request header. `/api/health`,
+            `/api/health/ready`, and `/healthz` are anonymous. Every route (anonymous included) is
+            subject to the global per-IP rate limiter.
+
+            **Errors** — failure bodies follow RFC 7807 (`application/problem+json`) with a `traceId`;
+            exception details are never echoed.
+            """
     });
 
     var apiKeyScheme = new OpenApiSecurityScheme
@@ -204,6 +228,19 @@ var app = builder.Build();
 // Refuse to start in Production with a missing or obviously-weak shared secret. Short secrets are
 // tolerated in Development so integration tests can run with fixture values.
 RSCSecretValidation.RequireInProduction(app.Environment, "ReportService:ApiKey", options.ApiKey);
+// The identifier-hash pepper keys the SHA-256 of every anonymousId. Empty in Production silently
+// degrades the stored anonymous_id_hash to a bare, rainbow-table-reversible SHA-256(raw id),
+// defeating the "never store raw identifiers" guarantee. Fail fast so a missing pepper refuses to
+// boot a Production analytics pipeline.
+if (analyticsOptions.Enabled)
+{
+    RSCSecretValidation.RequireInProduction(app.Environment, "Analytics:IdentifierHashPepper", analyticsOptions.IdentifierHashPepper);
+    // Fail fast on a mis-set analytics numeric/schema invariant (inverted schema range, non-positive
+    // caps, negative retention) rather than silently dead-lettering every batch at runtime.
+    var analyticsConfigErrors = analyticsOptions.Validate();
+    if (analyticsConfigErrors.Count > 0)
+        throw new InvalidOperationException("Invalid Analytics configuration: " + string.Join(" ", analyticsConfigErrors));
+}
 
 var startupLogger = app.Services.GetRequiredService<ILogger<Program>>();
 RSCCrashHandler.Install(startupLogger, app.Lifetime);
@@ -377,6 +414,8 @@ app.MapGet("/api/health/ready", (RSCServiceTelemetry telemetry, RSCReportService
 
 app.MapProblemReportEndpoints();
 app.MapAnalyticsEndpoints();
+app.MapDeepLinkEndpoints();
+app.MapApiKeyManagementEndpoints();
 
 app.Run();
 

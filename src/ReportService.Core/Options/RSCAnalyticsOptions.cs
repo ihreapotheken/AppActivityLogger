@@ -71,6 +71,13 @@ public sealed record RSCAnalyticsOptions
         "ssn", "social_security",
     };
 
+    /// <summary>Extra platforms accepted on the analytics ingestion path only (never the
+    /// problem-report path), for events that originate server-side rather than from a mobile SDK —
+    /// see <c>POST /api/v2/analytics/server-events</c>. Unioned with
+    /// <see cref="RSCReportServiceOptions.AllowedPlatforms"/> by the validator, so a backend may
+    /// also attribute events to <c>android</c>/<c>ios</c> when it knows the user's device.</summary>
+    public string[] ServerPlatforms { get; init; } = new[] { Models.RSCAnalyticsPlatforms.Backend };
+
     /// <summary>How long an aggregation tick sleeps between runs. Floored at 5s.</summary>
     public int AggregationIntervalSeconds { get; init; } = 30;
 
@@ -92,12 +99,12 @@ public sealed record RSCAnalyticsOptions
 
     /// <summary>Cadence for <see cref="ReportService.Analytics.RSCAnalyticsCohortWorker"/> — the
     /// retention recompute is bounded but does a full scan of <c>analytics_user_days</c>, so the
-    /// default is once an hour. Floor 60s.</summary>
+    /// default is once an hour. Floor 5s (dev uses 15s).</summary>
     public int CohortIntervalSeconds { get; init; } = 3600;
 
     /// <summary>Cadence for <see cref="ReportService.Analytics.RSCAnalyticsFunnelWorker"/>.
     /// Walks unobserved (per-funnel) events in <c>analytics_events</c> and writes
-    /// <c>analytics_funnel_steps</c> entries. Floor 60s.</summary>
+    /// <c>analytics_funnel_steps</c> entries. Floor 5s (dev uses 15s).</summary>
     public int FunnelIntervalSeconds { get; init; } = 600;
 
     /// <summary>Funnel definitions to seed into <c>analytics_funnel_definitions</c> on startup.
@@ -130,6 +137,41 @@ public sealed record RSCAnalyticsOptions
             }
         }
     };
+
+    /// <summary>
+    /// Self-validates the numeric and schema-version invariants the pipeline assumes but doesn't
+    /// otherwise enforce. Returns one human-readable message per violated invariant (empty when the
+    /// options are coherent). An inverted schema range or a non-positive cap would otherwise silently
+    /// dead-letter every event (the only symptom being DLQ growth on the Health page) rather than
+    /// failing loudly — call this from the host's options pipeline
+    /// (<c>AddOptions&lt;RSCAnalyticsOptions&gt;().Validate(o =&gt; o.Validate().Count == 0).ValidateOnStart()</c>)
+    /// to fail fast at startup. Wiring that into Program.cs is owned by the infra/boot packet.
+    /// </summary>
+    public IReadOnlyList<string> Validate()
+    {
+        var errors = new List<string>();
+
+        if (MinAcceptedSchemaVersion > MaxAcceptedSchemaVersion)
+            errors.Add($"MinAcceptedSchemaVersion ({MinAcceptedSchemaVersion}) must be <= MaxAcceptedSchemaVersion ({MaxAcceptedSchemaVersion}); an inverted range dead-letters every batch as schema_version_unsupported.");
+        if (MaxEventsPerBatch <= 0)
+            errors.Add($"MaxEventsPerBatch ({MaxEventsPerBatch}) must be > 0; otherwise every non-empty batch is rejected as batch_too_large.");
+        if (MaxPropertiesPerEvent <= 0)
+            errors.Add($"MaxPropertiesPerEvent ({MaxPropertiesPerEvent}) must be > 0.");
+        if (MaxPropertyValueLength <= 0)
+            errors.Add($"MaxPropertyValueLength ({MaxPropertyValueLength}) must be > 0.");
+        if (MaxPropertyKeyLength <= 0)
+            errors.Add($"MaxPropertyKeyLength ({MaxPropertyKeyLength}) must be > 0.");
+        if (MaxClockSkewSeconds <= 0)
+            errors.Add($"MaxClockSkewSeconds ({MaxClockSkewSeconds}) must be > 0; otherwise every event is rejected as clock_skew.");
+        if (AggregationBatchSize <= 0)
+            errors.Add($"AggregationBatchSize ({AggregationBatchSize}) must be > 0.");
+        if (RawEventRetentionDays < 0)
+            errors.Add($"RawEventRetentionDays ({RawEventRetentionDays}) must be >= 0.");
+        if (DeadLetterRetentionDays < 0)
+            errors.Add($"DeadLetterRetentionDays ({DeadLetterRetentionDays}) must be >= 0.");
+
+        return errors;
+    }
 }
 
 /// <summary>Plain-old-config DTO for a seed funnel. Materialised into an

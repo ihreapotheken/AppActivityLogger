@@ -126,12 +126,15 @@ public sealed class RSCAnalyticsAggregationWorker : BackgroundService
                 DistinctUsers: distinctUsers));
         }
 
-        var ids = events.Select(e => e.EventId).ToList();
+        // Carry platform alongside event_id: analytics_events is UNIQUE(platform, event_id), so the
+        // mark must match on both columns or it can stamp aggregated_at on a same-id row belonging
+        // to another platform that this tick never folded.
+        var refs = events.Select(e => new RSCAggregationEventRef(e.Platform, e.EventId)).ToList();
         var tick = new RSCAnalyticsAggregationTick(
             Sessions: sessionDeltas,
             UserDays: userDayDeltas,
             DailyRollups: dailyRollupDeltas,
-            EventIds: ids);
+            Events: refs);
 
         await _store.WriteAggregationTickAsync(tick, ct).ConfigureAwait(false);
 

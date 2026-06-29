@@ -25,6 +25,15 @@ public sealed class RSAReportsFilterInput
     [FromQuery(Name = "until")] public DateTime? Until { get; set; }
     [FromQuery(Name = "page")] public int Page { get; set; } = 1;
 
+    /// <summary>Shallow copy with a different <see cref="Page"/>; used to fetch the full matched set
+    /// (page 1) for the on-page analytics summary without disturbing the user's current page.</summary>
+    public RSAReportsFilterInput WithPage(int page) => new()
+    {
+        Platform = Platform, Q = Q, PharmacyId = PharmacyId, UserId = UserId, Email = Email,
+        Phone = Phone, AppVersion = AppVersion, HasAttachment = HasAttachment, Channel = Channel,
+        TopFrame = TopFrame, From = From, Until = Until, Page = page
+    };
+
     /// <summary>Rebuilds the query string with a different page number, preserving every active filter.</summary>
     public string ToQueryString(int page)
     {

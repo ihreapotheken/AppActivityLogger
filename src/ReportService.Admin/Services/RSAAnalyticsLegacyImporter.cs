@@ -82,7 +82,13 @@ public sealed class RSAAnalyticsLegacyImporter
                     // Project the legacy report shape onto a v2 batch. The session id is fabricated
                     // from the source filename so two events from the same file land on the same
                     // session — the only signal we have without true session info.
-                    var eventId = Guid.NewGuid().ToString();
+                    //
+                    // The event_id MUST be deterministic from the source identity, otherwise the
+                    // store's INSERT OR IGNORE on UNIQUE(platform, event_id) can never match a
+                    // prior run and re-importing the same files double-counts every event (see
+                    // the class remark — idempotency is a documented contract). One legacy file
+                    // maps to exactly one synthesized event, so the file name is a stable key.
+                    var eventId = $"legacy-{stored.Platform}-{stored.FileName}";
                     var occurredAt = GetString(root, "OccurredAt") ?? stored.SubmittedAt.UtcDateTime.ToString("O");
                     var screen = GetString(root, "Source");
                     var userId = GetString(root, "UserId");
@@ -116,11 +122,16 @@ public sealed class RSAAnalyticsLegacyImporter
                     var verdict = _validator.Validate(batch, DateTimeOffset.UtcNow);
                     var anonHash = _hasher.Hash(batch.AnonymousId);
                     var clientHash = _hasher.Hash(batch.ClientId);
-                    await _analyticsStore.WriteBatchAsync(batch, anonHash, clientHash, verdict,
+                    var receipt = await _analyticsStore.WriteBatchAsync(batch, anonHash, clientHash, verdict,
                         DateTimeOffset.UtcNow, ct).ConfigureAwait(false);
 
-                    if (!verdict.BatchRejected && verdict.Accepted.Count > 0)
-                        converted++;
+                    // Count only events that were genuinely inserted this run. Because the
+                    // synthesized event_id is deterministic, a second import over the same files
+                    // is dropped as a UNIQUE(platform, event_id) conflict (receipt.AcceptedCount
+                    // is post-dedupe), so re-runs report converted=0 instead of masking the
+                    // no-op as fresh conversions.
+                    if (!verdict.BatchRejected)
+                        converted += receipt.AcceptedCount;
                 }
                 catch (OperationCanceledException)
                 {

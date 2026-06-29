@@ -1,0 +1,29 @@
+# report-service-watchdog.service
+#
+# Oneshot health probe for report-service. Triggered every 30s by
+# report-service-watchdog.timer. On a clean exit nothing happens; on a non-zero
+# exit (the app failed its health probe WATCHDOG_ATTEMPTS times in a row)
+# systemd runs report-service-restart.service via OnFailure=.
+#
+# This is the piece plain `Restart=on-failure` cannot provide: Restart= only
+# fires when the process EXITS. A wedged-but-alive process (deadlock, stuck
+# thread pool, blocked SQLite writer) keeps the unit "active" forever. This
+# watchdog detects that via the HTTP health endpoint and forces a restart.
+#
+# Runs as the unprivileged service user — it only curls localhost. The actual
+# (privileged) restart is delegated to report-service-restart.service, run by
+# systemd as root.
+
+[Unit]
+Description=report-service health watchdog (restarts the service after repeated failed health probes)
+After=report-service.service
+OnFailure=report-service-restart.service
+
+[Service]
+Type=oneshot
+User=report-service
+Group=report-service
+# Optional: lets operators set REPORT_SERVICE_HEALTH_URL / WATCHDOG_* alongside
+# the app's own env. The leading '-' makes a missing file non-fatal.
+EnvironmentFile=-/etc/report-service/report-service.env
+ExecStart=/opt/report-service/ops/watchdog.sh

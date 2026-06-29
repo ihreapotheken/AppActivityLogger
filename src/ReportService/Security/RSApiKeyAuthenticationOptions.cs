@@ -7,6 +7,6 @@ public sealed class RSApiKeyAuthenticationOptions : AuthenticationSchemeOptions
     public const string Scheme = "ApiKey";
     public const string HeaderName = "apiKey";
 
-    /// <summary>Server-side secret the handler compares incoming headers against. Empty → all requests fail.</summary>
-    public string ExpectedKey { get; set; } = string.Empty;
+    // The handler resolves keys through RSCApiKeyResolver (static root key + managed DB keys), so no
+    // per-scheme secret lives here anymore.
 }

@@ -1,0 +1,19 @@
+# report-service-restart.service
+#
+# Privileged restart action, run by systemd (root) when
+# report-service-watchdog.service fails its OnFailure=. Kept as a separate unit
+# so the watchdog probe itself can stay unprivileged.
+#
+# `try-restart` restarts the service ONLY if it is currently active. That makes
+# the watchdog safe against an operator who deliberately `systemctl stop`ped the
+# service: a stopped unit is left stopped instead of being resurrected. The
+# main unit's StartLimitIntervalSec/StartLimitBurst still apply, so a service
+# that flaps faster than the limit is parked in `failed` for an operator to
+# investigate rather than restarted forever.
+
+[Unit]
+Description=Restart report-service after repeated failed health probes
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl try-restart report-service.service

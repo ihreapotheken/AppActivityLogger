@@ -19,6 +19,7 @@ namespace ReportService.Admin.Services;
 public sealed class RSAAnalyticsStoreDashboardService : IRSAAnalyticsDashboardService
 {
     private const int TopScreens = 5;
+    private const int TrendDays = 30;
 
     private readonly RSCIAnalyticsStore _store;
     private readonly RSCReportServiceOptions _reportOptions;
@@ -74,6 +75,8 @@ public sealed class RSAAnalyticsStoreDashboardService : IRSAAnalyticsDashboardSe
             Day7:  summary.Day7,
             Day30: summary.Day30);
 
+        var activityTrend = await BuildActivityTrendAsync(platform, ct).ConfigureAwait(false);
+
         return new RSAAnalyticsDashboardVM(
             DailyActiveUsers: (int)Math.Min(int.MaxValue, totals.DailyActiveUsers),
             MonthlyActiveUsers: (int)Math.Min(int.MaxValue, totals.MonthlyActiveUsers),
@@ -81,6 +84,44 @@ public sealed class RSAAnalyticsStoreDashboardService : IRSAAnalyticsDashboardSe
             AverageSessionLength: totals.AverageSessionDuration,
             Platforms: perPlatform,
             TopScreens: topScreens,
-            Retention: retention);
+            Retention: retention,
+            ActivityTrend: activityTrend);
+    }
+
+    /// <summary>
+    /// Builds the trailing-30-day daily activity series from the materialised daily rollups. The
+    /// rollup table has one row per (day, platform); for the combined view we sum platforms into a
+    /// single per-day point. Every day in the window is emitted (zero-filled) so the trend lines stay
+    /// continuous even on days with no traffic.
+    /// </summary>
+    private async ValueTask<IReadOnlyList<RSAActivityPointVM>> BuildActivityTrendAsync(string? platform, CancellationToken ct)
+    {
+        var today = DateOnly.FromDateTime(DateTimeOffset.UtcNow.UtcDateTime);
+        var firstDay = today.AddDays(-(TrendDays - 1));
+        var from = new DateTimeOffset(firstDay.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+        var until = new DateTimeOffset(today.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero).AddDays(1);
+
+        var rollups = await _store.GetDailyRollupsAsync(from, until, platform, ct).ConfigureAwait(false);
+
+        // Fold the per-platform rows into one bucket per calendar day.
+        var byDay = new Dictionary<DateOnly, (long Users, long Sessions, long Events)>();
+        foreach (var r in rollups)
+        {
+            byDay.TryGetValue(r.Day, out var acc);
+            byDay[r.Day] = (acc.Users + r.DistinctUsers, acc.Sessions + r.Sessions, acc.Events + r.Events);
+        }
+
+        var points = new RSAActivityPointVM[TrendDays];
+        for (var i = 0; i < TrendDays; i++)
+        {
+            var day = firstDay.AddDays(i);
+            byDay.TryGetValue(day, out var v);
+            points[i] = new RSAActivityPointVM(
+                Label: day.ToString("MM-dd"),
+                ActiveUsers: (int)Math.Min(int.MaxValue, v.Users),
+                Sessions: (int)Math.Min(int.MaxValue, v.Sessions),
+                Events: (int)Math.Min(int.MaxValue, v.Events));
+        }
+        return points;
     }
 }

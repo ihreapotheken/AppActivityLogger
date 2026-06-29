@@ -34,16 +34,16 @@
     <h2>Current allow-list (@Model.Entries.Count)</h2>
     @if (Model.Entries.Count == 0)
     {
-        <p class="muted">No identifiers on the list. Mobile clients querying the public endpoint will receive <code>forced=false</code> for every id.</p>
+        <empty-state>No identifiers on the list. Mobile clients querying the public endpoint will receive <code>forced=false</code> for every id.</empty-state>
     }
     else
     {
         <table>
             <thead>
                 <tr>
-                    <th scope="col">ID</th>
-                    <th scope="col">Added (UTC)</th>
-                    <th scope="col">Note</th>
+                    <th scope="col" sort="text" tip="The operator-supplied identifier (clientId, userId, or deviceId) the mobile client checks against the allow-list.">ID</th>
+                    <th scope="col" sort="date" tip="When this identifier was added to (or last refreshed on) the allow-list.">Added (UTC)</th>
+                    <th scope="col" tip="Free-form operator note explaining why this id is on the list (e.g. a ticket number).">Note</th>
                     <th scope="col"></th>
                 </tr>
             </thead>
@@ -52,7 +52,7 @@
                 {
                     <tr>
                         <td class="mono">@e.Id</td>
-                        <td class="mono">@e.AddedAt.AsLocalTime()</td>
+                        <td class="mono" data-sort-value="@e.AddedAt.UtcDateTime.ToString("o")">@e.AddedAt.AsLocalTime()</td>
                         <td>@(e.Note ?? "")</td>
                         <td>
                             <form method="post" asp-page-handler="Remove" class="inline">

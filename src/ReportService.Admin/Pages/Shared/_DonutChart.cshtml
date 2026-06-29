@@ -1,0 +1,58 @@
+@*
+    Reusable donut (proportion) chart. Each slice is an SVG <circle> drawn with a stroke-dasharray
+    (segment length) + stroke-dashoffset (start angle) — geometry via attributes only, so it passes
+    the strict admin CSP (no inline styles). Slices and legend keys share one categorical palette
+    class (chart-c1…c6), and each slice carries data-chart-tip for the shared hover tooltip.
+*@
+@using System.Globalization
+@model ReportService.Admin.ViewModels.RSADonutChartVM
+@{
+    var slices = Model.Slices.Where(s => s.Value > 0).ToList();
+    var total = slices.Sum(s => s.Value);
+    const double cx = 80, cy = 80, r = 58, sw = 26;
+    var circ = 2 * Math.PI * r;
+    string F(double v) => v.ToString("0.###", CultureInfo.InvariantCulture);
+    string Pct(double v) => total <= 0 ? "0%" : (v / total * 100).ToString("0.#", CultureInfo.InvariantCulture) + "%";
+    // Thin gap (user units) inset around each slice so the thick strokes don't butt into an ugly
+    // antialiased seam where adjacent slices — notably the first and last — meet. A lone 100% slice
+    // stays a continuous ring (no gap).
+    var pad = slices.Count > 1 ? 3.0 : 0.0;
+    double acc = 0;
+}
+@if (total <= 0)
+{
+    <empty-state>No data in this window.</empty-state>
+}
+else
+{
+    <div class="donut">
+        <svg class="donut-chart" viewBox="0 0 160 160" role="img" aria-label="@Model.AriaLabel">
+            <circle class="donut-track" cx="@F(cx)" cy="@F(cy)" r="@F(r)" fill="none" stroke-width="@sw"></circle>
+            <g transform="rotate(-90 @F(cx) @F(cy))">
+                @foreach (var s in slices)
+                {
+                    var seg = s.Value / total * circ;
+                    var dash = Math.Max(0, seg - pad);
+                    var tip = $"{s.Label}: {s.Value.ToString("N0")} ({Pct(s.Value)})";
+                    <circle class="donut-slice @s.ColorClass" data-chart-tip="@tip"
+                            tabindex="0" role="img" aria-label="@tip"
+                            cx="@F(cx)" cy="@F(cy)" r="@F(r)" fill="none" stroke-width="@sw"
+                            stroke-dasharray="@F(dash) @F(circ - dash)" stroke-dashoffset="@F(-(acc + pad / 2))"></circle>
+                    acc += seg;
+                }
+            </g>
+            <text class="donut-total" x="@F(cx)" y="@F(cy + 4)" text-anchor="middle">@total.ToString("N0")</text>
+            <text class="donut-total-label" x="@F(cx)" y="@F(cy + 18)" text-anchor="middle">@Model.CenterLabel</text>
+        </svg>
+        <ul class="donut-legend">
+            @foreach (var s in slices)
+            {
+                <li>
+                    <span class="donut-key @s.ColorClass" aria-hidden="true"></span>
+                    <span class="donut-key-label">@s.Label</span>
+                    <span class="donut-key-val">@s.Value.ToString("N0") <span class="muted">@Pct(s.Value)</span></span>
+                </li>
+            }
+        </ul>
+    </div>
+}

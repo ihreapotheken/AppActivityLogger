@@ -23,6 +23,10 @@ public sealed class RSCSqliteReportIndex : RSCIReportIndex, RSCIReportIndexMaint
 {
     private const int MaxBusyRetries = 3;
     private const int InitialBusyBackoffMs = 25;
+    // busy_timeout lets SQLite block-and-retry internally on SQLITE_BUSY (DB-level locks) before
+    // surfacing an error, complementing the hand-rolled ExecuteWithRetryAsync (which is the only
+    // mitigation for table-level SQLITE_LOCKED introduced by shared-cache mode).
+    private const int BusyTimeoutMs = 5_000;
 
     private readonly string _connectionString;
     private readonly string _dbPath;
@@ -31,6 +35,11 @@ public sealed class RSCSqliteReportIndex : RSCIReportIndex, RSCIReportIndexMaint
     private readonly ILogger<RSCSqliteReportIndex> _logger;
     private int _schemaVersion;
 
+    // Guards the mutable maintenance/status fields below. The index is a singleton hit concurrently
+    // by ingestion, the admin status page, and maintenance actions, so writes (IntegrityCheckAsync /
+    // BackupAsync / RebuildAsync) and the GetStatusAsync read must not observe torn combinations
+    // (e.g. a fresh _lastBackupAt paired with a stale _lastBackupPath).
+    private readonly object _statusLock = new();
     private string? _lastIntegrityResult;
     private DateTimeOffset? _lastIntegrityAt;
     private DateTimeOffset? _lastBackupAt;
@@ -157,6 +166,89 @@ ON CONFLICT(platform, file_name) DO UPDATE SET
         }, ct).ConfigureAwait(false);
     }
 
+    /// <inheritdoc />
+    public async Task<bool> RecordLifetimeAndDeleteAsync(string platform, string fileName, CancellationToken ct)
+    {
+        var nowIso = DateTimeOffset.UtcNow.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
+
+        // Read the footprint, fold it into the lifetime rollup, then delete — all in one
+        // transaction so a crash can never drop a row without first banking its contribution (or
+        // vice-versa). The retry wrapper is safe: an exception before COMMIT rolls the whole thing
+        // back, so a replay starts from the unmodified row.
+        return await ExecuteWithRetryAsync(async innerCt =>
+        {
+            using var conn = await OpenConnectionAsync(innerCt).ConfigureAwait(false);
+            using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(innerCt).ConfigureAwait(false);
+
+            long jsonBytes = 0, attachmentBytes = 0;
+            var hasAttachment = false;
+            var found = false;
+            using (var read = conn.CreateCommand())
+            {
+                read.Transaction = tx;
+                read.CommandTimeout = _commandTimeoutSeconds;
+                read.CommandText = @"
+SELECT size_bytes, COALESCE(attachment_bytes, 0), has_attachment
+FROM problem_reports
+WHERE platform = @platform AND file_name = @file_name;";
+                read.Parameters.AddWithValue("@platform", platform);
+                read.Parameters.AddWithValue("@file_name", fileName);
+                using var reader = await read.ExecuteReaderAsync(innerCt).ConfigureAwait(false);
+                if (await reader.ReadAsync(innerCt).ConfigureAwait(false))
+                {
+                    found = true;
+                    jsonBytes = reader.GetInt64(0);
+                    attachmentBytes = reader.GetInt64(1);
+                    hasAttachment = reader.GetInt64(2) != 0;
+                }
+            }
+
+            if (!found)
+            {
+                // No row to delete (drift, or already gone). Nothing to bank, nothing to remove.
+                await tx.CommitAsync(innerCt).ConfigureAwait(false);
+                return false;
+            }
+
+            using (var acc = conn.CreateCommand())
+            {
+                acc.Transaction = tx;
+                acc.CommandTimeout = _commandTimeoutSeconds;
+                acc.CommandText = @"
+INSERT INTO lifetime_report_stats(
+    platform, deleted_reports, deleted_with_attachment, deleted_json_bytes, deleted_attachment_bytes,
+    first_deleted_at, last_deleted_at)
+VALUES(@platform, 1, @has_att, @json_bytes, @att_bytes, @now, @now)
+ON CONFLICT(platform) DO UPDATE SET
+    deleted_reports          = deleted_reports + 1,
+    deleted_with_attachment  = deleted_with_attachment + @has_att,
+    deleted_json_bytes       = deleted_json_bytes + @json_bytes,
+    deleted_attachment_bytes = deleted_attachment_bytes + @att_bytes,
+    last_deleted_at          = @now;";
+                acc.Parameters.AddWithValue("@platform", platform);
+                acc.Parameters.AddWithValue("@has_att", hasAttachment ? 1 : 0);
+                acc.Parameters.AddWithValue("@json_bytes", jsonBytes);
+                acc.Parameters.AddWithValue("@att_bytes", attachmentBytes);
+                acc.Parameters.AddWithValue("@now", nowIso);
+                await acc.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false);
+            }
+
+            bool deleted;
+            using (var del = conn.CreateCommand())
+            {
+                del.Transaction = tx;
+                del.CommandTimeout = _commandTimeoutSeconds;
+                del.CommandText = "DELETE FROM problem_reports WHERE platform = @platform AND file_name = @file_name;";
+                del.Parameters.AddWithValue("@platform", platform);
+                del.Parameters.AddWithValue("@file_name", fileName);
+                deleted = await del.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false) > 0;
+            }
+
+            await tx.CommitAsync(innerCt).ConfigureAwait(false);
+            return deleted;
+        }, ct).ConfigureAwait(false);
+    }
+
     private async Task<IReadOnlyList<RSCStoredReport>> ListCoreAsync(string platform, int limit, int offset, CancellationToken ct)
     {
         const string sql = @"
@@ -196,7 +288,7 @@ LIMIT @limit OFFSET @offset;";
             await conn.OpenAsync(ct).ConfigureAwait(false);
 
             using var pragma = conn.CreateCommand();
-            pragma.CommandText = "PRAGMA synchronous=NORMAL;";
+            pragma.CommandText = $"PRAGMA busy_timeout={BusyTimeoutMs}; PRAGMA synchronous=NORMAL;";
             await pragma.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
             return conn;
@@ -223,6 +315,7 @@ LIMIT @limit OFFSET @offset;";
         new RSCM009_MappingsAddLabel(),
         new RSCM010_MappingsDropNotes(),
         new RSCM011_DropMappings(),
+        new RSCM012_CreateLifetimeStats(),
     };
 
     // Bootstrap is not retried: a failure here should surface during container start and fail fast.
@@ -236,7 +329,7 @@ LIMIT @limit OFFSET @offset;";
             using (var pragma = conn.CreateCommand())
             {
                 // WAL + NORMAL sync is the recommended trade-off for a single-process server with concurrent readers.
-                pragma.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;";
+                pragma.CommandText = $"PRAGMA journal_mode=WAL; PRAGMA busy_timeout={BusyTimeoutMs}; PRAGMA synchronous=NORMAL;";
                 pragma.ExecuteNonQuery();
             }
 
@@ -375,6 +468,38 @@ ORDER BY platform;";
         }, ct).ConfigureAwait(false);
     }
 
+    public async Task<IReadOnlyList<RSCLifetimeReportStats>> GetLifetimeStatsAsync(CancellationToken ct)
+    {
+        const string sql = @"
+SELECT platform, deleted_reports, deleted_with_attachment, deleted_json_bytes, deleted_attachment_bytes,
+       first_deleted_at, last_deleted_at
+FROM lifetime_report_stats
+ORDER BY platform;";
+
+        return await ExecuteWithRetryAsync<IReadOnlyList<RSCLifetimeReportStats>>(async innerCt =>
+        {
+            using var conn = await OpenConnectionAsync(innerCt).ConfigureAwait(false);
+            using var cmd = conn.CreateCommand();
+            cmd.CommandTimeout = _commandTimeoutSeconds;
+            cmd.CommandText = sql;
+
+            var result = new List<RSCLifetimeReportStats>();
+            using var reader = await cmd.ExecuteReaderAsync(innerCt).ConfigureAwait(false);
+            while (await reader.ReadAsync(innerCt).ConfigureAwait(false))
+            {
+                result.Add(new RSCLifetimeReportStats(
+                    Platform: reader.GetString(0),
+                    DeletedReports: reader.GetInt64(1),
+                    DeletedWithAttachment: reader.GetInt64(2),
+                    DeletedJsonBytes: reader.GetInt64(3),
+                    DeletedAttachmentBytes: reader.GetInt64(4),
+                    FirstDeletedAt: reader.IsDBNull(5) ? null : ParseIso(reader.GetString(5)),
+                    LastDeletedAt: reader.IsDBNull(6) ? null : ParseIso(reader.GetString(6))));
+            }
+            return result;
+        }, ct).ConfigureAwait(false);
+    }
+
     public async Task<RSCStatsReport> GetStatsAsync(DateTimeOffset from, DateTimeOffset until, int topN, CancellationToken ct)
     {
         if (until <= from) until = from.AddSeconds(1);
@@ -506,29 +631,83 @@ LIMIT @top;";
         return result;
     }
 
-    public Task<RSCIndexStatusReport> GetStatusAsync(CancellationToken ct)
+    public async Task<RSCIndexStatusReport> GetStatusAsync(CancellationToken ct)
     {
         var fi = new FileInfo(_dbPath);
         var wal = File.Exists(_dbPath + "-wal");
         var shm = File.Exists(_dbPath + "-shm");
 
-        return Task.FromResult(new RSCIndexStatusReport(
+        // Snapshot the mutable maintenance fields under the lock so a concurrent IntegrityCheck /
+        // Backup / Rebuild can't hand us a torn pair (e.g. new _lastBackupAt + old _lastBackupPath).
+        string? lastIntegrityResult;
+        DateTimeOffset? lastIntegrityAt, lastBackupAt, driftCheckedAt;
+        string? lastBackupPath;
+        int driftMissing, driftStale, schemaVersion;
+        lock (_statusLock)
+        {
+            lastIntegrityResult = _lastIntegrityResult;
+            lastIntegrityAt = _lastIntegrityAt;
+            lastBackupAt = _lastBackupAt;
+            lastBackupPath = _lastBackupPath;
+            driftMissing = _driftMissing;
+            driftStale = _driftStale;
+            driftCheckedAt = _driftCheckedAt;
+            schemaVersion = _schemaVersion;
+        }
+
+        // Reflect reality instead of hardcoding Healthy=true: run a cheap liveness probe and fold in
+        // the last recorded integrity result. A SELECT 1 failure (DB unreadable / locked out) or a
+        // non-"ok" integrity_check both surface as unhealthy with detail.
+        bool healthy;
+        string? healthDetail;
+        try
+        {
+            await ExecuteWithRetryAsync(async innerCt =>
+            {
+                using var conn = await OpenConnectionAsync(innerCt).ConfigureAwait(false);
+                using var cmd = conn.CreateCommand();
+                cmd.CommandTimeout = _commandTimeoutSeconds;
+                cmd.CommandText = "SELECT 1;";
+                await cmd.ExecuteScalarAsync(innerCt).ConfigureAwait(false);
+            }, ct).ConfigureAwait(false);
+
+            if (lastIntegrityResult is not null && lastIntegrityResult != "ok")
+            {
+                healthy = false;
+                healthDetail = $"last integrity_check returned: {lastIntegrityResult}";
+            }
+            else
+            {
+                healthy = true;
+                healthDetail = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            healthy = false;
+            healthDetail = $"liveness probe failed: {ex.Message}";
+        }
+
+        return new RSCIndexStatusReport(
             DbPath: _dbPath,
             Exists: fi.Exists,
             DbSizeBytes: fi.Exists ? fi.Length : 0,
             WalPresent: wal,
             ShmPresent: shm,
-            SchemaVersion: _schemaVersion,
-            LastIntegrityCheckResult: _lastIntegrityResult,
-            LastIntegrityCheckAt: _lastIntegrityAt,
-            LastBackupAt: _lastBackupAt,
-            LastBackupPath: _lastBackupPath,
-            DriftMissingInIndex: _driftMissing,
-            DriftStaleIndexRows: _driftStale,
-            DriftCheckedAt: _driftCheckedAt,
-            Healthy: true,
-            HealthDetail: null,
-            HealthAt: DateTimeOffset.UtcNow));
+            SchemaVersion: schemaVersion,
+            LastIntegrityCheckResult: lastIntegrityResult,
+            LastIntegrityCheckAt: lastIntegrityAt,
+            LastBackupAt: lastBackupAt,
+            LastBackupPath: lastBackupPath,
+            // Drift counters are only populated by an explicit RebuildAsync (which sets them to 0 and
+            // stamps DriftCheckedAt); no standalone drift scan exists. DriftCheckedAt == null is the
+            // honest "never computed" signal so a permanently-zero count can't read as "no drift".
+            DriftMissingInIndex: driftMissing,
+            DriftStaleIndexRows: driftStale,
+            DriftCheckedAt: driftCheckedAt,
+            Healthy: healthy,
+            HealthDetail: healthDetail,
+            HealthAt: DateTimeOffset.UtcNow);
     }
 
     public async Task<RSCRebuildReport> RebuildAsync(RSCIReportStore fileStore, IReadOnlyList<string> platforms, CancellationToken ct)
@@ -585,9 +764,12 @@ LIMIT @top;";
 
         sw.Stop();
 
-        _driftMissing = 0;
-        _driftStale = 0;
-        _driftCheckedAt = DateTimeOffset.UtcNow;
+        lock (_statusLock)
+        {
+            _driftMissing = 0;
+            _driftStale = 0;
+            _driftCheckedAt = DateTimeOffset.UtcNow;
+        }
 
         return new RSCRebuildReport(platforms.Count, filesOnDisk, indexedBefore, indexedAfter, inserted, staleRemoved, sw.Elapsed);
     }
@@ -604,8 +786,11 @@ LIMIT @top;";
             return first;
         }, ct).ConfigureAwait(false);
 
-        _lastIntegrityResult = result;
-        _lastIntegrityAt = DateTimeOffset.UtcNow;
+        lock (_statusLock)
+        {
+            _lastIntegrityResult = result;
+            _lastIntegrityAt = DateTimeOffset.UtcNow;
+        }
         return result;
     }
 
@@ -656,8 +841,11 @@ LIMIT @top;";
             }
 
             File.Move(tempPath, destinationPath, overwrite: true);
-            _lastBackupAt = DateTimeOffset.UtcNow;
-            _lastBackupPath = destinationPath;
+            lock (_statusLock)
+            {
+                _lastBackupAt = DateTimeOffset.UtcNow;
+                _lastBackupPath = destinationPath;
+            }
         }
         catch
         {
@@ -752,6 +940,12 @@ LIMIT @top;";
         }
         );
     }
+
+    // Round-trip the same "O"-format UTC strings the index writes everywhere (UpsertAsync, the
+    // lifetime accumulator, etc.).
+    private static DateTimeOffset ParseIso(string s) =>
+        DateTimeOffset.ParseExact(s, "O", CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
 
     private static RSCStoredReport ReadStoredReport(SqliteDataReader reader)
     {

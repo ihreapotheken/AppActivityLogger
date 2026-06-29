@@ -138,4 +138,36 @@ public class AnalyticsEndpointTests
         var res = await client.PostAsync(Url, Body(MakeBatch(events: MakeEvent())));
         Assert.Equal(HttpStatusCode.ServiceUnavailable, res.StatusCode);
     }
+
+    [Fact]
+    public async Task Sdk_route_rejects_a_backend_platform_batch_as_platform_unknown()
+    {
+        // CODE-REVIEW finding #6/#48: the server-only "backend" platform must be unreachable from
+        // the SDK route. The validator now scopes platforms per-origin — the SDK path only permits
+        // android/ios — so an SDK client (or anything holding the SDK apiKey) cannot inject events
+        // into the trusted first-party "backend" bucket that operators read as server-verified.
+        await using var app = new IngestionAppFactory();
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Add("apiKey", IngestionAppFactory.ApiKey);
+
+        var batch = new
+        {
+            schemaVersion = 1,
+            batchId = Guid.NewGuid().ToString(),
+            platform = "backend",
+            sdkVersion = "1.0.0",
+            hostAppVersion = "5.6.7",
+            anonymousId = "anon-1",
+            clientId = (string?)null,
+            generatedAt = DateTimeOffset.UtcNow.ToString("O"),
+            events = new[] { MakeEvent() },
+        };
+
+        var res = await client.PostAsync(Url, Body(batch));
+        Assert.Equal(HttpStatusCode.Accepted, res.StatusCode);
+
+        var receipt = await res.Content.ReadFromJsonAsync<RSCAnalyticsBatchReceipt>();
+        Assert.True(receipt!.BatchRejected);
+        Assert.Equal(RSCAnalyticsDeadLetterReasons.PlatformUnknown, receipt.BatchRejectReason);
+    }
 }

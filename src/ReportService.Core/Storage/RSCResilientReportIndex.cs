@@ -45,6 +45,9 @@ public sealed class RSCResilientReportIndex : RSCIReportIndex
     public Task<bool> DeleteAsync(string platform, string fileName, CancellationToken ct)
         => RunAsync("delete", inner => inner.DeleteAsync(platform, fileName, ct), false);
 
+    public Task<bool> RecordLifetimeAndDeleteAsync(string platform, string fileName, CancellationToken ct)
+        => RunAsync("delete", inner => inner.RecordLifetimeAndDeleteAsync(platform, fileName, ct), false);
+
     /// <summary>Exposes the inner index for maintenance paths (rebuild, integrity, backup) that can legitimately surface failure.</summary>
     public RSCIReportIndex? TryGetInnerForMaintenance() => TryGetInner("maintenance");
 

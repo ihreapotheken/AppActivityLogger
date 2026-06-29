@@ -32,6 +32,11 @@ internal sealed class RSADashboardService : IRSADashboardService
         var total = 0;
         var multipart = 0;
         var json = 0;
+        // Kind split mirrors the per-category listing scopes so the dashboard's "Submissions"
+        // tiles agree with the pages they link to: Errors = kind "crash", Problem reports =
+        // anything that isn't a crash or an analytics event.
+        var crash = 0;
+        var problem = 0;
 
         foreach (var p in _options.AllowedPlatforms)
         {
@@ -45,6 +50,9 @@ internal sealed class RSADashboardService : IRSADashboardService
                 attBytes += r.AttachmentSizeBytes ?? 0;
                 var (channel, _) = RSAReportRowMapper.ResolveChannel(r.IngestionChannel);
                 if (channel == RSCIngestionChannels.Json) pJson++; else pMultipart++;
+
+                if (string.Equals(r.Kind, "crash", StringComparison.OrdinalIgnoreCase)) crash++;
+                else if (!string.Equals(r.Kind, "analytics", StringComparison.OrdinalIgnoreCase)) problem++;
             }
             multipart += pMultipart;
             json += pJson;
@@ -70,6 +78,8 @@ internal sealed class RSADashboardService : IRSADashboardService
             TotalJsonBytes: jsonBytes,
             TotalAttachmentBytes: attBytes,
             Platforms: platforms,
-            Recent: recentRows);
+            Recent: recentRows,
+            CrashCount: crash,
+            ProblemCount: problem);
     }
 }

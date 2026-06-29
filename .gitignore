@@ -15,3 +15,20 @@ obj/
 docs/_site/
 docs/api/
 docs/openapi/
+
+# Runtime logs (e.g. cloudflared quick-tunnel output) — never a build artifact
+.logs/
+*.log
+
+# Runtime SQLite state — never tracked. These are regenerated at startup (the dev seeder builds
+# them in Development) and the moment one is regenerated against real ingestion it would commit
+# real hashed identifiers / report metadata. Covers analytics.db, reports.db, audit.db,
+# auth-abuse.db and their WAL/SHM sidecars wherever they land.
+*.db
+*.db-wal
+*.db-shm
+
+# Local runtime ReportsRoot (problem-report JSON/gzip + state) — never tracked
+/reports/
+
+.playwright-mcp

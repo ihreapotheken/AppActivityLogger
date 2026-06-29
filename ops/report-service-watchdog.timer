@@ -1,0 +1,21 @@
+# report-service-watchdog.timer
+#
+# Drives report-service-watchdog.service on a fixed cadence. Enabled by
+# install.sh (`systemctl enable --now report-service-watchdog.timer`).
+#
+# Cadence note: each tick may take up to WATCHDOG_ATTEMPTS * WATCHDOG_SLEEP_SECS
+# (default ~6s of curling) before it gives up, so keep the active interval well
+# above that. 30s comfortably clears it.
+
+[Unit]
+Description=Periodic health watchdog for report-service
+
+[Timer]
+# Wait a minute after boot so the app clears its own startup before we judge it.
+OnBootSec=60s
+# Then probe every 30s relative to the last run finishing.
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

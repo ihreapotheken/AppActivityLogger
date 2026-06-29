@@ -7,12 +7,28 @@
     var stats = Model.Stats;
     var daily = stats?.Daily ?? Array.Empty<RSCDailyVolume>();
     var maxTotal = daily.Count == 0 ? 1 : Math.Max(1, daily.Max(d => d.Total));
-    const int barWidth = 18;
-    const int barGap = 4;
-    const int chartHeight = 180;
-    var chartWidth = daily.Count * (barWidth + barGap);
-    // Limit label density on long windows so the x-axis doesn't turn into mush.
+    // Limit x-axis label density on long windows so the dates don't turn into mush.
     var labelStep = daily.Count <= 14 ? 1 : daily.Count <= 30 ? 3 : 7;
+    string F(double v) => v.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+    // Fixed-width viewBox scaled UNIFORMLY (height:auto) so labels never stretch. A left gutter
+    // holds the y-axis tick labels and a bottom gutter the dates; everything is positioned with SVG
+    // attributes only — never inline CSS — to satisfy the strict admin CSP (style-src 'self').
+    const double bcW = 720, bcH = 190, bcPadL = 30, bcPadR = 8, bcPadT = 10, bcPadB = 22;
+    var bcPlotW = bcW - bcPadL - bcPadR;
+    var bcPlotH = bcH - bcPadT - bcPadB;
+    // Round the axis ceiling up to a "nice" number so the gridline labels read cleanly.
+    double NiceMax(double m)
+    {
+        if (m <= 5) return Math.Max(1, Math.Ceiling(m));
+        var mag = Math.Pow(10, Math.Floor(Math.Log10(m)));
+        var n = m / mag;
+        var nice = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+        return nice * mag;
+    }
+    var axisMax = NiceMax(maxTotal);
+    var bcSlot = daily.Count > 0 ? bcPlotW / daily.Count : bcPlotW;
+    var bcBarW = Math.Max(1.0, bcSlot * 0.72);
+    var bcTicks = new[] { 0.0, 0.25, 0.5, 0.75, 1.0 };
 }
 @await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Stats", "Aggregates over a date window: volume, top crash types, devices, pharmacies."))
 
@@ -46,64 +62,56 @@ else
     </p>
 
     <section class="tiles" aria-label="Window summary">
-        <div class="tile">
-            <div class="tile-label">Total in window</div>
-            <div class="tile-value">@stats.TotalReports</div>
-        </div>
-        <div class="tile">
-            <div class="tile-label">Multipart (zip)</div>
-            <div class="tile-value">@stats.MultipartCount</div>
-        </div>
-        <div class="tile">
-            <div class="tile-label">JSON</div>
-            <div class="tile-value">@stats.JsonCount</div>
-        </div>
-        <div class="tile">
-            <div class="tile-label">JSON bytes</div>
-            <div class="tile-value">@RSAByteFormatter.Format(stats.TotalJsonBytes)</div>
-        </div>
-        <div class="tile">
-            <div class="tile-label">Attachment bytes</div>
-            <div class="tile-value">@RSAByteFormatter.Format(stats.TotalAttachmentBytes)</div>
-        </div>
-        <div class="tile">
-            <div class="tile-label">Days covered</div>
-            <div class="tile-value">@stats.Daily.Count</div>
-        </div>
+        <tile label="Total in window">@stats.TotalReports</tile>
+        <tile label="Multipart (zip)">@stats.MultipartCount</tile>
+        <tile label="JSON">@stats.JsonCount</tile>
+        <tile label="JSON bytes">@RSAByteFormatter.Format(stats.TotalJsonBytes)</tile>
+        <tile label="Attachment bytes">@RSAByteFormatter.Format(stats.TotalAttachmentBytes)</tile>
+        <tile label="Days covered">@stats.Daily.Count</tile>
     </section>
 
     <h2>Daily submissions</h2>
     @if (stats.Daily.Count == 0)
     {
-        <p class="muted">No reports in this window.</p>
+        <empty-state>No reports in this window.</empty-state>
     }
     else
     {
         <div class="chart-wrap">
-            <svg class="bar-chart" viewBox="0 0 @(chartWidth) @(chartHeight + 32)"
-                 preserveAspectRatio="none" role="img" aria-label="Daily report volume bar chart">
+            <svg class="bar-chart" viewBox="0 0 @F(bcW) @F(bcH)" role="img" aria-label="Daily report volume, stacked by ingestion channel">
+                @* y-axis gridlines + tick labels (0 → axis ceiling). *@
+                @foreach (var t in bcTicks)
+                {
+                    var gy = bcPadT + bcPlotH * (1 - t);
+                    <line class="chart-grid" x1="@F(bcPadL)" y1="@F(gy)" x2="@F(bcW - bcPadR)" y2="@F(gy)"></line>
+                    @* @Html.Raw avoids Razor treating <text> as its special plain-text tag. *@
+                    @Html.Raw($"<text class=\"chart-tick\" x=\"{F(bcPadL - 4)}\" y=\"{F(gy + 3)}\" text-anchor=\"end\">{(axisMax * t).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}</text>")
+                }
                 @for (var i = 0; i < daily.Count; i++)
                 {
                     var d = daily[i];
-                    var totalH = (int)((double)d.Total / maxTotal * chartHeight);
-                    var multipartH = (int)((double)d.Multipart / maxTotal * chartHeight);
-                    var jsonH = totalH - multipartH;
-                    var x = i * (barWidth + barGap);
-                    var multipartY = chartHeight - multipartH;
+                    var multipartH = d.Multipart / axisMax * bcPlotH;
+                    var jsonH = d.Json / axisMax * bcPlotH;
+                    var colX = bcPadL + i * bcSlot;
+                    var barX = colX + (bcSlot - bcBarW) / 2;
+                    var baseY = bcPadT + bcPlotH;
+                    var multipartY = baseY - multipartH;
                     var jsonY = multipartY - jsonH;
-                    <g>
-                        <title>@d.Date.ToString("yyyy-MM-dd"): @d.Total total (@d.Multipart multipart, @d.Json json)</title>
+                    var tip = $"{d.Date:ddd} {d.Date:yyyy-MM-dd} · {d.Total} total · {d.Multipart} multipart · {d.Json} json";
+                    <g class="bar-group" data-chart-tip="@tip">
+                        @* Transparent full-height hit area so hovering anywhere in a day's column shows the tooltip. *@
+                        <rect class="bar-hit" x="@F(colX)" y="@F(bcPadT)" width="@F(bcSlot)" height="@F(bcPlotH)"></rect>
                         @if (multipartH > 0)
                         {
-                            <rect class="bar bar-multipart" x="@x" y="@multipartY" width="@barWidth" height="@multipartH"></rect>
+                            <rect class="bar-multipart" x="@F(barX)" y="@F(multipartY)" width="@F(bcBarW)" height="@F(multipartH)" rx="1"></rect>
                         }
                         @if (jsonH > 0)
                         {
-                            <rect class="bar bar-json" x="@x" y="@jsonY" width="@barWidth" height="@jsonH"></rect>
+                            <rect class="bar-json" x="@F(barX)" y="@F(jsonY)" width="@F(bcBarW)" height="@F(jsonH)" rx="1"></rect>
                         }
                         @if (i % labelStep == 0)
                         {
-                            @Html.Raw($"<text class=\"bar-label\" x=\"{x + barWidth / 2}\" y=\"{chartHeight + 14}\" text-anchor=\"middle\">{d.Date:MM-dd}</text>")
+                            @Html.Raw($"<text class=\"bar-label\" x=\"{F(barX + bcBarW / 2)}\" y=\"{F(bcH - 8)}\" text-anchor=\"middle\">{d.Date:MM-dd}</text>")
                         }
                     </g>
                 }
@@ -112,9 +120,34 @@ else
         <p class="legend">
             <span class="swatch swatch-multipart" aria-hidden="true"></span> multipart (zip)
             <span class="swatch swatch-json" aria-hidden="true"></span> JSON
-            · max day: <strong>@maxTotal</strong>
+            · max day: <strong>@maxTotal</strong> · hover a column for the daily breakdown
         </p>
     }
+
+    <h2>Composition</h2>
+    <div class="charts-row">
+        <section class="card chart-card">
+            <h3>By channel</h3>
+            @await Html.PartialAsync("_DonutChart", new RSADonutChartVM(
+                new[]
+                {
+                    new RSADonutSlice("Multipart (zip)", stats.MultipartCount, "chart-c1"),
+                    new RSADonutSlice("JSON", stats.JsonCount, "chart-c2"),
+                },
+                CenterLabel: "reports",
+                AriaLabel: "Reports by ingestion channel"))
+        </section>
+        <section class="card chart-card">
+            <h3>By platform</h3>
+            @{
+                var platformSlices = stats.ByPlatform
+                    .Select((b, i) => new RSADonutSlice(b.Key, b.Count, $"chart-c{(i % 6) + 1}"))
+                    .ToList();
+            }
+            @await Html.PartialAsync("_DonutChart", new RSADonutChartVM(
+                platformSlices, CenterLabel: "reports", AriaLabel: "Reports by platform"))
+        </section>
+    </div>
 
     <div class="stats-stack">
         @* Device model has no corresponding /Reports filter, so we pass empty FilterParam — the

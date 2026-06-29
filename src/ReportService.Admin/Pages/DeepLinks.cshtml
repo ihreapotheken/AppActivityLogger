@@ -1,0 +1,156 @@
+@page
+@model RSADeepLinksModel
+@using ReportService.Admin.ViewModels
+@{
+    ViewData["Title"] = "Deep links";
+    var editing = Model.Editing;
+    var enabledChecked = editing?.Enabled ?? true;
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM(
+    "Deferred deep links",
+    "Map the page a visitor was on to the place the app should open after they install. Visits are recorded by IP and matched on first launch."))
+
+<hint-box docs-href="/Documentation#04-api-reference">
+    <p>
+        Deferred deep linking bridges the gap between a website visit and a fresh app install. A page
+        records the visitor's IP and the URL they were on (<code>POST /api/v2/deeplinks/clicks</code>);
+        when the app first launches it asks whether that IP matches a recent visit
+        (<code>GET /api/v2/deeplinks/match</code>) and, if so, opens the configured
+        <strong>redirect address</strong>. A click resolves to the link whose <strong>page pattern</strong>
+        is the longest case-insensitive substring of the visited URL. Matching is a best-effort heuristic
+        keyed on a shared IP within the last @Model.MatchWindowHours hours.
+    </p>
+</hint-box>
+
+@if (!string.IsNullOrEmpty(Model.Flash))
+{
+    <div class="@(Model.FlashKind == "err" ? "error" : "flash")" role="status">@Model.Flash</div>
+}
+
+<section class="card">
+    <h2>@(editing is null ? "Add deep link" : $"Edit “{editing.Slug}”")</h2>
+    <p class="muted">
+        The <strong>page pattern</strong> is matched as a substring of the visited URL (e.g.
+        <code>/promo/spring</code>). The <strong>redirect address</strong> is an absolute URL the app
+        opens — an https universal link or a custom scheme such as <code>myapp://promo/spring</code>.
+    </p>
+    <form method="post" asp-page-handler="Save" class="filters">
+        @Html.AntiForgeryToken()
+        <label>
+            <span>Slug</span>
+            <input name="slug" required maxlength="128" placeholder="spring-promo"
+                   value="@(editing?.Slug)" readonly="@(editing is not null)" pattern="[a-z0-9][a-z0-9\-]*" />
+        </label>
+        <label>
+            <span>Name</span>
+            <input name="name" required maxlength="256" placeholder="Spring promo" value="@(editing?.Name)" />
+        </label>
+        <label>
+            <span>Page pattern</span>
+            <input name="pagePattern" required maxlength="2048" placeholder="/promo/spring" value="@(editing?.PagePattern)" />
+        </label>
+        <label>
+            <span>Redirect address</span>
+            <input name="redirectUrl" required maxlength="2048" placeholder="myapp://promo/spring" value="@(editing?.RedirectUrl)" />
+        </label>
+        <label>
+            <span>State</span>
+            <select name="enabled">
+                <option value="true" selected="@enabledChecked">Enabled</option>
+                <option value="false" selected="@(!enabledChecked)">Disabled</option>
+            </select>
+        </label>
+        <button type="submit" class="primary">@(editing is null ? "Add" : "Save")</button>
+        @if (editing is not null)
+        {
+            <a class="link" asp-page="/DeepLinks">cancel</a>
+        }
+    </form>
+</section>
+
+<section>
+    <h2>Configured links (@Model.Links.Count)</h2>
+    @if (Model.Links.Count == 0)
+    {
+        <empty-state>No deep links defined yet. Add one above; recorded visits matching its page pattern will resolve to its redirect address.</empty-state>
+    }
+    else
+    {
+        <table>
+            <thead>
+                <tr>
+                    <th scope="col" sort="text" tip="Operator-chosen stable key for this link.">Slug</th>
+                    <th scope="col" sort="text" tip="Human-readable label.">Name</th>
+                    <th scope="col" tip="Matched as a case-insensitive substring of the visited page URL. Longest match wins.">Page pattern</th>
+                    <th scope="col" tip="Absolute URL the app opens on a match (https universal link or custom scheme).">Redirect address</th>
+                    <th scope="col" sort="text" tip="Disabled links neither resolve new clicks nor get handed to apps.">State</th>
+                    <th scope="col" sort="date" tip="When this link was last created or edited.">Updated (UTC)</th>
+                    <th scope="col"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var l in Model.Links)
+                {
+                    <tr>
+                        <td class="mono">@l.Slug</td>
+                        <td>@l.Name</td>
+                        <td class="mono">@l.PagePattern</td>
+                        <td class="mono">@l.RedirectUrl</td>
+                        <td>@(l.Enabled ? "enabled" : "disabled")</td>
+                        <td class="mono" data-sort-value="@l.UpdatedAt.UtcDateTime.ToString("o")">@l.UpdatedAt.AsLocalTime()</td>
+                        <td>
+                            <a class="link" asp-page="/DeepLinks" asp-route-edit="@l.Slug">edit</a>
+                            &nbsp;
+                            <form method="post" asp-page-handler="Toggle" class="inline">
+                                @Html.AntiForgeryToken()
+                                <input type="hidden" name="slug" value="@l.Slug" />
+                                <input type="hidden" name="enabled" value="@(l.Enabled ? "false" : "true")" />
+                                <button type="submit" class="link" aria-label="@(l.Enabled ? "Disable" : "Enable") @l.Slug">@(l.Enabled ? "disable" : "enable")</button>
+                            </form>
+                            &nbsp;
+                            <form method="post" asp-page-handler="Delete" class="inline">
+                                @Html.AntiForgeryToken()
+                                <input type="hidden" name="slug" value="@l.Slug" />
+                                <button type="submit" class="link-danger" aria-label="Delete @l.Slug">delete</button>
+                            </form>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</section>
+
+<section>
+    <h2>Recent clicks (@Model.Clicks.Count)</h2>
+    @if (Model.Clicks.Count == 0)
+    {
+        <empty-state>No clicks recorded yet. A website calls <code>POST /api/v2/deeplinks/clicks</code> with the visitor's IP and page to capture one.</empty-state>
+    }
+    else
+    {
+        <table>
+            <thead>
+                <tr>
+                    <th scope="col" sort="date" tip="When the visit was recorded.">When (UTC)</th>
+                    <th scope="col" sort="text" tip="The visitor's IP — the key the app's match request is correlated against.">IP</th>
+                    <th scope="col" tip="The page URL the visitor was on.">Page</th>
+                    <th scope="col" sort="text" tip="The deep link this visit resolved to, or — if none matched.">Matched link</th>
+                    <th scope="col" sort="date" tip="When an app claimed this click via the match endpoint. Blank = still unclaimed.">Claimed (UTC)</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var c in Model.Clicks)
+                {
+                    <tr>
+                        <td class="mono" data-sort-value="@c.CreatedAt.UtcDateTime.ToString("o")">@c.CreatedAt.AsLocalTime()</td>
+                        <td class="mono">@c.Ip</td>
+                        <td class="mono">@c.PageUrl</td>
+                        <td class="mono">@(c.LinkSlug ?? "—")</td>
+                        <td class="mono" data-sort-value="@(c.MatchedAt?.UtcDateTime.ToString("o") ?? "")">@(c.MatchedAt is { } m ? m.AsLocalTime() : "—")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</section>

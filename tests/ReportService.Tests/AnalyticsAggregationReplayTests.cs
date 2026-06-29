@@ -137,7 +137,11 @@ public class AnalyticsAggregationReplayTests : IDisposable
                     Platform: null!,
                     Events: 2, Sessions: 1, DistinctUsers: 1)
             },
-            EventIds: new[] { "evt-A", "evt-B" });
+            Events: new[]
+            {
+                new RSCAggregationEventRef("android", "evt-A"),
+                new RSCAggregationEventRef("android", "evt-B")
+            });
 
         await Assert.ThrowsAnyAsync<Exception>(() => _store.WriteAggregationTickAsync(badTick, default));
 

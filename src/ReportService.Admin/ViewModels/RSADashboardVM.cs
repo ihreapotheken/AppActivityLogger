@@ -8,7 +8,9 @@ public sealed record RSADashboardVM(
     long TotalJsonBytes,
     long TotalAttachmentBytes,
     IReadOnlyList<RSAPlatformRowVM> Platforms,
-    IReadOnlyList<RSAReportRowVM> Recent);
+    IReadOnlyList<RSAReportRowVM> Recent,
+    int CrashCount = 0,
+    int ProblemCount = 0);
 
 /// <summary>Per-platform row on the dashboard with the multipart vs JSON channel split.</summary>
 public sealed record RSAPlatformRowVM(

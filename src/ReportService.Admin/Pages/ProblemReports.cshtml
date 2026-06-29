@@ -5,10 +5,25 @@
     ViewData["Title"] = "Problem reports";
     var filter = Model.Filter;
     var vm = Model.Listing;
+    var rowDeleteUrl = $"/ProblemReports{filter.ToQueryString(1)}&handler=DeleteOne";
 }
 @await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM(
     "Problem reports",
     "User-initiated Report-a-Problem submissions with attached logs. Crash auto-uploads (Errors) and analytics events live in their own sections."))
+
+@{ var sum = Model.Summary; }
+<section class="tiles" aria-label="Analytics for the current filter">
+    <tile label="Matching reports">@sum.Total.ToString("N0")</tile>
+    <tile label="Android · iOS">@sum.Android.ToString("N0") · @sum.Ios.ToString("N0")</tile>
+    <tile label="Multipart · JSON">@sum.Multipart.ToString("N0") · @sum.Json.ToString("N0")</tile>
+    <tile label="With logs">@sum.WithAttachment.ToString("N0")</tile>
+    <tile label="JSON bytes">@RSAByteFormatter.Format(sum.TotalBytes)</tile>
+    <tile label="Attachment bytes">@RSAByteFormatter.Format(sum.AttachmentBytes)</tile>
+</section>
+@if (sum.Truncated)
+{
+    <p class="muted">Breakdown computed from the most recent 2,000 matches; the “matching reports” total is exact. Narrow the filter for an exact breakdown.</p>
+}
 
 @await Html.PartialAsync("_ReportsFilter", new RSAReportsFilterPanelVM(
     "/ProblemReports",
@@ -28,18 +43,21 @@
 
 @if (vm.Items.Count == 0)
 {
-    <p class="muted">No user-submitted problem reports match the current filter. Submissions appear here when the SDK posts to <code>/partners/api/v2/report-problem</code> with a non-crash <code>kind</code>.</p>
+    <empty-state>No user-submitted problem reports match the current filter. Submissions appear here when the SDK posts to <code>/partners/api/v2/report-problem</code> with a non-crash <code>kind</code>.</empty-state>
 }
 else
 {
+    @await Html.PartialAsync("_DeleteFilteredBar", new RSADeleteBarVM(
+        $"/ProblemReports{filter.ToQueryString(1)}&handler=DeleteMatching", vm.TotalMatched, "problem report"))
     <table>
         <thead>
             <tr>
-                <th scope="col">Submitted</th>
-                <th scope="col">Platform</th>
-                <th scope="col">File</th>
-                <th scope="col">Attachment</th>
-                <th scope="col">Log entries</th>
+                <th scope="col" tip="Local time the user submitted this report-a-problem to the service">Submitted</th>
+                <th scope="col" tip="Originating SDK platform (android or ios)">Platform</th>
+                <th scope="col" tip="Stored report file name; links to the full decoded report detail view">File</th>
+                <th scope="col" tip="Size of the attached log bundle, or — when the submission included no logs">Attachment</th>
+                <th scope="col" tip="Parsed log entries: total count plus per-level and http-event chip breakdown">Log entries</th>
+                <th scope="col" aria-label="Delete"></th>
             </tr>
         </thead>
         <tbody>
@@ -74,20 +92,14 @@ else
                             <span class="muted">— (encrypted or not parsed)</span>
                         }
                     </td>
+                    <td>@await Html.PartialAsync("_RowDelete", new RSARowDeleteVM(rowDeleteUrl, r.Platform, r.FileName))</td>
                 </tr>
             }
         </tbody>
     </table>
 
-    <nav class="pager" aria-label="Pagination">
-        @if (vm.PageNumber > 1)
-        {
-            <a href="@filter.ToQueryString(vm.PageNumber - 1)">← previous</a>
-        }
-        <span class="muted">page @vm.PageNumber / @vm.TotalPages</span>
-        @if (vm.PageNumber < vm.TotalPages)
-        {
-            <a href="@filter.ToQueryString(vm.PageNumber + 1)">next →</a>
-        }
-    </nav>
+    @await Html.PartialAsync("_Pager", new RSAPagerVM(
+        vm.PageNumber > 1 ? filter.ToQueryString(vm.PageNumber - 1) : null,
+        vm.PageNumber < vm.TotalPages ? filter.ToQueryString(vm.PageNumber + 1) : null,
+        $"page {vm.PageNumber} / {vm.TotalPages}"))
 }

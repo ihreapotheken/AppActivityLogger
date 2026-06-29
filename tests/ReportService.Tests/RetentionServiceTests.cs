@@ -15,16 +15,20 @@ namespace ReportService.Tests;
 /// </summary>
 public class RetentionServiceTests
 {
-    private static RSCReportServiceOptions Opts(long maxBytes, int maxAgeDays, bool enabled = true) => new()
+    private static RSCReportServiceOptions Opts(long maxBytes, int maxAgeDays, bool enabled = true,
+        long minFreeDiskBytes = 0, int maxDiskUsagePercent = 0) => new()
     {
         AllowedPlatforms = new[] { "android", "ios" },
         RetentionEnabled = enabled,
         RetentionMaxBytes = maxBytes,
         RetentionMaxAgeDays = maxAgeDays,
+        RetentionMinFreeDiskBytes = minFreeDiskBytes,
+        RetentionMaxDiskUsagePercent = maxDiskUsagePercent,
     };
 
-    private static RSCRetentionService Build(RSCIReportStore store, RSCReportServiceOptions opts) =>
-        new(store, opts, new NullAuditLog(), NullLogger<RSCRetentionService>.Instance);
+    private static RSCRetentionService Build(RSCIReportStore store, RSCReportServiceOptions opts, RSCIDiskSpaceProbe? diskProbe = null) =>
+        new(store, opts, new NullAuditLog(), NullLogger<RSCRetentionService>.Instance,
+            diskProbe ?? new RSCDriveInfoDiskSpaceProbe());
 
     [Fact]
     public async Task Under_cap_and_within_age_is_a_noop()
@@ -129,6 +133,113 @@ public class RetentionServiceTests
     }
 
     [Fact]
+    public async Task Disk_guard_evicts_oldest_first_when_free_below_floor()
+    {
+        var store = new FakeStore();
+        // 10 recent, in-cap reports of 1000b. Byte cap is huge so only the disk guard can fire.
+        for (var i = 0; i < 10; i++)
+            store.Add("android", $"r{i:D2}.json", 1000, DateTimeOffset.UtcNow.AddMinutes(-(20 - i)));
+
+        // Disk: 1000 free, floor 5000 → deficit 4000 +10% cushion = 4400 → evict 5 (5000b).
+        var probe = new FakeDiskProbe(totalBytes: 100_000, freeBytes: 1_000);
+        var sut = Build(store, Opts(maxBytes: 1_000_000, maxAgeDays: 30, minFreeDiskBytes: 5_000), probe);
+        var report = await sut.SweepAsync("test", default);
+
+        Assert.Equal(0, report.DeletedByAge);
+        Assert.Equal(0, report.DeletedBySize);
+        Assert.Equal(5, report.DeletedByDisk);
+        Assert.Equal(5, store.Count);
+        Assert.False(store.Has("android", "r00.json"), "oldest must be evicted first");
+        Assert.True(store.Has("android", "r09.json"), "newest must survive");
+    }
+
+    [Fact]
+    public async Task Disk_guard_evicts_when_usage_percent_exceeded()
+    {
+        var store = new FakeStore();
+        for (var i = 0; i < 5; i++)
+            store.Add("android", $"r{i:D2}.json", 1000, DateTimeOffset.UtcNow.AddMinutes(-(10 - i)));
+
+        // total 10000, free 500 → 95% used. Cap at 80% → maxUsed 8000, deficit 1500 +10% = 1650 → evict 2.
+        var probe = new FakeDiskProbe(totalBytes: 10_000, freeBytes: 500);
+        var sut = Build(store, Opts(maxBytes: 1_000_000, maxAgeDays: 30, maxDiskUsagePercent: 80), probe);
+        var report = await sut.SweepAsync("test", default);
+
+        Assert.Equal(2, report.DeletedByDisk);
+        Assert.False(store.Has("android", "r00.json"));
+        Assert.True(store.Has("android", "r04.json"));
+    }
+
+    [Fact]
+    public async Task Disk_guard_is_off_by_default_even_when_disk_full()
+    {
+        var store = new FakeStore();
+        store.Add("android", "a.json", 1000, DateTimeOffset.UtcNow.AddHours(-1));
+
+        var probe = new FakeDiskProbe(totalBytes: 100, freeBytes: 0); // bone dry
+        // Defaults: minFreeDiskBytes = 0, maxDiskUsagePercent = 0 → guard disarmed.
+        var sut = Build(store, Opts(maxBytes: 1_000_000, maxAgeDays: 30), probe);
+        var report = await sut.SweepAsync("test", default);
+
+        Assert.Equal(0, report.DeletedByDisk);
+        Assert.Equal(1, store.Count);
+    }
+
+    [Fact]
+    public async Task Disk_guard_skips_gracefully_when_free_space_unknown()
+    {
+        var store = new FakeStore();
+        store.Add("android", "a.json", 1000, DateTimeOffset.UtcNow.AddHours(-1));
+
+        var sut = Build(store, Opts(maxBytes: 1_000_000, maxAgeDays: 30, minFreeDiskBytes: 5_000),
+            FakeDiskProbe.Unavailable());
+        var report = await sut.SweepAsync("test", default);
+
+        Assert.Equal(0, report.DeletedByDisk);
+        Assert.Equal(1, store.Count);
+    }
+
+    [Fact]
+    public async Task Disk_guard_frees_what_it_can_then_stops_when_out_of_reports()
+    {
+        var store = new FakeStore();
+        store.Add("android", "a.json", 1000, DateTimeOffset.UtcNow.AddHours(-3));
+        store.Add("android", "b.json", 1000, DateTimeOffset.UtcNow.AddHours(-2));
+        store.Add("android", "c.json", 1000, DateTimeOffset.UtcNow.AddHours(-1));
+
+        // Demand far more free space than report blobs can supply: it deletes all of them and stops.
+        var probe = new FakeDiskProbe(totalBytes: 2_000_000, freeBytes: 0);
+        var sut = Build(store, Opts(maxBytes: 1_000_000, maxAgeDays: 30, minFreeDiskBytes: 1_000_000), probe);
+        var report = await sut.SweepAsync("test", default);
+
+        Assert.Equal(3, report.DeletedByDisk);
+        Assert.Equal(0, store.Count);
+    }
+
+    [Fact]
+    public async Task Disk_guard_runs_after_age_and_size_passes()
+    {
+        var store = new FakeStore();
+        store.Add("android", "ancient.json", 500, DateTimeOffset.UtcNow.AddDays(-60));   // age pass
+        store.Add("android", "r1.json", 1000, DateTimeOffset.UtcNow.AddHours(-3));
+        store.Add("android", "r2.json", 1000, DateTimeOffset.UtcNow.AddHours(-2));
+        store.Add("android", "r3.json", 1000, DateTimeOffset.UtcNow.AddHours(-1));
+
+        // Byte cap won't fire (3000 of in-window data, cap 1_000_000). Disk floor forces eviction
+        // of the oldest in-window report after the age pass already removed "ancient".
+        var probe = new FakeDiskProbe(totalBytes: 100_000, freeBytes: 1_000);
+        var sut = Build(store, Opts(maxBytes: 1_000_000, maxAgeDays: 30, minFreeDiskBytes: 2_000), probe);
+        var report = await sut.SweepAsync("test", default);
+
+        Assert.Equal(1, report.DeletedByAge);
+        Assert.Equal(0, report.DeletedBySize);
+        Assert.True(report.DeletedByDisk >= 1);
+        Assert.False(store.Has("android", "ancient.json"));
+        Assert.False(store.Has("android", "r1.json"), "oldest in-window evicted by disk guard");
+        Assert.True(store.Has("android", "r3.json"), "newest survives");
+    }
+
+    [Fact]
     public void Stats_reports_oldest_newest_and_total()
     {
         var store = new FakeStore();
@@ -175,6 +286,15 @@ public class RetentionServiceTests
         public Stream? OpenRead(string platform, string fileName) => null;
 
         public bool Delete(string platform, string fileName) => _items.Remove((platform, fileName));
+    }
+
+    private sealed class FakeDiskProbe : RSCIDiskSpaceProbe
+    {
+        private readonly (long TotalBytes, long FreeBytes)? _result;
+        public FakeDiskProbe(long totalBytes, long freeBytes) => _result = (totalBytes, freeBytes);
+        private FakeDiskProbe() => _result = null;
+        public static FakeDiskProbe Unavailable() => new();
+        public (long TotalBytes, long FreeBytes)? Probe(string path) => _result;
     }
 
     private sealed class NullAuditLog : RSCIAuditLog

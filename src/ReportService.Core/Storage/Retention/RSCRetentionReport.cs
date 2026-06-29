@@ -13,9 +13,10 @@ public sealed record RSCRetentionReport(
     long LimitBytes,
     int? MaxAgeDays,
     DateTimeOffset At,
-    TimeSpan Elapsed)
+    TimeSpan Elapsed,
+    int DeletedByDisk = 0)
 {
-    public int DeletedTotal => DeletedByAge + DeletedBySize;
+    public int DeletedTotal => DeletedByAge + DeletedBySize + DeletedByDisk;
     public bool DidWork => DeletedTotal > 0;
 
     public static RSCRetentionReport Disabled(long bytes, long limit) =>

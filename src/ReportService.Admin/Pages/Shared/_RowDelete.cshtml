@@ -1,0 +1,14 @@
+@*
+    Per-row delete for a listing table. Manual action URL (filter query + &handler=DeleteOne) so the
+    page returns to the same filtered view; explicit antiforgery token. The data-confirm attribute
+    routes the submit through the shared confirmation modal (confirm-dialog.js) before deleting.
+*@
+@model RSARowDeleteVM
+<form method="post" action="@Model.PostUrl" class="inline row-delete"
+      data-confirm="Permanently delete this report and its attachment? This cannot be undone."
+      data-confirm-label="Delete report">
+    @Html.AntiForgeryToken()
+    <input type="hidden" name="platform" value="@Model.Platform" />
+    <input type="hidden" name="fileName" value="@Model.FileName" />
+    <button type="submit" class="link-danger" title="Delete this report" aria-label="Delete @Model.FileName">delete</button>
+</form>

@@ -14,6 +14,7 @@ using ReportService.Admin.Options;
 using ReportService.Admin.Services;
 using ReportService.Analytics;
 using ReportService.Audit;
+using ReportService.DeepLinks;
 using ReportService.Endpoints;
 using ReportService.Hosting;
 using ReportService.Ingestion;
@@ -21,6 +22,7 @@ using ReportService.Observability;
 using ReportService.Options;
 using ReportService.Security;
 using ReportService.Storage;
+using ReportService.Storage.ApiKeys;
 using ReportService.Storage.Retention;
 using ReportService.Validation;
 
@@ -47,10 +49,15 @@ var analyticsOptions = builder.Configuration
     .GetSection(RSCAnalyticsOptions.SectionName)
     .Get<RSCAnalyticsOptions>() ?? new RSCAnalyticsOptions();
 
+var deepLinkOptions = builder.Configuration
+    .GetSection(RSCDeepLinkOptions.SectionName)
+    .Get<RSCDeepLinkOptions>() ?? new RSCDeepLinkOptions();
+
 builder.Services.AddSingleton(reportOptions);
 builder.Services.AddSingleton(adminOptions);
 builder.Services.AddSingleton(proxyHeaders);
 builder.Services.AddSingleton(analyticsOptions);
+builder.Services.AddSingleton(deepLinkOptions);
 
 // Share the same storage wiring as the ingestion service so both services read the same files and
 // (optionally) the same SQLite index.
@@ -75,6 +82,8 @@ else
 builder.Services.AddSingleton<RSCIForcedReportStore, RSCSqliteForcedReportStore>();
 builder.Services.AddSingleton<RSCServiceTelemetry>();
 builder.Services.AddSingleton<RSCIAuditLog, RSCSqliteAuditLog>();
+builder.Services.AddSingleton<RSCIApiKeyStore, RSCSqliteApiKeyStore>();
+builder.Services.AddSingleton<RSCIDiskSpaceProbe, RSCDriveInfoDiskSpaceProbe>();
 builder.Services.AddSingleton<RSCRetentionService>();
 // Single merged process now owns the retention background sweep + manual purge — same internal
 // semaphore prevents the two paths from racing.
@@ -92,6 +101,12 @@ builder.Services.AddSingleton<RSCAnalyticsIdentifierHasher>();
 builder.Services.AddSingleton<RSCAnalyticsValidator>();
 builder.Services.AddSingleton<RSCIAnalyticsStore, RSCSqliteAnalyticsStore>();
 builder.Services.AddSingleton<RSAnalyticsIngestionService>();
+
+// Deferred deep linking. Owns its own SQLite DB (under ReportsRoot) so it works regardless of the
+// report Storage mode and under a read-only content root. The admin /DeepLinks page and the two
+// SDK/website routes (record click + match) both resolve this store.
+builder.Services.AddSingleton<RSCIDeferredDeepLinkStore, RSCSqliteDeferredDeepLinkStore>();
+
 if (analyticsOptions.Enabled)
 {
     builder.Services.AddHostedService<RSCAnalyticsAggregationWorker>();
@@ -125,6 +140,7 @@ else
 }
 builder.Services.AddSingleton<IRSAErrorDashboardService, RSAReportStoreErrorDashboardService>();
 builder.Services.AddSingleton<IRSAReportListingService, RSAReportListingService>();
+builder.Services.AddSingleton<IRSAReportDeletionService, RSAReportDeletionService>();
 builder.Services.AddSingleton<IRSAStatsService, RSAStatsService>();
 builder.Services.AddSingleton<IRSADocsService, RSADocsService>();
 builder.Services.AddSingleton<RSCIAuthAbuseTracker>(sp => new RSCResilientAuthAbuseTracker(
@@ -155,11 +171,6 @@ builder.Services
     .AddScheme<RSApiKeyAuthenticationOptions, RSApiKeyAuthenticationHandler>(
         RSApiKeyAuthenticationOptions.Scheme, _ => { });
 
-// PostConfigure binds ExpectedKey from the (possibly test-overridden) RSCReportServiceOptions
-// singleton, mirroring the standalone ingestion's DI shape.
-builder.Services.AddSingleton<Microsoft.Extensions.Options.IPostConfigureOptions<RSApiKeyAuthenticationOptions>>(
-    sp => new RSPostConfigureApiKey(sp.GetRequiredService<RSCReportServiceOptions>()));
-
 builder.Services.AddAuthorization(options =>
 {
     options.FallbackPolicy = options.DefaultPolicy;
@@ -172,6 +183,14 @@ builder.Services.AddAuthorization(options =>
         policy.AddAuthenticationSchemes(RSApiKeyAuthenticationOptions.Scheme);
         policy.RequireAuthenticatedUser();
     });
+    // Admin-only key management (REST). The cookie-authed operator UI for the same keys lives in
+    // the Maintenance page's "API keys" section, gated by the fallback cookie policy instead.
+    options.AddPolicy(RSEndpointConventions.ApiKeyAdminPolicy, policy =>
+    {
+        policy.AddAuthenticationSchemes(RSApiKeyAuthenticationOptions.Scheme);
+        policy.RequireAuthenticatedUser();
+        policy.RequireRole(RSCApiKeyRoles.Admin);
+    });
 });
 
 // Multipart limits on the merged process need to allow the ingestion's gzip attachments
@@ -180,7 +199,10 @@ builder.Services.AddAuthorization(options =>
 builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o =>
 {
     o.MultipartBodyLengthLimit = reportOptions.MaxUploadBytes;
-    o.ValueLengthLimit = 16 * 1024 * 1024;
+    // Bound a single non-file form value (the inline `json` part) at MaxJsonBytes so the framework
+    // rejects an oversized JSON field during multipart parse, instead of buffering up to a generic
+    // 16 MiB. The gzip attachment is a file part, governed by MultipartBodyLengthLimit above.
+    o.ValueLengthLimit = (int)Math.Clamp(reportOptions.MaxJsonBytes, 1, int.MaxValue);
     o.MemoryBufferThreshold = 64 * 1024;
 });
 
@@ -188,19 +210,11 @@ builder.Services.AddRateLimiter(rl =>
 {
     rl.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 
-    // Per-IP fixed-window limiter. Applies to every endpoint, including admin pages, but the
-    // permit budget is sized for ingestion traffic (~120/min by default) so an operator clicking
-    // around the dashboard doesn't trip it.
-    rl.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
-        RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-            factory: _ => new FixedWindowRateLimiterOptions
-            {
-                PermitLimit = reportOptions.RateLimitPermitsPerMinute,
-                Window = TimeSpan.FromMinutes(1),
-                QueueLimit = 0,
-                AutoReplenishment = true
-            }));
+    // Per-key sliding-window limiter, partitioned by the resolved API key when present (each key —
+    // and the static root key — gets its own budget), else by source IP. Applies to every endpoint
+    // including admin pages, but the operator's cookie-authed clicks carry no apiKey header so they
+    // fall to the generous per-IP budget. Shared with the standalone ingestion via RSCApiKeyRateLimiter.
+    rl.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(RSCApiKeyRateLimiter.Partition);
 
     // Per-endpoint policy that the ingestion route maps opt into. Caps simultaneous multipart
     // parses + storage writes regardless of source IP.
@@ -235,7 +249,18 @@ builder.Services.AddSwaggerGen(c =>
     {
         Title = "Report Ingestion Service",
         Version = "v1",
-        Description = "Ingests and serves Report-a-Problem submissions from mobile SDKs. Protected by the apiKey header."
+        Description = """
+            Ingests and serves Report-a-Problem submissions and analytics events from the Android/iOS
+            IA SDKs and trusted backends. Served by the merged host that also runs the admin console.
+
+            **Auth** — every ingestion route requires the `apiKey` request header. `/api/health` and
+            `/healthz` are anonymous. The operator-only NDJSON exports (`/admin/api/analytics/*.ndjson`)
+            authenticate with the admin cookie instead of `apiKey`; their full reference lives in the
+            Admin console chapter. Every route is subject to the global per-IP rate limiter.
+
+            **Errors** — failure bodies follow RFC 7807 (`application/problem+json`) with a `traceId`;
+            exception details are never echoed.
+            """
     });
 
     var apiKeyScheme = new OpenApiSecurityScheme
@@ -257,6 +282,10 @@ builder.Services.AddSwaggerGen(c =>
     var xmlPath = Path.Combine(AppContext.BaseDirectory, "ReportService.xml");
     if (File.Exists(xmlPath))
         c.IncludeXmlComments(xmlPath, includeControllerXmlComments: true);
+
+    // The NDJSON exports stream rows straight to the response, so the generator can't infer a body
+    // example — this attaches a realistic newline-delimited sample to their 200 response.
+    c.OperationFilter<RSAAnalyticsNdjsonExampleFilter>();
 });
 
 builder.Services.AddRazorPages(options =>
@@ -280,6 +309,20 @@ var app = builder.Build();
 RSCSecretValidation.RequireInProduction(app.Environment, "Admin:AdminKey", adminOptions.AdminKey);
 // Ingestion's apiKey is now also enforced here since the merged process owns those routes.
 RSCSecretValidation.RequireInProduction(app.Environment, "ReportService:ApiKey", reportOptions.ApiKey);
+// The identifier-hash pepper keys the SHA-256 of every anonymousId. Empty in Production silently
+// degrades the stored anonymous_id_hash to a bare, rainbow-table-reversible SHA-256(raw id) —
+// defeating the "never store raw identifiers" guarantee. Fail fast so a missing pepper refuses to
+// boot a Production analytics pipeline (the SDK install id and, on the server route, real account
+// keys both flow through this hash).
+if (analyticsOptions.Enabled)
+{
+    RSCSecretValidation.RequireInProduction(app.Environment, "Analytics:IdentifierHashPepper", analyticsOptions.IdentifierHashPepper);
+    // Fail fast on a mis-set analytics numeric/schema invariant (inverted schema range, non-positive
+    // caps, negative retention) rather than silently dead-lettering every batch at runtime.
+    var analyticsConfigErrors = analyticsOptions.Validate();
+    if (analyticsConfigErrors.Count > 0)
+        throw new InvalidOperationException("Invalid Analytics configuration: " + string.Join(" ", analyticsConfigErrors));
+}
 
 var startupLogger = app.Services.GetRequiredService<ILogger<Program>>();
 RSCCrashHandler.Install(startupLogger, app.Lifetime);
@@ -346,25 +389,61 @@ app.UseRouting();
 app.UseRateLimiter();
 app.UseAuthentication();
 
-// Dev auto-sign-in: when explicitly enabled, every unauthenticated request is signed in as a
-// synthetic "dev-operator" so the admin UI is reachable without typing the admin key. Gated on
-// an explicit config flag (not just IsDevelopment) so test hosts that run with Development for
-// the exception page keep seeing the real auth flow. The local docker-compose stack sets this
-// flag, and pairs it with a `127.0.0.1:` host-port binding so the bypass is bounded by network
-// isolation, not application auth.
+// Dev auto-sign-in: when explicitly enabled, an unauthenticated request that reached the app
+// DIRECTLY on a loopback host (operator at http://localhost:<HOST_PORT>/, or a bare-metal
+// `dotnet run`) is signed in as a synthetic "dev-operator" so the admin UI opens without the admin
+// key. Gated on an explicit config flag (not just IsDevelopment) so test hosts that run Development
+// still see the real auth flow. The docker-compose stack sets this flag and binds the host port to
+// `127.0.0.1:` only, so the bypass is also bounded by host-level network isolation.
+//
+// FAIL-CLOSED gate vs. the cloudflared tunnel. The engage decision requires a POSITIVE local
+// signal — the request must be addressed to a loopback Host (`localhost` / `127.0.0.1` / `[::1]`):
+//   * The operator types http://localhost:<HOST_PORT>/, so the Host header is loopback. Docker's
+//     port forwarding rewrites the source IP (the request arrives from the bridge gateway, not
+//     loopback) but does NOT rewrite Host — so a Host check works where a RemoteIpAddress check
+//     would wrongly lock the operator out.
+//   * A tunnelled / public client carries the public hostname (or, if cloudflared rewrites it, the
+//     origin's compose-network name `report-service:8080`) — never loopback — so the bypass
+//     refuses. Crucially this holds even when the tunnel forwards NONE of the Cf-* / X-Forwarded-*
+//     headers: the earlier purely-negative check (engage unless a proxy header is seen) failed
+//     OPEN and served the admin UI + PII exports to the internet for such tunnels. We still treat
+//     any forwarding header as a hard disqualifier (defence in depth), but the loopback-Host
+//     requirement is what makes the control fail closed.
+// Operators must still set ASPNETCORE_ENVIRONMENT=Production + DevAutoSignIn=false for any public
+// deployment; this middleware is the backstop, not the primary control.
+static bool IsLoopbackHost(HostString host)
+{
+    var name = host.Host;
+    if (string.IsNullOrEmpty(name)) return false;
+    if (string.Equals(name, "localhost", StringComparison.OrdinalIgnoreCase)) return true;
+    // Strip IPv6 brackets ("[::1]" -> "::1") so IPAddress can parse the literal.
+    name = name.Trim('[', ']');
+    return IPAddress.TryParse(name, out var ip) && IPAddress.IsLoopback(ip);
+}
+
 if (adminOptions.DevAutoSignIn)
 {
-    startupLogger.LogWarning("Admin DevAutoSignIn is ENABLED. Every request is treated as 'dev-operator'.");
+    startupLogger.LogWarning(
+        "Admin DevAutoSignIn is ENABLED. Requests addressed to a loopback host " +
+        "(http://localhost:<port>/) are treated as 'dev-operator'; every other request — including " +
+        "any tunnelled / proxied / public-hostname caller — still requires real cookie auth.");
     app.Use(async (ctx, next) =>
     {
-        if (ctx.User?.Identity?.IsAuthenticated != true)
+        var h = ctx.Request.Headers;
+        var viaProxy = h.ContainsKey("Cf-Connecting-Ip") || h.ContainsKey("Cf-Ray")
+            || h.ContainsKey("X-Forwarded-For") || h.ContainsKey("X-Forwarded-Host")
+            || h.ContainsKey("Forwarded");
+        var localOperator = !viaProxy && IsLoopbackHost(ctx.Request.Host);
+        if (localOperator && ctx.User?.Identity?.IsAuthenticated != true)
         {
             var identity = new ClaimsIdentity(
                 new[] { new Claim(ClaimTypes.Name, "dev-operator") },
                 CookieAuthenticationDefaults.AuthenticationScheme);
-            var principal = new ClaimsPrincipal(identity);
-            await ctx.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, principal).ConfigureAwait(false);
-            ctx.User = principal;
+            // Set the principal for THIS request only. We deliberately do not call SignInAsync:
+            // emitting a Set-Cookie on every request needlessly re-serializes the ticket for any
+            // cookieless caller (NDJSON export pollers, health checks). Setting ctx.User is
+            // sufficient for the fallback authorization policy to pass within the request.
+            ctx.User = new ClaimsPrincipal(identity);
         }
         await next().ConfigureAwait(false);
     });
@@ -385,23 +464,19 @@ app.UseSwaggerUI(c =>
     c.DocumentTitle = "Report Ingestion Service · API";
 });
 
-// Public health probes (anonymous). The merged process serves both ingestion clients and
-// admin operators, so `/api/health` reports the same payload either side would expect.
-app.MapGet("/api/health", (RSCServiceTelemetry telemetry, RSCReportServiceOptions opts) => Results.Ok(new
-{
-    status = "ok",
-    environment = opts.Environment,
-    startedAt = telemetry.StartedAt.UtcDateTime.ToString("O"),
-    uptimeSeconds = telemetry.UptimeSeconds,
-    version = telemetry.Version
-}))
+// Public health probes (anonymous). Kept deliberately minimal: this merged host is reachable on
+// the public internet whenever the cloudflared tunnel is up, so an anonymous probe must not
+// disclose the deployment environment string or the exact build version (it eases targeted
+// exploitation). Operators who want environment/version/uptime read them from the admin UI behind
+// the cookie policy. Mirrors the bare `/healthz` shape.
+app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }))
     .AllowAnonymous()
     .WithTags("Health")
     .WithName("GetHealth")
     .WithSummary("Liveness probe")
     .Produces(StatusCodes.Status200OK);
 
-app.MapGet("/api/health/ready", (RSCServiceTelemetry telemetry, RSCReportServiceOptions opts) =>
+app.MapGet("/api/health/ready", (RSCReportServiceOptions opts) =>
 {
     var probe = Path.Combine(opts.ReportsRoot, $".writecheck_{Guid.NewGuid():N}");
     try
@@ -409,14 +484,7 @@ app.MapGet("/api/health/ready", (RSCServiceTelemetry telemetry, RSCReportService
         Directory.CreateDirectory(opts.ReportsRoot);
         using (var fs = File.Create(probe)) { fs.WriteByte(0x00); }
         File.Delete(probe);
-        return Results.Ok(new
-        {
-            status = "ready",
-            environment = opts.Environment,
-            startedAt = telemetry.StartedAt.UtcDateTime.ToString("O"),
-            uptimeSeconds = telemetry.UptimeSeconds,
-            version = telemetry.Version
-        });
+        return Results.Ok(new { status = "ready" });
     }
     catch (IOException) { return Results.Json(new { status = "not-ready", reason = "reports root not writable" }, statusCode: StatusCodes.Status503ServiceUnavailable); }
     catch (UnauthorizedAccessException) { return Results.Json(new { status = "not-ready", reason = "reports root not writable" }, statusCode: StatusCodes.Status503ServiceUnavailable); }
@@ -434,6 +502,8 @@ app.MapGet("/api/health/ready", (RSCServiceTelemetry telemetry, RSCReportService
 // uses `/partners/api/v2/...`, `/api/v1/...`, and `/api/v2/analytics/...`).
 app.MapProblemReportEndpoints();
 app.MapAnalyticsEndpoints();
+app.MapDeepLinkEndpoints();
+app.MapApiKeyManagementEndpoints();
 
 // Admin-only NDJSON exports. The global authorization fallback policy gates these the same as
 // the Razor pages — anonymous callers are bounced to /Login.
@@ -444,6 +514,8 @@ app.MapRazorPages();
 if (app.Environment.IsDevelopment())
 {
     await ReportService.Admin.Services.RSAAnalyticsDevDataSeeder.SeedAsync(
+        app.Services, startupLogger, CancellationToken.None);
+    await ReportService.Admin.Services.RSAProblemReportDevDataSeeder.SeedAsync(
         app.Services, startupLogger, CancellationToken.None);
 }
 

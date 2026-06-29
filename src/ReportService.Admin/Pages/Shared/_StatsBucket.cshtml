@@ -20,15 +20,15 @@
     <h2>@Model.Title</h2>
     @if (items.Count == 0)
     {
-        <p class="muted">No data.</p>
+        <empty-state>No data.</empty-state>
     }
     else
     {
         <table class="stats-table">
             <thead>
                 <tr>
-                    <th scope="col">Key</th>
-                    <th scope="col">Count</th>
+                    <th scope="col" tip="The value being counted — device model, pharmacy, app version, platform or channel (see the card title).">Key</th>
+                    <th scope="col" tip="Number of reports in the window attributed to this value.">Count</th>
                     <th scope="col" class="bar-col"></th>
                     <th scope="col"></th>
                 </tr>
@@ -37,10 +37,12 @@
                 @foreach (var b in slice)
                 {
                     var pct = (int)Math.Round(b.Count * 100.0 / max);
+                    var tip = $"{b.Key}: {b.Count} ({pct}% of the top result)";
                     <tr>
                         <td class="mono">@b.Key</td>
                         <td>@b.Count</td>
-                        <td class="bar-col"><span class="hbar" style="width: @(pct)%"></span></td>
+                        @* SVG rect width is an attribute, not an inline style, so it isn't blocked by the admin CSP (style-src 'self'). data-chart-tip wires the shared hover tooltip. *@
+                        <td class="bar-col"><svg class="hbar" viewBox="0 0 100 8" preserveAspectRatio="none" data-chart-tip="@tip" role="img" aria-label="@tip"><rect class="hbar-fill" x="0" y="0" width="@pct" height="8"></rect></svg></td>
                         <td>
                             @if (b.Key != "(unset)" && !string.IsNullOrEmpty(Model.FilterParam))
                             {
@@ -53,17 +55,12 @@
         </table>
         @if (totalPages > 1)
         {
-            <nav class="pager bucket-pager" aria-label="@Model.Title pagination">
-                @if (page > 1)
-                {
-                    <a href="@Model.BuildHref(page - 1)">← previous</a>
-                }
-                <span class="muted">page @(page) / @totalPages</span>
-                @if (page < totalPages)
-                {
-                    <a href="@Model.BuildHref(page + 1)">next →</a>
-                }
-            </nav>
+            @await Html.PartialAsync("_Pager", new RSAPagerVM(
+                page > 1 ? Model.BuildHref(page - 1) : null,
+                page < totalPages ? Model.BuildHref(page + 1) : null,
+                $"page {page} / {totalPages}",
+                AriaLabel: $"{Model.Title} pagination",
+                ExtraClass: "bucket-pager"))
         }
     }
 </section>

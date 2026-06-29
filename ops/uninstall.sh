@@ -48,8 +48,23 @@ INSTALL_DIR="/opt/report-service"
 CONFIG_DIR="/etc/report-service"
 REPORTS_DIR="/srv/reports"
 UNIT_DST="/etc/systemd/system/report-service.service"
+# Health-watchdog units installed by install.sh. The helper scripts live under
+# ${INSTALL_DIR}/ops and are removed with INSTALL_DIR by --purge.
+EXTRA_UNITS=(report-service-watchdog.timer report-service-watchdog.service report-service-restart.service)
 
 log() { printf '[uninstall] %s\n' "$*"; }
+
+# Stop + disable the watchdog timer first so it can't restart the service mid-teardown.
+if systemctl list-unit-files report-service-watchdog.timer >/dev/null 2>&1; then
+    if systemctl is-active --quiet report-service-watchdog.timer; then
+        log "stopping report-service-watchdog.timer"
+        systemctl stop report-service-watchdog.timer || true
+    fi
+    if systemctl is-enabled --quiet report-service-watchdog.timer 2>/dev/null; then
+        log "disabling report-service-watchdog.timer"
+        systemctl disable report-service-watchdog.timer || true
+    fi
+fi
 
 # Stop + disable (best effort; do not fail if already absent).
 if systemctl list-unit-files report-service.service >/dev/null 2>&1; then
@@ -67,10 +82,17 @@ if [[ -f "$UNIT_DST" ]]; then
     log "removing ${UNIT_DST}"
     rm -f "$UNIT_DST"
 fi
+for unit in "${EXTRA_UNITS[@]}"; do
+    if [[ -f "/etc/systemd/system/${unit}" ]]; then
+        log "removing /etc/systemd/system/${unit}"
+        rm -f "/etc/systemd/system/${unit}"
+    fi
+done
 
 log "systemctl daemon-reload"
 systemctl daemon-reload
 systemctl reset-failed report-service 2>/dev/null || true
+systemctl reset-failed report-service-watchdog.service 2>/dev/null || true
 
 if (( PURGE == 1 )); then
     if [[ -d "$INSTALL_DIR" ]]; then

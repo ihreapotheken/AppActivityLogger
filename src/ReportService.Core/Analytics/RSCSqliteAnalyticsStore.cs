@@ -61,6 +61,7 @@ public sealed class RSCSqliteAnalyticsStore : RSCIAnalyticsStore
         new RSCM001_CreateAnalyticsTables(),
         new RSCM002_CreateRetentionAndFunnelTables(),
         new RSCM003_AddEventIdIndex(),
+        new RSCM004_RekeyEventIdIndexAndFunnelSteps(),
     };
 
     private void Bootstrap()
@@ -302,7 +303,13 @@ VALUES(@received_at, @batch_id, @platform, @event_id, @reason, @detail, @raw_jso
                     eventIdParam.Value = (object?)r.EventId ?? DBNull.Value;
                     reasonParam.Value = r.Reason;
                     detailParam.Value = (object?)r.Detail ?? DBNull.Value;
-                    rawParam.Value = r.RawJson;
+                    // The PII guard rejects an event precisely because it carries a forbidden value.
+                    // Persisting the raw JSON verbatim would write that value to durable, age-trimmed
+                    // storage — defeating the control. For PiiKeyForbidden, scrub every property/item
+                    // value (keys and structure are kept for debuggability) before it lands at rest.
+                    rawParam.Value = string.Equals(r.Reason, RSCAnalyticsDeadLetterReasons.PiiKeyForbidden, StringComparison.Ordinal)
+                        ? RedactForbiddenPiiValues(r.RawJson)
+                        : r.RawJson;
                     await insertDlq.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false);
                 }
             }
@@ -324,6 +331,66 @@ VALUES(@received_at, @batch_id, @platform, @event_id, @reason, @detail, @raw_jso
         if (string.IsNullOrWhiteSpace(value)) return null;
         return DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture,
             DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var dt) ? dt : null;
+    }
+
+    private const string PiiRedactionMarker = "[redacted]";
+
+    /// <summary>
+    /// Rewrites a rejected event's raw JSON so no scalar value survives, while preserving the
+    /// object/array structure and all property names for debuggability. Used for
+    /// <see cref="RSCAnalyticsDeadLetterReasons.PiiKeyForbidden"/> rows so a forbidden PII value is
+    /// never written to the durable dead-letter table. If the input can't be parsed as JSON we fall
+    /// back to a fully-opaque marker rather than risk persisting the original.
+    /// </summary>
+    private static string RedactForbiddenPiiValues(string rawJson)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(rawJson);
+            using var buffer = new MemoryStream();
+            using (var writer = new System.Text.Json.Utf8JsonWriter(buffer))
+            {
+                WriteRedacted(doc.RootElement, writer);
+            }
+            return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return PiiRedactionMarker;
+        }
+    }
+
+    private static void WriteRedacted(System.Text.Json.JsonElement element, System.Text.Json.Utf8JsonWriter writer)
+    {
+        switch (element.ValueKind)
+        {
+            case System.Text.Json.JsonValueKind.Object:
+                writer.WriteStartObject();
+                foreach (var prop in element.EnumerateObject())
+                {
+                    writer.WritePropertyName(prop.Name);
+                    WriteRedacted(prop.Value, writer);
+                }
+                writer.WriteEndObject();
+                break;
+            case System.Text.Json.JsonValueKind.Array:
+                writer.WriteStartArray();
+                foreach (var item in element.EnumerateArray())
+                {
+                    WriteRedacted(item, writer);
+                }
+                writer.WriteEndArray();
+                break;
+            case System.Text.Json.JsonValueKind.Null:
+                // A null value carries no PII and keeping it preserves the original shape.
+                writer.WriteNullValue();
+                break;
+            default:
+                // Strings, numbers, and booleans are all potential PII carriers — collapse every
+                // scalar to the opaque marker so nothing reversible is persisted.
+                writer.WriteStringValue(PiiRedactionMarker);
+                break;
+        }
     }
 
     // -------- Aggregation --------
@@ -370,9 +437,9 @@ LIMIT @limit;";
         }, ct).ConfigureAwait(false);
     }
 
-    public async Task MarkEventsAggregatedAsync(IReadOnlyList<string> eventIds, CancellationToken ct)
+    public async Task MarkEventsAggregatedAsync(IReadOnlyList<RSCAggregationEventRef> events, CancellationToken ct)
     {
-        if (eventIds.Count == 0) return;
+        if (events.Count == 0) return;
 
         await ExecuteWithRetryAsync(async innerCt =>
         {
@@ -381,14 +448,18 @@ LIMIT @limit;";
             using var cmd = conn.CreateCommand();
             cmd.Transaction = tx;
             cmd.CommandTimeout = _commandTimeoutSeconds;
-            cmd.CommandText = "UPDATE analytics_events SET aggregated_at = @ts WHERE event_id = @event_id;";
+            // Match the UNIQUE(platform, event_id) key on both columns — marking by event_id alone
+            // would mis-mark a same-id row on another platform (incl. the backend server path).
+            cmd.CommandText = "UPDATE analytics_events SET aggregated_at = @ts WHERE platform = @platform AND event_id = @event_id;";
             var tsParam = cmd.Parameters.Add("@ts", SqliteType.Text);
+            var platformParam = cmd.Parameters.Add("@platform", SqliteType.Text);
             var idParam = cmd.Parameters.Add("@event_id", SqliteType.Text);
 
             tsParam.Value = ToIso(DateTimeOffset.UtcNow);
-            foreach (var id in eventIds)
+            foreach (var e in events)
             {
-                idParam.Value = id;
+                platformParam.Value = e.Platform;
+                idParam.Value = e.EventId;
                 await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false);
             }
             await tx.CommitAsync(innerCt).ConfigureAwait(false);
@@ -397,7 +468,7 @@ LIMIT @limit;";
 
     public async Task WriteAggregationTickAsync(RSCAnalyticsAggregationTick tick, CancellationToken ct)
     {
-        if (tick.EventIds.Count == 0 &&
+        if (tick.Events.Count == 0 &&
             tick.Sessions.Count == 0 &&
             tick.UserDays.Count == 0 &&
             tick.DailyRollups.Count == 0)
@@ -479,8 +550,12 @@ ON CONFLICT(platform, day, anonymous_id_hash) DO UPDATE SET
                 }
             }
 
-            // 3) Daily rollups: events accumulate; sessions and distinct_users take MAX so a
-            //    replay can't shrink them but also doesn't double-count.
+            // 3) Daily rollups: `events` accumulates across ticks (each tick's bounded batch is a
+            //    disjoint slice of the day). `sessions` and `distinct_users` CANNOT be summed
+            //    (cross-tick repeats double-count) nor MAXed (a day spread over many ticks reports
+            //    only the largest single tick) from per-tick deltas. Recompute them authoritatively
+            //    from analytics_sessions / analytics_user_days for that (platform, day) — both were
+            //    already upserted above in this same transaction, so the counts are current.
             if (tick.DailyRollups.Count > 0)
             {
                 using var cmd = conn.CreateCommand();
@@ -488,43 +563,47 @@ ON CONFLICT(platform, day, anonymous_id_hash) DO UPDATE SET
                 cmd.CommandTimeout = _commandTimeoutSeconds;
                 cmd.CommandText = @"
 INSERT INTO analytics_daily_rollups(day, platform, events, sessions, distinct_users)
-VALUES(@day, @platform, @events, @sessions, @distinct_users)
+VALUES(
+    @day, @platform, @events,
+    (SELECT COUNT(*) FROM analytics_sessions  WHERE platform = @platform AND date(started_at) = @day),
+    (SELECT COUNT(*) FROM analytics_user_days  WHERE platform = @platform AND day = @day))
 ON CONFLICT(day, platform) DO UPDATE SET
     events         = analytics_daily_rollups.events + excluded.events,
-    sessions       = MAX(analytics_daily_rollups.sessions, excluded.sessions),
-    distinct_users = MAX(analytics_daily_rollups.distinct_users, excluded.distinct_users);";
+    sessions       = excluded.sessions,
+    distinct_users = excluded.distinct_users;";
                 var dayParam      = cmd.Parameters.Add("@day", SqliteType.Text);
                 var platformParam = cmd.Parameters.Add("@platform", SqliteType.Text);
                 var eventsParam   = cmd.Parameters.Add("@events", SqliteType.Integer);
-                var sessionsParam = cmd.Parameters.Add("@sessions", SqliteType.Integer);
-                var distinctParam = cmd.Parameters.Add("@distinct_users", SqliteType.Integer);
 
                 foreach (var d in tick.DailyRollups)
                 {
                     dayParam.Value      = d.Day.ToString("yyyy-MM-dd");
                     platformParam.Value = d.Platform;
                     eventsParam.Value   = d.Events;
-                    sessionsParam.Value = d.Sessions;
-                    distinctParam.Value = d.DistinctUsers;
                     await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false);
                 }
             }
 
             // 4) Mark events aggregated last. Same transaction means a crash anywhere above
             //    leaves these rows in the unaggregated pool, ready for the next tick to retry.
-            if (tick.EventIds.Count > 0)
+            //    Match the UNIQUE(platform, event_id) key on BOTH columns: marking by event_id
+            //    alone would also stamp a same-id row on another platform that this tick never
+            //    folded, silently dropping it from every rollup.
+            if (tick.Events.Count > 0)
             {
                 using var cmd = conn.CreateCommand();
                 cmd.Transaction = tx;
                 cmd.CommandTimeout = _commandTimeoutSeconds;
-                cmd.CommandText = "UPDATE analytics_events SET aggregated_at = @ts WHERE event_id = @event_id;";
+                cmd.CommandText = "UPDATE analytics_events SET aggregated_at = @ts WHERE platform = @platform AND event_id = @event_id;";
                 var tsParam = cmd.Parameters.Add("@ts", SqliteType.Text);
+                var platformParam = cmd.Parameters.Add("@platform", SqliteType.Text);
                 var idParam = cmd.Parameters.Add("@event_id", SqliteType.Text);
                 tsParam.Value = nowIso;
 
-                foreach (var id in tick.EventIds)
+                foreach (var e in tick.Events)
                 {
-                    idParam.Value = id;
+                    platformParam.Value = e.Platform;
+                    idParam.Value = e.EventId;
                     await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false);
                 }
             }
@@ -1002,6 +1081,43 @@ GROUP BY platform, anonymous_id_hash;";
                 }
             }
 
+            // 1b) Rotation-boundary detection. After a pepper/hash_version rotation a long-tenured
+            //     user's pre-rotation rows carry the OLD hash+version while their post-rotation rows
+            //     carry a brand-new hash — the two identities cannot be bridged (raw IDs were never
+            //     stored). The MIN(day) above therefore makes every still-active user look like a
+            //     fresh install on the first day the new version appears, producing a spurious
+            //     "new install" spike. We can't recover the true install day across the boundary,
+            //     so for each platform whose current-version history is preceded by older-version
+            //     activity we mark that first current-version day as a rotation boundary and skip
+            //     its install cohort rather than record a misleading one. (Operators clear the old
+            //     rows via PurgeUserDaysBelowHashVersionAsync; once gone, no boundary is detected.)
+            var rotationBoundary = new Dictionary<string, DateOnly>(StringComparer.Ordinal);
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandTimeout = _commandTimeoutSeconds;
+                cmd.CommandText = @"
+SELECT cur.platform, cur.first_day
+FROM (
+    SELECT platform, MIN(day) AS first_day
+    FROM analytics_user_days
+    WHERE hash_version = @hash_version
+    GROUP BY platform
+) cur
+WHERE EXISTS (
+    SELECT 1 FROM analytics_user_days old
+    WHERE old.platform = cur.platform
+      AND old.hash_version < @hash_version
+      AND old.day < cur.first_day
+);";
+                cmd.Parameters.AddWithValue("@hash_version", currentHashVersion);
+                using var reader = await cmd.ExecuteReaderAsync(innerCt).ConfigureAwait(false);
+                while (await reader.ReadAsync(innerCt).ConfigureAwait(false))
+                {
+                    rotationBoundary[reader.GetString(0)] =
+                        DateOnly.Parse(reader.GetString(1), CultureInfo.InvariantCulture);
+                }
+            }
+
             // 2) All (platform, day, hash) observations inside the retention window — we look
             //    install_day +30 days into the future from windowStart, but to evaluate the D30
             //    retention of cohort install_day = windowStart, we need data up to today.
@@ -1030,9 +1146,19 @@ WHERE hash_version = @hash_version AND day >= @from;";
             var cohorts = new Dictionary<(string Platform, DateOnly InstallDay),
                 (long Size, long D1, long D7, long D30)>();
 
+            var suppressedBoundaryUsers = 0L;
             foreach (var ((platform, hash), installDay) in firstSeen)
             {
                 if (installDay < windowStart) continue;
+
+                // Skip the rotation-boundary cohort: a "first seen" on the day the current
+                // hash_version begins (when older-version history precedes it) is a population
+                // rollover, not a real install, so it would overcount new users.
+                if (rotationBoundary.TryGetValue(platform, out var boundary) && installDay == boundary)
+                {
+                    suppressedBoundaryUsers++;
+                    continue;
+                }
 
                 var key = (platform, installDay);
                 if (!cohorts.TryGetValue(key, out var counts))
@@ -1089,6 +1215,15 @@ ON CONFLICT(platform, install_day) DO UPDATE SET
                 }
             }
             await tx.CommitAsync(innerCt).ConfigureAwait(false);
+
+            if (suppressedBoundaryUsers > 0)
+            {
+                _logger.LogWarning(
+                    "Retention cohorts: suppressed {Users} users on {Platforms} rotation-boundary day(s) " +
+                    "(hash_version {Version}) — cohorts spanning a pepper rotation are unreliable until " +
+                    "older hash_version rows are purged.",
+                    suppressedBoundaryUsers, rotationBoundary.Count, currentHashVersion);
+            }
 
             return cohorts.Count;
         }, ct).ConfigureAwait(false);
@@ -1217,7 +1352,10 @@ ORDER BY install_day DESC, platform ASC;";
             {
                 cmd.Transaction = tx;
                 cmd.CommandTimeout = _commandTimeoutSeconds;
-                cmd.CommandText = "DELETE FROM analytics_events WHERE received_at < @cutoff;";
+                // Only trim raw events the aggregation worker has already folded. Without the
+                // aggregated_at guard, a backed-up/crash-looping aggregator lets the purge delete
+                // rows past the cutoff before they ever reach a rollup — permanent, silent undercount.
+                cmd.CommandText = "DELETE FROM analytics_events WHERE received_at < @cutoff AND aggregated_at IS NOT NULL;";
                 cmd.Parameters.AddWithValue("@cutoff", eventsIso);
                 total += await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false);
             }
@@ -1306,27 +1444,49 @@ ON CONFLICT(funnel_key) DO UPDATE SET
     {
         if (definition.Steps.Count == 0) return 0;
 
-        // Pull the (session_id, platform, sequence, type, name, occurred_at) tuples for events
-        // in the window. Anything outside the window can't help — the same session won't have
-        // a "reached step" boundary appearing inside the window unless its step events also
-        // land inside the window (funnel_steps is INSERT OR IGNORE, so old observations stay).
+        // Pull only the events whose name matches one of this funnel's steps, in the window.
+        // Anything outside the window can't help — the same session won't have a "reached step"
+        // boundary appearing inside the window unless its step events also land inside the window
+        // (funnel_steps is INSERT OR IGNORE, so old observations stay). Filtering by step names in
+        // SQL keeps the in-memory set proportional to candidate events, not the whole 14-day event
+        // pool: an event whose name matches no step can never advance the matcher, so dropping it
+        // server-side is behavior-identical to scanning everything and skipping it in the walk.
         var windowIso = ToIso(new DateTimeOffset(windowStart.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero));
+
+        // Distinct step event names — these are the only `name` values the matcher can ever accept.
+        var stepNames = definition.Steps
+            .Select(s => s.EventName)
+            .Where(n => !string.IsNullOrEmpty(n))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (stepNames.Count == 0) return 0;
 
         return await ExecuteWithRetryAsync(async innerCt =>
         {
             using var conn = await OpenConnectionAsync(innerCt).ConfigureAwait(false);
 
-            // session_id -> ordered list of (sequence, occurred_at, type, name, platform)
-            var perSession = new Dictionary<string, List<(long Sequence, DateTimeOffset OccurredAt, string Type, string Name, string Platform)>>(StringComparer.Ordinal);
+            // (platform, session_id) -> ordered list of (sequence, occurred_at, type, name). The
+            // key includes platform: session ids are caller-supplied and can collide across
+            // platforms, so two platforms sharing a session_id must walk independently or their
+            // events interleave and corrupt step ordering.
+            var perSession = new Dictionary<(string Platform, string SessionId),
+                List<(long Sequence, DateTimeOffset OccurredAt, string Type, string Name)>>();
 
             using (var cmd = conn.CreateCommand())
             {
                 cmd.CommandTimeout = _commandTimeoutSeconds;
-                cmd.CommandText = @"
+                var nameParams = new List<string>(stepNames.Count);
+                for (var i = 0; i < stepNames.Count; i++)
+                {
+                    var p = "@name" + i.ToString(CultureInfo.InvariantCulture);
+                    nameParams.Add(p);
+                    cmd.Parameters.AddWithValue(p, stepNames[i]);
+                }
+                cmd.CommandText = $@"
 SELECT session_id, platform, sequence, occurred_at, type, name
 FROM analytics_events
-WHERE occurred_at >= @from
-ORDER BY session_id, sequence ASC, occurred_at ASC;";
+WHERE occurred_at >= @from AND name IN ({string.Join(", ", nameParams)})
+ORDER BY platform, session_id, sequence ASC, occurred_at ASC;";
                 cmd.Parameters.AddWithValue("@from", windowIso);
                 using var reader = await cmd.ExecuteReaderAsync(innerCt).ConfigureAwait(false);
                 while (await reader.ReadAsync(innerCt).ConfigureAwait(false))
@@ -1338,20 +1498,21 @@ ORDER BY session_id, sequence ASC, occurred_at ASC;";
                     var type = reader.GetString(4);
                     var name = reader.GetString(5);
 
-                    if (!perSession.TryGetValue(sid, out var list))
+                    var key = (platform, sid);
+                    if (!perSession.TryGetValue(key, out var list))
                     {
-                        list = new List<(long, DateTimeOffset, string, string, string)>();
-                        perSession[sid] = list;
+                        list = new List<(long, DateTimeOffset, string, string)>();
+                        perSession[key] = list;
                     }
-                    list.Add((seq, at, type, name, platform));
+                    list.Add((seq, at, type, name));
                 }
             }
 
-            // For each session, walk the events left-to-right and advance through the funnel's
-            // step list as matches appear. Record (funnel_key, session_id, step_index) for each
-            // reached step. INSERT OR IGNORE keeps the table idempotent across re-runs.
+            // For each (platform, session) walk the events left-to-right and advance through the
+            // funnel's step list as matches appear. Record (funnel_key, platform, session_id,
+            // step_index) for each reached step. INSERT OR IGNORE keeps the table idempotent.
             var observations = new List<(int StepIndex, string Platform, string SessionId, DateTimeOffset ReachedAt)>();
-            foreach (var (sessionId, events) in perSession)
+            foreach (var ((platform, sessionId), events) in perSession)
             {
                 int stepIdx = 0;
                 foreach (var ev in events)
@@ -1362,7 +1523,7 @@ ORDER BY session_id, sequence ASC, occurred_at ASC;";
                     var nameMatches = string.Equals(ev.Name, step.EventName, StringComparison.Ordinal);
                     if (typeMatches && nameMatches)
                     {
-                        observations.Add((stepIdx, ev.Platform, sessionId, ev.OccurredAt));
+                        observations.Add((stepIdx, platform, sessionId, ev.OccurredAt));
                         stepIdx++;
                     }
                 }

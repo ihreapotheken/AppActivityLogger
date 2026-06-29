@@ -51,8 +51,19 @@ public sealed record RSCReportServiceOptions
            .Distinct(StringComparer.Ordinal)
            .ToArray();
 
-    /// <summary>Fixed-window per-source-IP rate limit.</summary>
+    /// <summary>Per-partition request rate limit (per minute). The partition is the authenticated API
+    /// key when present, otherwise the source IP. Acts as the per-IP default and the fallback for the
+    /// role tiers below.</summary>
     public int RateLimitPermitsPerMinute { get; init; } = 120;
+
+    /// <summary>Per-minute rate limit applied to <b>admin</b>-role API keys (and the static root key).
+    /// <c>0</c> ⇒ fall back to <see cref="RateLimitPermitsPerMinute"/>. A per-key override on the key
+    /// record itself takes precedence over this.</summary>
+    public int ApiKeyAdminRateLimitPerMinute { get; init; } = 0;
+
+    /// <summary>Per-minute rate limit applied to <b>user</b>-role API keys. <c>0</c> ⇒ fall back to
+    /// <see cref="RateLimitPermitsPerMinute"/>. A per-key override on the key record takes precedence.</summary>
+    public int ApiKeyUserRateLimitPerMinute { get; init; } = 0;
 
     /// <summary>Global concurrency cap on the write path. Caps total in-flight uploads across all clients.</summary>
     public int IngestConcurrency { get; init; } = 16;
@@ -87,6 +98,11 @@ public sealed record RSCReportServiceOptions
     /// <summary>SQLite file for the admin audit log. Anchored under <see cref="ReportsRoot"/> when relative.</summary>
     public string AuditDbPath { get; init; } = "audit.db";
 
+    /// <summary>SQLite file backing the managed API-key store (admin/user keys, expiry, revocation).
+    /// Its own DB so key auth works regardless of <c>Storage</c> mode and under a read-only content
+    /// root. Resolved under <see cref="ReportsRoot"/> when relative.</summary>
+    public string ApiKeysDbPath { get; init; } = "api-keys.db";
+
     /// <summary>Directory for admin-triggered backups + exports. Anchored under <see cref="ReportsRoot"/> when relative.</summary>
     public string BackupRoot { get; init; } = "backups";
 
@@ -111,4 +127,21 @@ public sealed record RSCReportServiceOptions
 
     /// <summary>How often the background sweep runs, in seconds. Floored at 60s. Default 1 hour.</summary>
     public int RetentionScanIntervalSeconds { get; init; } = 3600;
+
+    /// <summary>
+    /// Free-disk safeguard (absolute). When &gt; 0 and the FILESYSTEM holding <see cref="ReportsRoot"/>
+    /// has fewer than this many bytes free, the sweep evicts oldest reports first until free space is
+    /// restored — independent of <see cref="RetentionMaxBytes"/>. This catches disk pressure the byte
+    /// cap can't see (the analytics/audit SQLite DBs, the backups directory, un-VACUUMed slack, or
+    /// neighbours on a shared mount). <c>0</c> disables. Default <c>0</c> (opt-in).
+    /// </summary>
+    public long RetentionMinFreeDiskBytes { get; init; } = 0;
+
+    /// <summary>
+    /// Free-disk safeguard (relative). When in <c>1..99</c> and the filesystem holding
+    /// <see cref="ReportsRoot"/> is more than this percent full, the sweep evicts oldest reports first
+    /// until usage drops back under. Evaluated alongside <see cref="RetentionMinFreeDiskBytes"/> — the
+    /// larger required eviction wins. Values outside <c>1..99</c> disable it. Default <c>0</c> (opt-in).
+    /// </summary>
+    public int RetentionMaxDiskUsagePercent { get; init; } = 0;
 }

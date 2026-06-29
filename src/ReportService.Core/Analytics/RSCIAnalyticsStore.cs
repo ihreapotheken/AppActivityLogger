@@ -44,7 +44,12 @@ public interface RSCIAnalyticsStore
     /// </summary>
     Task WriteAggregationTickAsync(RSCAnalyticsAggregationTick tick, CancellationToken ct);
 
-    Task MarkEventsAggregatedAsync(IReadOnlyList<string> eventIds, CancellationToken ct);
+    /// <summary>
+    /// Marks the given events <c>aggregated_at = now</c>. Each ref carries platform alongside
+    /// event_id because <c>analytics_events</c> is keyed by <c>UNIQUE(platform, event_id)</c> — the
+    /// same id can exist on two platforms, so the mark must match both columns.
+    /// </summary>
+    Task MarkEventsAggregatedAsync(IReadOnlyList<RSCAggregationEventRef> events, CancellationToken ct);
 
     // -------- Dashboards --------
     Task<RSCAnalyticsTotals> GetTotalsAsync(string? platform, CancellationToken ct);

@@ -32,7 +32,7 @@ public class SchemaMigrationTests : IDisposable
         conn.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "PRAGMA user_version;";
-        Assert.Equal(11 /* current schema version */, Convert.ToInt32(cmd.ExecuteScalar()));
+        Assert.Equal(12 /* current schema version */, Convert.ToInt32(cmd.ExecuteScalar()));
 
         Assert.True(ColumnExists(conn, "problem_reports", "ingestion_channel"));
     }
@@ -81,7 +81,7 @@ PRAGMA user_version = 1;";
             conn.Open();
             using var cmd = conn.CreateCommand();
             cmd.CommandText = "PRAGMA user_version;";
-            Assert.Equal(11 /* current schema version */, Convert.ToInt32(cmd.ExecuteScalar()));
+            Assert.Equal(12 /* current schema version */, Convert.ToInt32(cmd.ExecuteScalar()));
         }
 
         var rows = await index.ListAsync("android", default);

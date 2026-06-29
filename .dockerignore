@@ -17,10 +17,19 @@ ops/
 tests/
 ReportService.sln
 
-# appsettings.Development.json IS shipped: the docker-compose dev stack runs with
-# ASPNETCORE_ENVIRONMENT=Development and relies on it for worker cadences, retention, and
-# logging. It is inert under Production/Staging (those environments never load it), so it
-# carries no cost in the prod/staging images built from the same Dockerfile.
+# appsettings.Development.json IS shipped: the docker-compose dev stack runs as
+# ASPNETCORE_ENVIRONMENT=Development and relies on it for worker cadences, retention, and logging.
+# The same image serves prod/staging, but as of the compose interpolation fix those stacks set
+# ASPNETCORE_ENVIRONMENT=Production/Staging in their --env-file (no longer hardcoded to Development
+# here), so the file is genuinely never LOADED there and is inert. Keeping it shipped is what lets
+# a single image cover both dev and prod; the dev cadences would break if it were excluded.
+
+# Runtime SQLite state must not enter the build context (it isn't bundled by publish, just slows
+# the build and could leak real data). Mirrors the .gitignore rules.
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/reports/
 
 # Misc junk
 **/.DS_Store

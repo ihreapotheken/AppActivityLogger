@@ -36,11 +36,11 @@
     <table>
         <thead>
             <tr>
-                <th scope="col">Platform</th>
-                <th scope="col">Batches</th>
-                <th scope="col">Accepted</th>
-                <th scope="col">Rejected</th>
-                <th scope="col">Last received</th>
+                <th scope="col" sort="text" tip="Client platform the batches came from (e.g. android, ios).">Platform</th>
+                <th scope="col" sort="num" tip="Number of ingestion batches received from this platform.">Batches</th>
+                <th scope="col" sort="num" tip="Count of events the pipeline accepted from this platform.">Accepted</th>
+                <th scope="col" sort="num" tip="Count of events the pipeline rejected (sent to the dead-letter queue).">Rejected</th>
+                <th scope="col" sort="date" tip="Local time the most recent batch from this platform was received.">Last received</th>
             </tr>
         </thead>
         <tbody>
@@ -51,7 +51,7 @@
                 <td>@p.Batches.ToString("N0")</td>
                 <td>@p.AcceptedEvents.ToString("N0")</td>
                 <td>@p.RejectedEvents.ToString("N0")</td>
-                <td class="mono">@(p.LastReceivedAt is { } lr ? lr.AsLocalTime() : "—")</td>
+                <td class="mono" data-sort-value="@(p.LastReceivedAt is { } lrv ? lrv.UtcDateTime.ToString("o") : "")">@(p.LastReceivedAt is { } lr ? lr.AsLocalTime() : "—")</td>
             </tr>
         }
         @if (Model.VM.PlatformSummaries.Count == 0)
@@ -67,8 +67,8 @@
     <table>
         <thead>
             <tr>
-                <th scope="col">Reason</th>
-                <th scope="col">Count</th>
+                <th scope="col" sort="text" tip="Machine-readable code for why events were rejected (e.g. type_unknown, clock_skew).">Reason</th>
+                <th scope="col" sort="num" tip="Number of rejected events with this reason in the retention window.">Count</th>
             </tr>
         </thead>
         <tbody>
@@ -92,8 +92,8 @@
     <table>
         <thead>
             <tr>
-                <th scope="col">SDK version</th>
-                <th scope="col">Batches</th>
+                <th scope="col" sort="text" tip="SDK version string reported by clients in their batch headers.">SDK version</th>
+                <th scope="col" sort="num" tip="Number of ingestion batches received from this SDK version.">Batches</th>
             </tr>
         </thead>
         <tbody>
@@ -123,18 +123,18 @@
         <table>
             <thead>
                 <tr>
-                    <th scope="col">Received</th>
-                    <th scope="col">Platform</th>
-                    <th scope="col">Reason</th>
-                    <th scope="col">Detail</th>
-                    <th scope="col">Event ID</th>
+                    <th scope="col" sort="date" tip="Local time this sample event was received and rejected.">Received</th>
+                    <th scope="col" sort="text" tip="Client platform the rejected event came from (e.g. android, ios).">Platform</th>
+                    <th scope="col" sort="text" tip="Machine-readable code for why this event was rejected.">Reason</th>
+                    <th scope="col" tip="Free-text diagnostic detail explaining the rejection.">Detail</th>
+                    <th scope="col" tip="Identifier of the rejected event, or (batch) when the whole batch was rejected.">Event ID</th>
                 </tr>
             </thead>
             <tbody>
             @foreach (var s in Model.VM.Snapshot.RecentSamples)
             {
                 <tr>
-                    <td class="mono">@s.ReceivedAt.AsLocalTime()</td>
+                    <td class="mono" data-sort-value="@s.ReceivedAt.UtcDateTime.ToString("o")">@s.ReceivedAt.AsLocalTime()</td>
                     <td class="mono">@s.Platform</td>
                     <td class="mono">@s.Reason</td>
                     <td>@s.Detail</td>

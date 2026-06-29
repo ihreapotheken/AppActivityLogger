@@ -7,14 +7,18 @@ namespace ReportService.Admin.Services;
 
 /// <summary>
 /// Real-data error dashboard. Aggregates over <see cref="RSCIReportStore"/> by reading each
-/// stored report JSON, filtering on <c>Kind == "crash"</c>, and counting per-platform crash
-/// volume + top error signatures + recent occurrences.
+/// stored report JSON and counting per-platform crash volume + top error signatures + recent
+/// occurrences. Two distinct populations drive the summary tiles: <b>crashes</b> (<c>Kind ==
+/// "crash"</c>) and the broader <b>errors</b> set (<c>Kind == "crash"</c> OR <c>Kind ==
+/// "error"</c>). Every crash is an error, but a non-fatal error-kind report is not a crash, so
+/// the two counts can legitimately diverge. The crash-specific signature/recent/rate rollups
+/// below are intentionally crash-only — they rely on the gzip stack-trace attachment that only
+/// crash reports carry.
 /// </summary>
 public sealed class RSAReportStoreErrorDashboardService : IRSAErrorDashboardService
 {
     private const int TopErrors = 5;
     private const int RecentLimit = 10;
-    private const int RateWindowDays = 7;
 
     private readonly RSCIReportStore _store;
     private readonly RSCReportServiceOptions _options;
@@ -25,10 +29,12 @@ public sealed class RSAReportStoreErrorDashboardService : IRSAErrorDashboardServ
         _options = options;
     }
 
-    public RSAErrorDashboardVM Build(string? platform = null)
+    public RSAErrorDashboardVM Build(string? platform = null, RSAErrorRateWindow? rateWindow = null)
     {
         var now = DateTimeOffset.UtcNow;
         var dayAgo = now.AddDays(-1);
+        // Default to the rolling last 7 days (daily) when the caller doesn't scope the chart.
+        var rate = rateWindow ?? RSAErrorRateWindow.Resolve(RSAErrorRateRange.Last7Days, null, null, now);
 
         var rows = new List<RSAErrorPlatformRowVM>();
         // Group key: the server-extracted top stack frame (set at ingest from the gzip
@@ -42,7 +48,8 @@ public sealed class RSAReportStoreErrorDashboardService : IRSAErrorDashboardServ
         // both. Recent occurrences carry the same channel tag for the same reason.
         var topErrors = new Dictionary<string, (int Occurrences, HashSet<string> Users, string Sample, int Multipart, int Json)>(StringComparer.Ordinal);
         var recent = new List<(DateTimeOffset OccurredAt, string Platform, string Sample, string Channel)>();
-        var perDay = new int[RateWindowDays];
+        // Raw fault timestamps that fall inside the selected rate window; bucketed after the scan.
+        var rateOccurrences = new List<DateTimeOffset>();
 
         int totalCrashes24h = 0, totalErrors24h = 0;
         var affectedUsersAll = new HashSet<string>(StringComparer.Ordinal);
@@ -64,7 +71,11 @@ public sealed class RSAReportStoreErrorDashboardService : IRSAErrorDashboardServ
 
                 var kind = doc.GetStringOrNull("Kind") ?? doc.GetStringOrNull("kind");
                 var isCrash = string.Equals(kind, "crash", StringComparison.Ordinal);
-                if (!isCrash) continue;
+                // The "Errors" tiles count the wider fault population: crashes plus any report
+                // explicitly tagged Kind=="error". General user-submitted reports (Kind null/other)
+                // are not faults and are skipped entirely.
+                var isError = isCrash || string.Equals(kind, "error", StringComparison.Ordinal);
+                if (!isError) continue;
 
                 var occurredAt = doc.GetDateTimeOrNull("OccurredAt") ?? stored.SubmittedAt;
                 // Prefer the stable per-install UserId surfaced by the SDK (Android wires
@@ -84,16 +95,21 @@ public sealed class RSAReportStoreErrorDashboardService : IRSAErrorDashboardServ
                 var inDay = occurredAt >= dayAgo;
                 if (inDay)
                 {
-                    crashes24hP++;
-                    totalCrashes24h++;
+                    // Errors is the superset (every row reaching here is a fault); crashes is the
+                    // strict crash subset, so the two tiles diverge whenever a non-crash error
+                    // report lands in the window.
                     errors24hP++;
                     totalErrors24h++;
+                    if (isCrash)
+                    {
+                        crashes24hP++;
+                        totalCrashes24h++;
+                    }
                     affectedP.Add(userKey);
                     affectedUsersAll.Add(userKey);
                 }
 
-                var dayBucket = (int)Math.Floor((now - occurredAt).TotalDays);
-                if (dayBucket >= 0 && dayBucket < RateWindowDays) perDay[dayBucket]++;
+                if (occurredAt >= rate.FromUtc && occurredAt < rate.ToUtc) rateOccurrences.Add(occurredAt);
 
                 var message = doc.GetStringOrNull("Message") ?? "";
                 var rowChannel = string.Equals(stored.IngestionChannel, RSCIngestionChannels.Json, StringComparison.OrdinalIgnoreCase)
@@ -154,8 +170,7 @@ public sealed class RSAReportStoreErrorDashboardService : IRSAErrorDashboardServ
             .Select(r => new RSARecentErrorVM(r.OccurredAt, r.Platform, r.Sample, r.Channel))
             .ToArray();
 
-        // Reverse perDay so index 0 = today, length-1 = oldest of the last 7 days.
-        var rate7d = perDay.ToArray();
+        var errorRate = BucketErrorRate(rate, rateOccurrences);
 
         return new RSAErrorDashboardVM(
             CrashesLast24h: totalCrashes24h,
@@ -163,8 +178,129 @@ public sealed class RSAReportStoreErrorDashboardService : IRSAErrorDashboardServ
             AffectedUsers: affectedUsersAll.Count,
             Platforms: rows,
             TopErrors: topErrorRows,
-            ErrorRateLast7Days: rate7d,
+            ErrorRate: errorRate,
             RecentErrors: recentRows);
+    }
+
+    /// <summary>
+    /// Rolls the in-window fault timestamps into a contiguous, oldest→newest series of buckets sized
+    /// by <see cref="RSAErrorRateWindow.Bucket"/>. Every bucket in the window is emitted (zero-count
+    /// ones included) so the line stays continuous, and each carries a pre-formatted x-axis label.
+    /// </summary>
+    private static IReadOnlyList<RSAErrorRatePointVM> BucketErrorRate(RSAErrorRateWindow window, List<DateTimeOffset> occurrences)
+    {
+        var from = window.FromUtc.UtcDateTime;
+        var to = window.ToUtc.UtcDateTime;
+
+        // Contiguous bucket start instants covering [from, to). Day/Week align to the window start's
+        // UTC date; Month aligns to calendar-month boundaries.
+        var starts = new List<DateTime>();
+        switch (window.Bucket)
+        {
+            case RSAErrorRateBucket.Day:
+                for (var d = from.Date; d < to; d = d.AddDays(1)) starts.Add(d);
+                break;
+            case RSAErrorRateBucket.Week:
+                for (var d = from.Date; d < to; d = d.AddDays(7)) starts.Add(d);
+                break;
+            case RSAErrorRateBucket.Month:
+                for (var d = new DateTime(from.Year, from.Month, 1, 0, 0, 0, DateTimeKind.Utc); d < to; d = d.AddMonths(1)) starts.Add(d);
+                break;
+        }
+        if (starts.Count == 0) starts.Add(from.Date);
+
+        var origin = starts[0];
+        var counts = new int[starts.Count];
+        foreach (var occ in occurrences)
+        {
+            var t = occ.UtcDateTime;
+            var idx = window.Bucket switch
+            {
+                RSAErrorRateBucket.Day => (int)(t.Date - origin).TotalDays,
+                RSAErrorRateBucket.Week => (int)((t.Date - origin).TotalDays / 7),
+                RSAErrorRateBucket.Month => (t.Year - origin.Year) * 12 + (t.Month - origin.Month),
+                _ => 0,
+            };
+            if (idx >= 0 && idx < counts.Length) counts[idx]++;
+        }
+
+        var points = new RSAErrorRatePointVM[starts.Count];
+        for (var i = 0; i < starts.Count; i++)
+        {
+            var label = window.Bucket == RSAErrorRateBucket.Month
+                ? starts[i].ToString("yyyy-MM")
+                : starts[i].ToString("MM-dd");
+            points[i] = new RSAErrorRatePointVM(label, counts[i]);
+        }
+        return points;
+    }
+
+    public IReadOnlyList<RSATrendingIssueVM> BuildTrending(int recentDays = 7, int limit = 5)
+    {
+        if (recentDays < 1) recentDays = 1;
+        var now = DateTimeOffset.UtcNow;
+        var recentFrom = now.AddDays(-recentDays);
+        var priorFrom = now.AddDays(-2 * recentDays);
+
+        // signature -> recent/prior occurrence counts, recent affected users, recent per-platform tally.
+        var agg = new Dictionary<string, (int Recent, int Prior, HashSet<string> Users, Dictionary<string, int> Platforms)>(StringComparer.Ordinal);
+
+        foreach (var p in _options.AllowedPlatforms)
+        {
+            foreach (var stored in _store.List(p))
+            {
+                // Only signature-able crashes (a real top_frame) — same rule as the top-errors table,
+                // so a trending row always drills into a non-empty /Errors result.
+                if (string.IsNullOrWhiteSpace(stored.TopFrame)) continue;
+
+                var doc = TryReadDoc(p, stored.FileName);
+                if (doc is null) continue;
+
+                var kind = doc.GetStringOrNull("Kind") ?? doc.GetStringOrNull("kind");
+                var isError = string.Equals(kind, "crash", StringComparison.Ordinal)
+                              || string.Equals(kind, "error", StringComparison.Ordinal);
+                if (!isError) continue;
+
+                var occurredAt = doc.GetDateTimeOrNull("OccurredAt") ?? stored.SubmittedAt;
+                var inRecent = occurredAt >= recentFrom;
+                var inPrior = occurredAt >= priorFrom && occurredAt < recentFrom;
+                if (!inRecent && !inPrior) continue;
+
+                var sig = stored.TopFrame!;
+                if (!agg.TryGetValue(sig, out var e))
+                {
+                    e = (0, 0, new HashSet<string>(StringComparer.Ordinal), new Dictionary<string, int>(StringComparer.Ordinal));
+                }
+
+                if (inRecent)
+                {
+                    e.Recent++;
+                    var rawUserId = doc.GetStringOrNull("UserId");
+                    e.Users.Add(!string.IsNullOrWhiteSpace(rawUserId) ? "uid:" + rawUserId : "anon:" + stored.FileName);
+                    e.Platforms[p] = e.Platforms.GetValueOrDefault(p) + 1;
+                }
+                else
+                {
+                    e.Prior++;
+                }
+
+                agg[sig] = e;
+            }
+        }
+
+        return agg
+            .Where(kv => kv.Value.Recent > 0)
+            // Most active this week first; ties broken by the bigger week-over-week rise.
+            .OrderByDescending(kv => kv.Value.Recent)
+            .ThenByDescending(kv => kv.Value.Recent - kv.Value.Prior)
+            .Take(limit)
+            .Select(kv => new RSATrendingIssueVM(
+                Signature: kv.Key,
+                Platform: kv.Value.Platforms.OrderByDescending(x => x.Value).Select(x => x.Key).FirstOrDefault() ?? "",
+                RecentCount: kv.Value.Recent,
+                PriorCount: kv.Value.Prior,
+                AffectedUsers: kv.Value.Users.Count))
+            .ToArray();
     }
 
     private RSAReportDoc? TryReadDoc(string platform, string fileName)

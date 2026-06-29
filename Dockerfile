@@ -14,9 +14,11 @@ RUN dotnet restore src/ReportService/ReportService.csproj \
 
 # Copy the rest of the sources and publish both apps.
 COPY src/ src/
-# README.md is bundled into the admin image for the /Documentation preview page. The admin
-# csproj declares it as <Content> with a relative path resolving to /src/README.md here.
+# README.md + the modular docs/guide/ chapters are bundled into the admin image for the
+# /Documentation preview page. The admin csproj declares them as <Content> with relative paths
+# resolving to /src/README.md and /src/docs/guide/*.md here.
 COPY README.md ./README.md
+COPY docs/guide/ docs/guide/
 RUN dotnet publish src/ReportService       -c Release -o /app/ingestion --no-restore /p:UseAppHost=false
 RUN dotnet publish src/ReportService.Admin -c Release -o /app/admin     --no-restore /p:UseAppHost=false
 

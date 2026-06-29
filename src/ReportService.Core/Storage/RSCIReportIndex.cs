@@ -17,4 +17,14 @@ public interface RSCIReportIndex
 
     /// <summary>Deletes the row if present. True when a row was actually removed.</summary>
     Task<bool> DeleteAsync(string platform, string fileName, CancellationToken ct);
+
+    /// <summary>
+    /// Folds the row's count + byte footprint into the persistent lifetime-statistics rollup, then
+    /// deletes it — atomically, in one transaction. The real deletion paths (operator delete, bulk
+    /// delete, retention sweep) call this so a report's contribution survives in lifetime totals
+    /// before its metadata row is destroyed. Plain <see cref="DeleteAsync"/> is the
+    /// drift-reconciliation delete and deliberately does <em>not</em> accumulate (a rebuild pruning
+    /// a stale row must not inflate the lifetime counters). True when a row was actually removed.
+    /// </summary>
+    Task<bool> RecordLifetimeAndDeleteAsync(string platform, string fileName, CancellationToken ct);
 }

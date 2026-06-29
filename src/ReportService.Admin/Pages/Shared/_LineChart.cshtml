@@ -1,0 +1,88 @@
+@*
+    Reusable single-series line/area trend chart. Geometry (polyline points, area path, axis lines)
+    is emitted as SVG attributes only — CSP-safe. SVG <text> is written via @Html.Raw because Razor
+    otherwise treats <text> as its own plain-text block. Each value dot carries data-chart-tip for
+    the shared hover tooltip and is keyboard-focusable.
+*@
+@using System.Globalization
+@model ReportService.Admin.ViewModels.RSALineChartVM
+@{
+    var pts = Model.Points;
+    string F(double v) => v.ToString("0.##", CultureInfo.InvariantCulture);
+    string N(double v) => v.ToString("N0", CultureInfo.InvariantCulture);
+
+    const double W = 720, padL = 38, padR = 10, padT = 12, padB = 24;
+    double H = Model.ViewHeight;
+    var plotW = W - padL - padR;
+    var plotH = H - padT - padB;
+
+    static double NiceMax(double m)
+    {
+        if (m <= 0) return 1;
+        if (m <= 5) return Math.Ceiling(m);
+        var mag = Math.Pow(10, Math.Floor(Math.Log10(m)));
+        var n = m / mag;
+        var nice = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+        return nice * mag;
+    }
+    var max = NiceMax(pts.Count == 0 ? 0 : pts.Max(p => p.Value));
+
+    double X(int i) => pts.Count <= 1 ? padL + plotW / 2 : padL + plotW * i / (pts.Count - 1);
+    double Y(double v) => padT + plotH * (1 - v / max);
+
+    var line = string.Join(" ", pts.Select((p, i) => $"{F(X(i))},{F(Y(p.Value))}"));
+    var area = pts.Count == 0 ? "" :
+        $"M {F(X(0))} {F(Y(0))} " +
+        string.Join(" ", pts.Select((p, i) => $"L {F(X(i))} {F(Y(p.Value))}")) +
+        $" L {F(X(pts.Count - 1))} {F(Y(0))} Z";
+
+    var step = Math.Max(1, Model.LabelStep);
+    var ticks = new[] { 0.0, 0.25, 0.5, 0.75, 1.0 };
+    var noun = string.IsNullOrEmpty(Model.ValueNoun) ? "" : " " + Model.ValueNoun;
+    // Width of each point's transparent hover band. The dots alone are a ~2px hit target once the
+    // SVG is scaled into a narrow column, so we lay a full-height band over each point (like the bar
+    // chart's bar-hit rects) — hovering anywhere in a column then surfaces that point's tooltip.
+    var band = pts.Count <= 1 ? plotW : plotW / (pts.Count - 1);
+}
+@if (pts.Count == 0)
+{
+    <empty-state>No data in this window.</empty-state>
+}
+else
+{
+    <div class="chart-wrap">
+        <svg class="line-chart" viewBox="0 0 @F(W) @F(H)" role="img" aria-label="@Model.AriaLabel">
+            @foreach (var t in ticks)
+            {
+                var gy = padT + plotH * (1 - t);
+                <line class="chart-grid" x1="@F(padL)" y1="@F(gy)" x2="@F(W - padR)" y2="@F(gy)"></line>
+                @Html.Raw($"<text class=\"chart-tick\" x=\"{F(padL - 5)}\" y=\"{F(gy + 3)}\" text-anchor=\"end\">{N(max * t)}</text>")
+            }
+            <path class="line-area" d="@area"></path>
+            <polyline class="line-path" points="@line"></polyline>
+            @for (var i = 0; i < pts.Count; i++)
+            {
+                var p = pts[i];
+                var tip = $"{p.Label}: {N(p.Value)}{noun}";
+                // Centre the band on the point, clamped to the plot area so the first/last columns
+                // don't spill past the axes.
+                var bx = X(i) - band / 2;
+                var bw = band;
+                if (bx < padL) { bw -= padL - bx; bx = padL; }
+                if (bx + bw > W - padR) { bw = (W - padR) - bx; }
+                <g class="line-col" data-chart-tip="@tip">
+                    <rect class="line-hit" x="@F(bx)" y="@F(padT)" width="@F(bw)" height="@F(plotH)"></rect>
+                    <circle class="line-dot" tabindex="0" role="img" aria-label="@tip"
+                            cx="@F(X(i))" cy="@F(Y(p.Value))" r="3"></circle>
+                </g>
+            }
+            @for (var i = 0; i < pts.Count; i++)
+            {
+                if (i % step == 0)
+                {
+                    @Html.Raw($"<text class=\"chart-tick\" x=\"{F(X(i))}\" y=\"{F(H - 7)}\" text-anchor=\"middle\">{System.Net.WebUtility.HtmlEncode(pts[i].Label)}</text>")
+                }
+            }
+        </svg>
+    </div>
+}

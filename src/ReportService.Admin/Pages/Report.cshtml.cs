@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using ReportService.Audit;
@@ -87,6 +88,27 @@ public sealed class RSAReportModel : PageModel
     /// operator triage a large log without scrolling the full dump below.</summary>
     public RSALogcatOverview? LogcatOverview { get; private set; }
 
+    /// <summary>Server-side log filter, bound from the query string (a GET filter form like the rest
+    /// of the app). The level + search are applied to the full <see cref="LogcatLines"/> set and the
+    /// matching lines paginated server-side, so only the visible page is sent to the browser instead
+    /// of shipping the whole log and filtering it in JavaScript.</summary>
+    [BindProperty(SupportsGet = true, Name = "logLevel")] public string? LogLevel { get; set; }
+    [BindProperty(SupportsGet = true, Name = "logSearch")] public string? LogSearch { get; set; }
+    [BindProperty(SupportsGet = true, Name = "logPage")] public int LogPage { get; set; } = 1;
+
+    /// <summary>Lines per page in the attachment-log viewer.</summary>
+    public const int LogPageSize = 500;
+
+    /// <summary>The filtered + paginated slice of <see cref="LogcatLines"/> the view actually renders.</summary>
+    public IReadOnlyList<RSALogcatLine> LogcatPage { get; private set; } = Array.Empty<RSALogcatLine>();
+    /// <summary>Total parsed lines in the log (before filtering).</summary>
+    public int LogTotalLines { get; private set; }
+    /// <summary>Lines matching the current level + search filter (across all pages).</summary>
+    public int LogMatchCount { get; private set; }
+    public int LogPageNumber { get; private set; } = 1;
+    public int LogTotalPages { get; private set; } = 1;
+    public bool HasLogFilter => !string.IsNullOrEmpty(LogLevel) || !string.IsNullOrWhiteSpace(LogSearch);
+
 #pragma warning disable CS1998 // OnGetAsync has no async work after the in-memory deobfuscation
                                 // path moved to OnPostDeobfuscateAsync — kept as Task-returning
                                 // because that handler awaits it via the shared model setup.
@@ -157,6 +179,7 @@ public sealed class RSAReportModel : PageModel
             {
                 LogcatOverview = BuildOverview(LogcatLines);
             }
+            ApplyLogFilter();
         }
 
         // Initial GET renders the obfuscated trace as-is. To deobfuscate, the operator uploads
@@ -230,6 +253,78 @@ public sealed class RSAReportModel : PageModel
         }
     }
 
+    /// <summary>Applies the level + search filter and pagination over the full <see cref="LogcatLines"/>
+    /// set, populating <see cref="LogcatPage"/> (the slice the view renders) and the paging metadata.
+    /// Doing this on the server keeps a large log off the wire — only the matching page is sent.</summary>
+    private void ApplyLogFilter()
+    {
+        LogTotalLines = LogcatLines.Count;
+        if (LogcatLines.Count == 0)
+        {
+            LogcatPage = Array.Empty<RSALogcatLine>();
+            LogMatchCount = 0;
+            LogPageNumber = 1;
+            LogTotalPages = 1;
+            return;
+        }
+
+        var level = string.IsNullOrEmpty(LogLevel) ? null : LogLevel;
+        var matcher = CompileLogMatcher(LogSearch);
+        var matched = new List<RSALogcatLine>();
+        foreach (var line in LogcatLines)
+        {
+            if (level is not null && !string.Equals(line.Level, level, StringComparison.Ordinal)) continue;
+            if (!matcher(line.Text)) continue;
+            matched.Add(line);
+        }
+
+        LogMatchCount = matched.Count;
+        LogTotalPages = Math.Max(1, (int)Math.Ceiling(matched.Count / (double)LogPageSize));
+        LogPageNumber = Math.Min(Math.Max(1, LogPage), LogTotalPages);
+        LogcatPage = matched
+            .Skip((LogPageNumber - 1) * LogPageSize)
+            .Take(LogPageSize)
+            .ToArray();
+    }
+
+    /// <summary>Builds a line matcher: case-insensitive substring by default, or <c>/regex/</c> when
+    /// wrapped in slashes (mirrors the retired client-side filter). The regex runs with a short
+    /// timeout so a pathological pattern from the query string can't hang the request (ReDoS guard);
+    /// an invalid pattern falls back to a substring match.</summary>
+    private static Func<string, bool> CompileLogMatcher(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return static _ => true;
+        var trimmed = raw.Trim();
+        if (trimmed.Length >= 2 && trimmed[0] == '/' && trimmed[^1] == '/')
+        {
+            try
+            {
+                var re = new Regex(trimmed[1..^1],
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+                    TimeSpan.FromMilliseconds(100));
+                return text =>
+                {
+                    try { return re.IsMatch(text); }
+                    catch (RegexMatchTimeoutException) { return false; }
+                };
+            }
+            catch (ArgumentException) { /* invalid pattern → fall through to substring */ }
+        }
+        return text => text.Contains(trimmed, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Query string for a log pager / filter link on this report, preserving the level +
+    /// search and jumping back to the log section via the <c>#log</c> fragment.</summary>
+    public string BuildLogHref(int page)
+    {
+        var qs = new List<string>(3);
+        if (!string.IsNullOrEmpty(LogLevel)) qs.Add("logLevel=" + Uri.EscapeDataString(LogLevel));
+        if (!string.IsNullOrWhiteSpace(LogSearch)) qs.Add("logSearch=" + Uri.EscapeDataString(LogSearch));
+        if (page > 1) qs.Add("logPage=" + page.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        var path = Request.Path.ToString();
+        return (qs.Count == 0 ? path : path + "?" + string.Join('&', qs)) + "#log";
+    }
+
     private static string ClassifyLevel(string line)
     {
         // Android logcat: timestamps then a single level letter, e.g. "01-29 12:34:56.000  E AndroidRuntime: …"
@@ -298,7 +393,8 @@ public sealed class RSAReportModel : PageModel
         return File(stream, contentType, fileName);
     }
 
-    /// <summary>One decompressed logcat line with its inferred level. Filtered client-side.</summary>
+    /// <summary>One decompressed logcat line with its inferred level. Filtered + paginated
+    /// server-side (see <see cref="ApplyLogFilter"/>) before only the visible page reaches the view.</summary>
     public sealed record RSALogcatLine(int Number, string Level, string Text);
 
     /// <summary>At-a-glance summary of an attachment log: counts per level and the first error/fatal
@@ -611,6 +707,9 @@ public sealed class RSAReportModel : PageModel
                 rewritten.Add(newText == line.Text ? line : new RSALogcatLine(line.Number, line.Level, newText));
             }
             LogcatLines = rewritten;
+            // Re-run the filter so the rendered page reflects the deobfuscated text (and any
+            // logLevel/logSearch carried through the POST), not the obfuscated lines from OnGet.
+            ApplyLogFilter();
         }
         RewrittenFrameCount = totalRewritten;
 

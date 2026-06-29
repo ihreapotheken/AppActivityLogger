@@ -11,13 +11,15 @@ using ReportService.Analytics;
 using ReportService.Audit;
 using ReportService.Options;
 using ReportService.Storage;
+using ReportService.Storage.ApiKeys;
 using ReportService.Storage.Retention;
 
 namespace ReportService.Admin.Pages;
 
 /// <summary>
 /// Maintenance actions: rebuild the metadata index from files, run <c>PRAGMA integrity_check</c>,
-/// run <c>VACUUM; ANALYZE</c>, export metadata as CSV/JSON, write a verified backup snapshot. Every
+/// run <c>VACUUM; ANALYZE</c>, export metadata as CSV/JSON, write a verified backup snapshot, and
+/// mint/revoke managed API keys (consolidated here from the former standalone /ApiKeys page). Every
 /// POST handler requires an authenticated cookie + antiforgery token and writes an audit entry
 /// that reflects the action's success/failure.
 /// </summary>
@@ -31,6 +33,7 @@ public sealed class RSAMaintenanceModel : PageModel
     private readonly RSAAnalyticsLegacyImporter _analyticsImporter;
     private readonly RSCIAnalyticsStore _analyticsStore;
     private readonly RSCAnalyticsOptions _analyticsOptions;
+    private readonly RSCIApiKeyStore _apiKeys;
     private readonly ILogger<RSAMaintenanceModel> _logger;
 
     public RSAMaintenanceModel(
@@ -42,6 +45,7 @@ public sealed class RSAMaintenanceModel : PageModel
         RSAAnalyticsLegacyImporter analyticsImporter,
         RSCIAnalyticsStore analyticsStore,
         RSCAnalyticsOptions analyticsOptions,
+        RSCIApiKeyStore apiKeys,
         ILogger<RSAMaintenanceModel> logger)
     {
         _store = store;
@@ -52,6 +56,7 @@ public sealed class RSAMaintenanceModel : PageModel
         _analyticsImporter = analyticsImporter;
         _analyticsStore = analyticsStore;
         _analyticsOptions = analyticsOptions;
+        _apiKeys = apiKeys;
         _logger = logger;
     }
 
@@ -62,9 +67,18 @@ public sealed class RSAMaintenanceModel : PageModel
     public IReadOnlyList<FileInfo> ExistingBackups { get; private set; } = Array.Empty<FileInfo>();
     public RSCRetentionStats Retention { get; private set; } = default!;
 
-    public void OnGet()
+    // API-key management (moved here from the former standalone /ApiKeys page).
+    public IReadOnlyList<RSCApiKeyMetadata> ApiKeys { get; private set; } = Array.Empty<RSCApiKeyMetadata>();
+    public DateTimeOffset Now { get; private set; } = DateTimeOffset.UtcNow;
+    // Surfaced once after a successful create (TempData survives the redirect, then is cleared).
+    [TempData] public string? NewKeyPlaintext { get; set; }
+    [TempData] public string? NewKeyId { get; set; }
+
+    public async Task OnGetAsync(CancellationToken ct)
     {
         Retention = _retention.GetStats();
+        Now = DateTimeOffset.UtcNow;
+        ApiKeys = await _apiKeys.ListAsync(ct).ConfigureAwait(false);
         try
         {
             var dir = BackupRoot;
@@ -227,7 +241,7 @@ public sealed class RSAMaintenanceModel : PageModel
                     details: $"no-op bytes={report.BytesAfter} cap={report.LimitBytes}");
             }
             TempData["Flash"] = report.DidWork
-                ? $"Retention sweep deleted {report.DeletedTotal} reports ({report.DeletedByAge} aged out, {report.DeletedBySize} oversize), freed {RSAByteFormatter.Format(report.DeletedBytes)}."
+                ? $"Retention sweep deleted {report.DeletedTotal} reports ({report.DeletedByAge} aged out, {report.DeletedBySize} oversize, {report.DeletedByDisk} disk-pressure), freed {RSAByteFormatter.Format(report.DeletedBytes)}."
                 : $"Retention sweep: nothing to do (using {RSAByteFormatter.Format(report.BytesAfter)} of {RSAByteFormatter.Format(report.LimitBytes)} cap).";
         }
         catch (Exception ex)
@@ -473,6 +487,62 @@ public sealed class RSAMaintenanceModel : PageModel
             _logger.LogError(ex, "Legacy analytics import failed");
             await _audit.RecordAsync(HttpContext, "analytics.legacy-import", success: false, details: ex.Message);
             TempData["Flash"] = "Legacy analytics import failed — see logs.";
+        }
+        return RedirectToPage();
+    }
+
+    /// <summary>
+    /// Mint a managed API key (user/admin, optional expiry + per-key rate limit). The plaintext is
+    /// surfaced exactly once via TempData across the post-redirect and can never be retrieved again.
+    /// Moved here from the former standalone /ApiKeys page; the operator's cookie session is
+    /// implicitly admin, so no extra role check is needed beyond the page's cookie + antiforgery gate.
+    /// </summary>
+    public async Task<IActionResult> OnPostCreateApiKeyAsync(string? role, string? label, int? expiresInDays, int? rateLimitPerMinute, CancellationToken ct)
+    {
+        var normalizedRole = string.IsNullOrWhiteSpace(role) ? RSCApiKeyRoles.User : role.Trim().ToLowerInvariant();
+        if (!RSCApiKeyRoles.IsValid(normalizedRole))
+        {
+            TempData["Flash"] = $"Invalid role '{role}'.";
+            return RedirectToPage();
+        }
+
+        DateTimeOffset? expiresAt = expiresInDays is { } d && d > 0 ? DateTimeOffset.UtcNow.AddDays(d) : null;
+        int? limit = rateLimitPerMinute is { } r && r > 0 ? r : null;
+        var cleanLabel = string.IsNullOrWhiteSpace(label) ? null : label.Trim();
+        var actor = User.Identity?.Name is { Length: > 0 } name ? name : "operator";
+
+        try
+        {
+            var created = await _apiKeys.CreateAsync(normalizedRole, cleanLabel, expiresAt, limit, actor, ct).ConfigureAwait(false);
+            NewKeyPlaintext = created.PlaintextKey;
+            NewKeyId = created.Metadata.Id;
+            await _audit.RecordAsync(HttpContext, "apikey.create", success: true, target: created.Metadata.Id,
+                details: $"role={normalizedRole} expires={expiresAt?.ToString("O") ?? "never"} rate={limit?.ToString() ?? "default"}");
+            TempData["Flash"] = $"Created {normalizedRole} key {created.Metadata.Id} — copy the secret now; it won't be shown again.";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "API key creation failed");
+            await _audit.RecordAsync(HttpContext, "apikey.create", success: false, details: ex.Message);
+            TempData["Flash"] = "Key creation failed — see logs.";
+        }
+        return RedirectToPage();
+    }
+
+    /// <summary>Revoke a managed API key — clients using it get 401 immediately. Audited.</summary>
+    public async Task<IActionResult> OnPostRevokeApiKeyAsync(string id, CancellationToken ct)
+    {
+        try
+        {
+            var revoked = await _apiKeys.RevokeAsync(id, User.Identity?.Name ?? "operator", ct).ConfigureAwait(false);
+            await _audit.RecordAsync(HttpContext, "apikey.revoke", success: revoked, target: id);
+            TempData["Flash"] = revoked ? $"Revoked key {id}." : $"No active key {id} to revoke.";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "API key revocation failed for {Id}", id);
+            await _audit.RecordAsync(HttpContext, "apikey.revoke", success: false, target: id, details: ex.Message);
+            TempData["Flash"] = "Revocation failed — see logs.";
         }
         return RedirectToPage();
     }

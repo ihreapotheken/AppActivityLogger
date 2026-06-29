@@ -92,10 +92,15 @@ public sealed class RSReportIngestionService
         else
         {
             jsonField = form["json"].ToString();
-            // Form-field path: the value has already been buffered by ReadFormAsync, so we can only
-            // reject it after the fact. The envelope-level MaxUploadBytes prevents a runaway 50 MiB
-            // form field from getting here in the first place.
-            if (Encoding.UTF8.GetByteCount(jsonField) > maxJsonBytes)
+            // Form-field path: ReadFormAsync has already buffered the value, bounded only by
+            // FormOptions.ValueLengthLimit (16 MiB) — which is far larger than MaxJsonBytes
+            // (1 MiB default), so we must re-assert the json-part cap here rather than rely on the
+            // framework's parse-time limit. Reject on the cheap char count first: UTF-8 encodes
+            // every character as >= 1 byte, so Length (chars) > maxJsonBytes already guarantees the
+            // byte count exceeds the cap and we can skip the full GetByteCount scan. Only when the
+            // char count is within budget do we pay for the exact UTF-8 byte measurement (a single
+            // multi-byte run can still push a sub-cap char count over the byte cap).
+            if (jsonField.Length > maxJsonBytes || Encoding.UTF8.GetByteCount(jsonField) > maxJsonBytes)
                 return RSIngestionResult.PayloadTooLarge("json part exceeds MaxJsonBytes");
         }
 

@@ -50,20 +50,20 @@
 
 @if (Model.Result.Rows.Count == 0)
 {
-    <p class="muted">No events match the current filter.</p>
+    <empty-state>No events match the current filter.</empty-state>
 }
 else
 {
     <table>
         <thead>
             <tr>
-                <th scope="col">Occurred</th>
-                <th scope="col">Platform</th>
-                <th scope="col">Type</th>
-                <th scope="col">Name</th>
-                <th scope="col">Screen</th>
-                <th scope="col">Duration</th>
-                <th scope="col">Session</th>
+                <th scope="col" tip="When the event occurred, shown in your local time (stored UTC)">Occurred</th>
+                <th scope="col" tip="Source platform the event was reported from (android, ios)">Platform</th>
+                <th scope="col" tip="Event category, e.g. screen, action, ecommerce, error">Type</th>
+                <th scope="col" tip="Event name within its type, e.g. home_viewed, add_to_cart, purchase">Name</th>
+                <th scope="col" tip="Screen the event was attributed to, or — if none">Screen</th>
+                <th scope="col" tip="Reported event duration in milliseconds, or — if not provided">Duration</th>
+                <th scope="col" tip="Anonymous session id; links to that session's full ordered timeline">Session</th>
             </tr>
         </thead>
         <tbody>
@@ -82,15 +82,8 @@ else
         </tbody>
     </table>
 
-    <nav class="pager" aria-label="Pagination">
-        @if (Model.PageNumber > 1)
-        {
-            <a href="@Model.BuildPageHref(Model.PageNumber - 1)">← previous</a>
-        }
-        <span class="muted">page @Math.Max(1, Model.PageNumber) / @Model.TotalPages</span>
-        @if (Model.PageNumber < Model.TotalPages)
-        {
-            <a href="@Model.BuildPageHref(Model.PageNumber + 1)">next →</a>
-        }
-    </nav>
+    @await Html.PartialAsync("_Pager", new RSAPagerVM(
+        Model.PageNumber > 1 ? Model.BuildPageHref(Model.PageNumber - 1) : null,
+        Model.PageNumber < Model.TotalPages ? Model.BuildPageHref(Model.PageNumber + 1) : null,
+        $"page {Math.Max(1, Model.PageNumber)} / {Model.TotalPages}"))
 }

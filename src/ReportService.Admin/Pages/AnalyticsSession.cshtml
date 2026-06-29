@@ -13,20 +13,20 @@
 
 @if (Model.Timeline.Count == 0)
 {
-    <p class="muted">No events found for this session. It may have been purged by retention.</p>
+    <empty-state>No events found for this session. It may have been purged by retention.</empty-state>
 }
 else
 {
     <table>
         <thead>
             <tr>
-                <th scope="col">#</th>
-                <th scope="col">Occurred</th>
-                <th scope="col">Type</th>
-                <th scope="col">Name</th>
-                <th scope="col">Screen</th>
-                <th scope="col">Feature</th>
-                <th scope="col">Duration</th>
+                <th scope="col" tip="Position of the event in the session timeline (1 = first)." sort="num">#</th>
+                <th scope="col" tip="Local time the event was recorded on the device." sort="date">Occurred</th>
+                <th scope="col" tip="Event category (e.g. screen_view, action, lifecycle)." sort="text">Type</th>
+                <th scope="col" tip="Event name reported by the SDK." sort="text">Name</th>
+                <th scope="col" tip="Screen the event occurred on, or em-dash if none." sort="text">Screen</th>
+                <th scope="col" tip="Feature area associated with the event, or em-dash if none." sort="text">Feature</th>
+                <th scope="col" tip="Event duration in milliseconds, or em-dash if not measured." sort="num">Duration</th>
             </tr>
         </thead>
         <tbody>
@@ -35,13 +35,13 @@ else
         {
             i++;
             <tr>
-                <td>@i</td>
-                <td class="mono">@e.OccurredAt.AsLocalTime()</td>
+                <td data-sort-value="@i">@i</td>
+                <td class="mono" data-sort-value="@e.OccurredAt.UtcDateTime.ToString("o")">@e.OccurredAt.AsLocalTime()</td>
                 <td class="mono">@e.Type</td>
                 <td class="mono">@e.Name</td>
                 <td class="mono">@(e.Screen ?? "—")</td>
                 <td class="mono">@(e.Feature ?? "—")</td>
-                <td>@(e.DurationMs is { } ms ? ms.ToString("N0") + " ms" : "—")</td>
+                <td data-sort-value="@(e.DurationMs ?? -1)">@(e.DurationMs is { } ms ? ms.ToString("N0") + " ms" : "—")</td>
             </tr>
         }
         </tbody>

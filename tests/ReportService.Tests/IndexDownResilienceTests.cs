@@ -106,6 +106,7 @@ public class IndexDownResilienceTests
         public Task<IReadOnlyList<RSCStoredReport>> ListAsync(string platform, CancellationToken ct) => throw new InvalidOperationException("broken");
         public Task<IReadOnlyList<RSCStoredReport>> ListAsync(string platform, int limit, int offset, CancellationToken ct) => throw new InvalidOperationException("broken");
         public Task<bool> DeleteAsync(string platform, string fileName, CancellationToken ct) => throw new InvalidOperationException("broken");
+        public Task<bool> RecordLifetimeAndDeleteAsync(string platform, string fileName, CancellationToken ct) => throw new InvalidOperationException("broken");
     }
 
     /// <summary>

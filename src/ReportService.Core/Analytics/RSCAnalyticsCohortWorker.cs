@@ -39,7 +39,10 @@ public sealed class RSCAnalyticsCohortWorker : BackgroundService
             return;
         }
 
-        var interval = TimeSpan.FromSeconds(Math.Max(60, _options.CohortIntervalSeconds));
+        // Floor 5s (matches the aggregation worker) so the documented fast dev cadence
+        // (CohortIntervalSeconds=15 in appsettings.Development.json) is actually honoured rather
+        // than silently clamped up to 60s. Production runs at 3600s, well above the floor.
+        var interval = TimeSpan.FromSeconds(Math.Max(5, _options.CohortIntervalSeconds));
 
         while (!stoppingToken.IsCancellationRequested)
         {

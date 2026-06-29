@@ -106,9 +106,23 @@ public sealed class RSCFileSystemReportStore : RSCIReportStore
             if (!RSCSafePath.TryCombine(platformFolder, attachmentFileName, out var attachmentFullPath))
             {
                 TryDelete(attachmentTempPath);
+                TryDelete(jsonFullPath);
                 throw new InvalidOperationException("problem report attachment path could not be resolved safely");
             }
-            File.Move(attachmentTempPath, attachmentFullPath, overwrite: true);
+            try
+            {
+                // The JSON was written first (above), so a failed attachment promotion would otherwise
+                // leak the .incoming.<guid>.log.gz temp (invisible to List(), never reaped) AND orphan
+                // the JSON (a report whose attachment never lands). Mirror the JSON path's cleanup:
+                // drop both the temp attachment and the already-written JSON, then rethrow.
+                File.Move(attachmentTempPath, attachmentFullPath, overwrite: true);
+            }
+            catch
+            {
+                TryDelete(attachmentTempPath);
+                TryDelete(jsonFullPath);
+                throw;
+            }
             storedAttachmentSize = attachmentSize;
 
             _logger.LogInformation(

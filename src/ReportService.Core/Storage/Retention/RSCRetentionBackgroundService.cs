@@ -35,9 +35,12 @@ public sealed class RSCRetentionBackgroundService : BackgroundService
         }
 
         var interval = TimeSpan.FromSeconds(Math.Max(60, _options.RetentionScanIntervalSeconds));
+        var diskGuard = (_options.RetentionMinFreeDiskBytes > 0 || (_options.RetentionMaxDiskUsagePercent is >= 1 and <= 99))
+            ? $"min_free={_options.RetentionMinFreeDiskBytes} bytes, max_usage={_options.RetentionMaxDiskUsagePercent}%"
+            : "off";
         _logger.LogInformation(
-            "Retention background sweep enabled: cap={Cap} bytes, max_age={Days} days, interval={Interval}",
-            _options.RetentionMaxBytes, _options.RetentionMaxAgeDays, interval);
+            "Retention background sweep enabled: cap={Cap} bytes, max_age={Days} days, interval={Interval}, disk_guard=[{DiskGuard}]",
+            _options.RetentionMaxBytes, _options.RetentionMaxAgeDays, interval, diskGuard);
 
         // Stagger the first sweep slightly so startup isn't competing for IO with the first ingests.
         try { await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken).ConfigureAwait(false); }

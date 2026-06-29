@@ -56,21 +56,51 @@ body.shell main {
     overflow-y: auto;
 }
 
+/* Brand lockup: the Ihre Apotheken mark sits left of a two-line text block (wordmark + env chip),
+   left-aligned to line up with the nav below it. */
 .app-sidebar .brand {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     align-items: center;
-    gap: var(--space-1);
+    gap: var(--space-3);
     font-weight: 600;
     text-decoration: none;
     color: var(--fg);
-    padding: 0 var(--space-2) var(--space-3);
+    padding: var(--space-1) var(--space-1) var(--space-4);
     border-bottom: 1px solid var(--border);
-    margin: 0 calc(-1 * var(--space-2));
+    margin: 0 calc(-1 * var(--space-1));
 }
 .app-sidebar .brand:hover { text-decoration: none; }
-.app-sidebar .brand-name { font-size: 1.05rem; letter-spacing: -0.01em; }
-.app-sidebar .brand .env-badge { margin-left: 0; }
+/* Text column beside the logo: the current nav "tab" name over the environment chip. */
+.brand-text {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.3rem;
+    min-width: 0;
+}
+.brand-page {
+    font-size: 1rem;
+    font-weight: 600;
+    line-height: 1.15;
+    letter-spacing: -0.01em;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+}
+
+/* The brand mark (Ihre Apotheken logo) — a touch of lift, and a subtle hover nudge. */
+.brand-logo {
+    display: block;
+    height: 2.4rem;
+    width: auto;
+    flex: 0 0 auto;
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.16));
+    transition: transform 0.12s ease, filter 0.12s ease;
+}
+.brand:hover .brand-logo {
+    transform: translateY(-1px);
+    filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.22));
+}
 
 .side-nav {
     display: flex;
@@ -147,6 +177,9 @@ header.app-header {
 }
 
 .app-header .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
     font-weight: 600;
     text-decoration: none;
     color: var(--fg);
@@ -181,3 +214,94 @@ header.app-header {
 .page-header { margin-bottom: var(--space-4); }
 .page-header h1 { margin-bottom: var(--space-1); }
 .page-subtitle { margin: 0; }
+
+/* ---- Mobile navigation (≤768px): the fixed sidebar becomes an off-canvas drawer ----
+   The mobile top bar (hamburger + logo + current page) and the backdrop only exist on small
+   screens; on desktop they're hidden and the sidebar stays a pinned column. */
+.mobile-bar { display: none; }
+.nav-backdrop { display: none; }
+
+.nav-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.4rem;
+    height: 2.4rem;
+    flex: 0 0 auto;
+    padding: 0; /* override the global button padding, which would crush the icon's content box */
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--fg);
+    cursor: pointer;
+}
+.nav-toggle-bars { flex: 0 0 auto; } /* never let the middle bar shrink below the others */
+.nav-toggle-bars,
+.nav-toggle-bars::before,
+.nav-toggle-bars::after {
+    content: "";
+    display: block;
+    width: 18px;
+    height: 2px;
+    background: currentColor;
+    border-radius: 1px;
+}
+.nav-toggle-bars { position: relative; }
+.nav-toggle-bars::before { position: absolute; top: -6px; left: 0; }
+.nav-toggle-bars::after { position: absolute; top: 6px; left: 0; }
+
+.mobile-brand { display: inline-flex; align-items: center; text-decoration: none; }
+.mobile-brand .brand-logo { height: 1.9rem; }
+.mobile-bar-title {
+    font-weight: 600;
+    font-size: 1.05rem;
+    color: var(--fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+    /* Single-column flow; the drawer is taken out of the grid and floated over the content. */
+    body.shell { display: block; }
+    body.shell main { margin: var(--space-4); }
+
+    .mobile-bar {
+        display: flex;
+        align-items: center;
+        gap: var(--space-3);
+        position: sticky;
+        top: 0;
+        z-index: 40;
+        padding: var(--space-2) var(--space-3);
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+    }
+
+    .app-sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        height: 100vh;
+        width: 17rem;
+        max-width: 84vw;
+        z-index: 60;
+        transform: translateX(-100%);
+        transition: transform 0.22s ease;
+        box-shadow: 0 0 28px rgba(0, 0, 0, 0.28);
+    }
+    body.nav-open .app-sidebar { transform: translateX(0); }
+
+    body.nav-open .nav-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 50;
+        background: rgba(0, 0, 0, 0.42);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .app-sidebar { transition: none; }
+}

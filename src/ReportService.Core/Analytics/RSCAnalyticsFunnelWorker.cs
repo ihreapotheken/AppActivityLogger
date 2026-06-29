@@ -52,7 +52,10 @@ public sealed class RSCAnalyticsFunnelWorker : BackgroundService
             _logger.LogError(ex, "Funnel seed failed; continuing without seeded definitions");
         }
 
-        var interval = TimeSpan.FromSeconds(Math.Max(60, _options.FunnelIntervalSeconds));
+        // Floor 5s (matches the aggregation worker) so the documented fast dev cadence
+        // (FunnelIntervalSeconds=15 in appsettings.Development.json) is actually honoured rather
+        // than silently clamped up to 60s. Production runs at 600s, well above the floor.
+        var interval = TimeSpan.FromSeconds(Math.Max(5, _options.FunnelIntervalSeconds));
 
         while (!stoppingToken.IsCancellationRequested)
         {

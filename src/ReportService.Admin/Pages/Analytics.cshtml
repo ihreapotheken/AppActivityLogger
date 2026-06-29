@@ -10,50 +10,101 @@
         "android" => "Android user-tracking signals from ingested analytics events.",
         _ => "User-tracking signals from ingested analytics events (iOS + Android).",
     };
+    var rowDeleteUrl = $"/Analytics{Model.Filter.ToQueryString(1)}&handler=DeleteOne";
 }
 @await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Analytics", subtitle))
 
-<p>
-    DAU counts distinct anonymous IDs with at least one event in the last 24 hours; MAU uses a 30-day rolling window.
-    Session length is the gap between <code>session_start</code> and <code>session_end</code> lifecycle events.
-    Retention figures are cohort-weighted means — see <a asp-page="/AnalyticsRetention">Retention</a> for the per-install-day breakdown.
-    All tiles are driven by the v2 analytics pipeline; the submissions table at the bottom is the legacy <code>kind = "analytics"</code> raw-report store.
-</p>
+<hint-box docs-href="/Documentation#06-analytics--reading-the-engagement-dashboard">
+    <p>
+        These tiles show how many people use the app and how heavily. <strong>Daily active users</strong>
+        counts the distinct people seen in the last 24 hours; <strong>monthly active users</strong> uses a
+        rolling 30-day window. <strong>Sessions today</strong> is the number of visits started since midnight,
+        and <strong>average session length</strong> is how long a typical visit lasts. The charts and tables
+        below break the same numbers down by platform and screen; the submissions table at the very bottom is a
+        separate list of the raw analytics report files kept on disk.
+    </p>
+</hint-box>
 
-<nav class="scope-tabs" aria-label="Platform scope">
-    <a asp-page="/Analytics" class="@(scope is null ? "active" : null)">All platforms</a>
-    <a asp-page="/Analytics" asp-route-platform="ios" class="@(scope == "ios" ? "active" : null)">iOS</a>
-    <a asp-page="/Analytics" asp-route-platform="android" class="@(scope == "android" ? "active" : null)">Android</a>
-</nav>
+@await Html.PartialAsync("_ScopeTabs", new RSAScopeTabsVM("/Analytics", scope))
 
 <section class="tiles" aria-label="Engagement summary">
-    <div class="tile">
-        <div class="tile-label">Daily active users</div>
-        <div class="tile-value">@Model.Dashboard.DailyActiveUsers.ToString("N0")</div>
-    </div>
-    <div class="tile">
-        <div class="tile-label">Monthly active users</div>
-        <div class="tile-value">@Model.Dashboard.MonthlyActiveUsers.ToString("N0")</div>
-    </div>
-    <div class="tile">
-        <div class="tile-label">Sessions today</div>
-        <div class="tile-value">@Model.Dashboard.SessionsToday.ToString("N0")</div>
-    </div>
-    <div class="tile">
-        <div class="tile-label">Avg session length</div>
-        <div class="tile-value">@FormatDuration(Model.Dashboard.AverageSessionLength)</div>
-    </div>
+    <tile label="Daily active users">@Model.Dashboard.DailyActiveUsers.ToString("N0")</tile>
+    <tile label="Monthly active users">@Model.Dashboard.MonthlyActiveUsers.ToString("N0")</tile>
+    <tile label="Sessions today">@Model.Dashboard.SessionsToday.ToString("N0")</tile>
+    <tile label="Avg session length">@FormatDuration(Model.Dashboard.AverageSessionLength)</tile>
 </section>
+
+<h2>Activity over time · last 30 days</h2>
+@{
+    var trend = Model.Dashboard.ActivityTrend ?? Array.Empty<RSAActivityPointVM>();
+    // ~6 date labels across 30 points keeps the x-axis legible.
+    var trendStep = Math.Max(1, (int)Math.Ceiling(trend.Count / 6.0));
+    var usersPts = trend.Select(p => new RSALinePoint(p.Label, p.ActiveUsers)).ToList();
+    var sessionsPts = trend.Select(p => new RSALinePoint(p.Label, p.Sessions)).ToList();
+    var eventsPts = trend.Select(p => new RSALinePoint(p.Label, p.Events)).ToList();
+}
+@if (trend.Count == 0 || trend.All(p => p.Events == 0))
+{
+    <empty-state>No daily activity recorded yet. The aggregation worker fills these once analytics events arrive.</empty-state>
+}
+else
+{
+    <div class="charts-row charts-row--trend">
+        <section class="card chart-card">
+            <h3>Active users / day</h3>
+            @await Html.PartialAsync("_LineChart", new RSALineChartVM(
+                usersPts, ValueNoun: "users", LabelStep: trendStep,
+                AriaLabel: "Distinct active users per day over the last 30 days", ViewHeight: 380))
+        </section>
+        <section class="card chart-card">
+            <h3>Sessions / day</h3>
+            @await Html.PartialAsync("_LineChart", new RSALineChartVM(
+                sessionsPts, ValueNoun: "sessions", LabelStep: trendStep,
+                AriaLabel: "Sessions started per day over the last 30 days", ViewHeight: 380))
+        </section>
+        <section class="card chart-card">
+            <h3>Events / day</h3>
+            @await Html.PartialAsync("_LineChart", new RSALineChartVM(
+                eventsPts, ValueNoun: "events", LabelStep: trendStep,
+                AriaLabel: "Analytics events recorded per day over the last 30 days", ViewHeight: 380))
+        </section>
+    </div>
+    <p class="legend">Distinct users, sessions, and total events per UTC day@(scope is null ? " (iOS + Android)" : $" on {scope}") — hover a point for the exact count.</p>
+}
+
+<h2>Active users by platform</h2>
+<div class="charts-row">
+    <section class="card chart-card">
+        <h3>Daily active users</h3>
+        @{
+            var dauSlices = Model.Dashboard.Platforms
+                .Select((p, i) => new RSADonutSlice(p.Name, p.DailyActiveUsers, $"chart-c{(i % 6) + 1}"))
+                .ToList();
+        }
+        @await Html.PartialAsync("_DonutChart", new RSADonutChartVM(
+            dauSlices, CenterLabel: "DAU", AriaLabel: "Daily active users by platform"))
+    </section>
+    <section class="card chart-card">
+        <h3>Monthly active users</h3>
+        @{
+            var mauSlices = Model.Dashboard.Platforms
+                .Select((p, i) => new RSADonutSlice(p.Name, p.MonthlyActiveUsers, $"chart-c{(i % 6) + 1}"))
+                .ToList();
+        }
+        @await Html.PartialAsync("_DonutChart", new RSADonutChartVM(
+            mauSlices, CenterLabel: "MAU", AriaLabel: "Monthly active users by platform"))
+    </section>
+</div>
 
 <h2>Platforms</h2>
 <table>
     <thead>
         <tr>
-            <th scope="col">Platform</th>
-            <th scope="col">DAU</th>
-            <th scope="col">MAU</th>
-            <th scope="col">Sessions today</th>
-            <th scope="col">Avg session</th>
+            <th scope="col" sort="text" tip="Client platform (iOS or Android); link narrows the whole dashboard to that platform.">Platform</th>
+            <th scope="col" sort="num" tip="Daily active users: distinct anonymous IDs with at least one event in the last 24 hours.">DAU</th>
+            <th scope="col" sort="num" tip="Monthly active users: distinct anonymous IDs active in the trailing 30-day rolling window.">MAU</th>
+            <th scope="col" sort="num" tip="Number of sessions started on this platform so far today.">Sessions today</th>
+            <th scope="col" tip="Mean session length for this platform — time between session_start and session_end events.">Avg session</th>
             <th scope="col"></th>
         </tr>
     </thead>
@@ -76,9 +127,9 @@
 <table>
     <thead>
         <tr>
-            <th scope="col">Screen</th>
-            <th scope="col">Views</th>
-            <th scope="col">Avg time on screen</th>
+            <th scope="col" sort="text" tip="Screen / view identifier reported by the SDK's screen_view events.">Screen</th>
+            <th scope="col" sort="num" tip="Total screen_view events recorded for this screen in the selected window.">Views</th>
+            <th scope="col" tip="Mean dwell time per visit to this screen.">Avg time on screen</th>
         </tr>
     </thead>
     <tbody>
@@ -119,17 +170,21 @@
 
 @if (Model.Listing.Items.Count == 0)
 {
-    <p class="muted">No analytics events match the current filter. SDK analytics events arrive with <code>kind = "analytics"</code>.</p>
+    <empty-state>No analytics events match the current filter. SDK analytics events arrive with <code>kind = "analytics"</code>.</empty-state>
 }
 else
 {
+    @await Html.PartialAsync("_DeleteFilteredBar", new RSADeleteBarVM(
+        $"/Analytics{Model.Filter.ToQueryString(1)}&handler=DeleteMatching", Model.Listing.TotalMatched, "analytics submission"))
+
     <table>
         <thead>
             <tr>
-                <th scope="col">Submitted</th>
-                <th scope="col">Platform</th>
-                <th scope="col">File</th>
-                <th scope="col">Size</th>
+                <th scope="col" tip="When this analytics report was received by the service (shown in your local time).">Submitted</th>
+                <th scope="col" tip="Client platform the analytics report was submitted from.">Platform</th>
+                <th scope="col" tip="Stored report file name; links to the full report detail view.">File</th>
+                <th scope="col" tip="On-disk size of the stored analytics report.">Size</th>
+                <th scope="col" aria-label="Delete"></th>
             </tr>
         </thead>
         <tbody>
@@ -140,22 +195,16 @@ else
                     <td class="mono">@r.Platform</td>
                     <td class="mono"><a asp-page="/Report" asp-route-platform="@r.Platform" asp-route-fileName="@r.FileName">@r.FileName</a></td>
                     <td>@RSAByteFormatter.Format(r.SizeBytes)</td>
+                    <td>@await Html.PartialAsync("_RowDelete", new RSARowDeleteVM(rowDeleteUrl, r.Platform, r.FileName))</td>
                 </tr>
             }
         </tbody>
     </table>
 
-    <nav class="pager" aria-label="Pagination">
-        @if (Model.Listing.PageNumber > 1)
-        {
-            <a href="@Model.Filter.ToQueryString(Model.Listing.PageNumber - 1)">← previous</a>
-        }
-        <span class="muted">page @Model.Listing.PageNumber / @Model.Listing.TotalPages</span>
-        @if (Model.Listing.PageNumber < Model.Listing.TotalPages)
-        {
-            <a href="@Model.Filter.ToQueryString(Model.Listing.PageNumber + 1)">next →</a>
-        }
-    </nav>
+    @await Html.PartialAsync("_Pager", new RSAPagerVM(
+        Model.Listing.PageNumber > 1 ? Model.Filter.ToQueryString(Model.Listing.PageNumber - 1) : null,
+        Model.Listing.PageNumber < Model.Listing.TotalPages ? Model.Filter.ToQueryString(Model.Listing.PageNumber + 1) : null,
+        $"page {Model.Listing.PageNumber} / {Model.Listing.TotalPages}"))
 }
 
 @functions {

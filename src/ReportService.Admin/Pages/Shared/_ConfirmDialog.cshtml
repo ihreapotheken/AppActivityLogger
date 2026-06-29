@@ -1,0 +1,16 @@
+@*
+    Shared confirmation modal for destructive actions. Rendered once per page; driven by
+    confirm-dialog.js, which intercepts any <form data-confirm="…"> and fills in the title,
+    message, and accept-button label before showing it. Native <dialog> gives focus trapping,
+    Escape-to-cancel, and a backdrop with no extra script.
+*@
+<dialog id="confirm-modal" class="confirm-modal" aria-labelledby="confirm-modal-title" aria-describedby="confirm-modal-message">
+    <div class="confirm-modal-card">
+        <h2 id="confirm-modal-title" class="confirm-modal-title">Confirm deletion</h2>
+        <p id="confirm-modal-message" class="confirm-modal-message"></p>
+        <div class="confirm-modal-actions">
+            <button type="button" class="btn" data-confirm-cancel autofocus>Cancel</button>
+            <button type="button" class="danger" data-confirm-accept>Delete</button>
+        </div>
+    </div>
+</dialog>

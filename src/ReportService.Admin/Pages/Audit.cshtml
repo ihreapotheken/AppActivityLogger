@@ -8,19 +8,19 @@
 
 @if (Model.Entries.Count == 0)
 {
-    <p class="muted">No audit entries yet — or the audit DB isn't writable.</p>
+    <empty-state>No audit entries yet — or the audit DB isn't writable.</empty-state>
 }
 else
 {
     <table>
         <thead>
-            <tr><th>At (UTC)</th><th>Actor</th><th>Remote</th><th>Action</th><th>Target</th><th>Result</th><th>Details</th></tr>
+            <tr><th sort="date" tip="When the audited action occurred (UTC, shown in local time).">At (UTC)</th><th sort="text" tip="Authenticated operator who performed the action, or 'anonymous' for pre-login events.">Actor</th><th tip="Remote IP address the request originated from.">Remote</th><th sort="text" tip="The operator action: login success/failure, delete, rebuild, integrity, vacuum, backup, export.">Action</th><th tip="The object the action targeted (e.g. report id or file), or — if none.">Target</th><th tip="Outcome of the action: ok = succeeded, fail = failed.">Result</th><th tip="Short human-readable payload describing the action; never contains the secret itself.">Details</th></tr>
         </thead>
         <tbody>
             @foreach (var e in Model.Entries)
             {
                 <tr>
-                    <td class="mono">@e.At.AsLocalTime()</td>
+                    <td class="mono" data-sort-value="@e.At.UtcDateTime.ToString("o")">@e.At.AsLocalTime()</td>
                     <td class="mono">@e.Actor</td>
                     <td class="mono">@e.RemoteAddress</td>
                     <td class="mono">@e.Action</td>

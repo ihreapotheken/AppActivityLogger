@@ -1,6 +1,7 @@
 @page
 @model RSAMaintenanceModel
 @using ReportService.Admin.ViewModels
+@using ReportService.Storage.ApiKeys
 @{
     ViewData["Title"] = "Maintenance";
 }
@@ -13,6 +14,93 @@
         or the DB is currently unreachable). Rebuild / integrity / vacuum / backup are disabled until it's back.
     </div>
 }
+
+@if (!string.IsNullOrEmpty(Model.NewKeyPlaintext))
+{
+    <section class="card danger-zone">
+        <h2>New key @Model.NewKeyId — copy it now</h2>
+        <p class="muted">This is the only time the secret is shown. Store it securely; the server keeps only a hash and can never display it again.</p>
+        <pre class="mono">@Model.NewKeyPlaintext</pre>
+    </section>
+}
+
+<section class="card">
+    <h2>API keys</h2>
+    <p class="muted">
+        Mint and revoke API keys for the ingestion API. Admin keys can manage keys + ingest; user
+        keys can only ingest. The static configured key is the permanent root-admin and isn't listed here.
+    </p>
+    <form method="post" asp-page-handler="CreateApiKey">
+        @Html.AntiForgeryToken()
+        <div class="kv">
+            <label>Role
+                <select name="role">
+                    <option value="user" selected>user (ingest only)</option>
+                    <option value="admin">admin (manage keys + ingest)</option>
+                </select>
+            </label>
+            <label>Label <input type="text" name="label" placeholder="e.g. partner-acme-prod" maxlength="200" /></label>
+            <label>Expires in (days) <input type="number" name="expiresInDays" min="1" placeholder="blank = never" /></label>
+            <label>Rate limit / min <input type="number" name="rateLimitPerMinute" min="1" placeholder="blank = role default" /></label>
+        </div>
+        <button type="submit" class="primary">Create key</button>
+    </form>
+
+    <h3>Keys (@Model.ApiKeys.Count)</h3>
+    @if (Model.ApiKeys.Count == 0)
+    {
+        <p class="muted">No managed keys yet. The static configured key (root-admin) still works and is not listed here.</p>
+    }
+    else
+    {
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th><th>Role</th><th>Label</th><th>Created</th><th>Expires</th><th>Rate/min</th><th>Status</th><th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var k in Model.ApiKeys)
+                {
+                    <tr>
+                        <td class="mono">@k.Id</td>
+                        <td class="mono">@k.Role</td>
+                        <td>@(string.IsNullOrEmpty(k.Label) ? "—" : k.Label)</td>
+                        <td class="mono" data-sort-value="@k.CreatedAt.UtcDateTime.ToString("o")">@k.CreatedAt.AsLocalTime()</td>
+                        <td class="mono">@(k.ExpiresAt is { } e ? e.AsLocalTime() : "never")</td>
+                        <td class="mono">@(k.RateLimitPerMinute?.ToString() ?? "default")</td>
+                        <td>
+                            @if (k.IsRevoked)
+                            {
+                                <span class="badge badge-bad">revoked</span>
+                            }
+                            else if (k.IsExpired(Model.Now))
+                            {
+                                <span class="badge badge-bad">expired</span>
+                            }
+                            else
+                            {
+                                <span class="badge badge-ok">active</span>
+                            }
+                        </td>
+                        <td>
+                            @if (!k.IsRevoked)
+                            {
+                                <form method="post" asp-page-handler="RevokeApiKey"
+                                      data-confirm="Revoke key @k.Id? Any client using it will get 401 immediately."
+                                      data-confirm-title="Revoke API key" data-confirm-label="Revoke">
+                                    @Html.AntiForgeryToken()
+                                    <input type="hidden" name="id" value="@k.Id" />
+                                    <button type="submit" class="danger">Revoke</button>
+                                </form>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</section>
 
 <section class="card">
     <h2>Retention</h2>
@@ -80,9 +168,9 @@
         <table>
             <thead>
                 <tr>
-                    <th scope="col">File</th>
-                    <th scope="col">Size</th>
-                    <th scope="col">Modified</th>
+                    <th scope="col" tip="Backup snapshot file name (*.db)" sort="text">File</th>
+                    <th scope="col" tip="On-disk size of the backup snapshot" sort="num">Size</th>
+                    <th scope="col" tip="When the snapshot file was last written (local time)" sort="date">Modified</th>
                     <th scope="col"></th>
                 </tr>
             </thead>
@@ -91,8 +179,8 @@
                 {
                     <tr>
                         <td class="mono">@f.Name</td>
-                        <td>@RSAByteFormatter.Format(f.Length)</td>
-                        <td class="mono">@f.LastWriteTimeUtc.AsLocalTime()</td>
+                        <td data-sort-value="@f.Length">@RSAByteFormatter.Format(f.Length)</td>
+                        <td class="mono" data-sort-value="@f.LastWriteTimeUtc.ToString("o")">@f.LastWriteTimeUtc.AsLocalTime()</td>
                         <td><a asp-page-handler="DownloadBackup" asp-route-name="@f.Name">download</a></td>
                     </tr>
                 }
@@ -175,7 +263,9 @@
         row in the forced-report allow-list. The audit log is intentionally preserved so this
         action stays traceable. <strong>Irreversible — there is no undo.</strong>
     </p>
-    <form method="post" asp-page-handler="WipeAll" class="filter-form" onsubmit="return confirm('This permanently deletes every stored report and every forced-report row. Continue?');">
+    <form method="post" asp-page-handler="WipeAll" class="filter-form"
+          data-confirm="This permanently deletes every stored report and every forced-report row. This is irreversible — there is no undo."
+          data-confirm-title="Wipe all data" data-confirm-label="Wipe everything">
         @Html.AntiForgeryToken()
         <label>
             <span>Type <code>WIPE</code> to confirm</span>

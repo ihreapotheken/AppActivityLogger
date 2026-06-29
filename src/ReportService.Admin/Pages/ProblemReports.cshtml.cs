@@ -24,21 +24,49 @@ public sealed class RSAProblemReportsModel : PageModel
 
     private readonly IRSAReportListingService _listing;
     private readonly RSCReportServiceOptions _options;
+    private readonly IRSAReportDeletionService _deletion;
 
-    public RSAProblemReportsModel(IRSAReportListingService listing, RSCReportServiceOptions options)
+    public RSAProblemReportsModel(IRSAReportListingService listing, RSCReportServiceOptions options, IRSAReportDeletionService deletion)
     {
         _listing = listing;
         _options = options;
+        _deletion = deletion;
     }
 
     [BindProperty(SupportsGet = true)]
     public RSAReportsFilterInput Filter { get; set; } = new();
 
+    // Cap for the analytics aggregate. The headline total is always exact (TotalMatched); the
+    // breakdown is computed from up to this many matched rows and flags Truncated beyond it.
+    private const int SummaryCap = 2000;
+
     public RSAReportsPageVM Listing { get; private set; } = default!;
+    public RSAReportsSummary Summary { get; private set; } = RSAReportsSummary.Empty;
     public IReadOnlyList<string> AvailablePlatforms => _options.AllowedPlatforms;
 
     public async Task OnGetAsync(CancellationToken ct)
     {
         Listing = await _listing.ListAsync(Filter, PageSize, Scope, ct).ConfigureAwait(false);
+
+        // Analytics over the whole filtered set (page 1, capped), aggregated in-memory so it stays
+        // consistent with the active filter without a separate faceted query path.
+        var matched = await _listing.ListAsync(Filter.WithPage(1), SummaryCap, Scope, ct).ConfigureAwait(false);
+        Summary = RSAReportsSummary.From(matched.Items, matched.TotalMatched, SummaryCap);
+    }
+
+    public async Task<IActionResult> OnPostDeleteOneAsync(string platform, string fileName, CancellationToken ct)
+    {
+        var ok = await _deletion.DeleteOneAsync(platform, fileName, HttpContext, ct).ConfigureAwait(false);
+        TempData["Flash"] = ok ? $"Deleted {fileName}." : $"Could not delete {fileName}.";
+        return Redirect(Request.Path + Filter.ToQueryString(1));
+    }
+
+    public async Task<IActionResult> OnPostDeleteMatchingAsync(CancellationToken ct)
+    {
+        var res = await _deletion.DeleteMatchingAsync(Filter, Scope, HttpContext, ct).ConfigureAwait(false);
+        TempData["Flash"] = res.Truncated
+            ? $"Deleted {res.Deleted:N0} of {res.Matched:N0} matching reports — capped this pass, run again to continue."
+            : $"Deleted {res.Deleted:N0} of {res.Matched:N0} matching reports.";
+        return Redirect(Request.Path + Filter.ToQueryString(1));
     }
 }

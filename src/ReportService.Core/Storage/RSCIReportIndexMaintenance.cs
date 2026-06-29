@@ -15,6 +15,13 @@ public interface RSCIReportIndexMaintenance
     Task<IReadOnlyList<RSCPlatformSummary>> SummarizeAsync(CancellationToken ct);
 
     /// <summary>
+    /// Cumulative per-platform totals for every report deleted over the service's lifetime, folded
+    /// in at deletion time. Survives the reports it describes, so the dashboard can show lifetime
+    /// figures even after retention has purged the underlying data. Empty before the first deletion.
+    /// </summary>
+    Task<IReadOnlyList<RSCLifetimeReportStats>> GetLifetimeStatsAsync(CancellationToken ct);
+
+    /// <summary>
     /// Aggregates for the admin Stats overview within a date window. Returns zero-filled daily
     /// volumes (split by ingestion channel for the volume chart) plus top-N buckets by device /
     /// pharmacy / app version / platform / channel. All counts come from a single connection so

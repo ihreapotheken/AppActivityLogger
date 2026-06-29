@@ -6,16 +6,18 @@
     var first = Model.Stats.Count > 0 ? Model.Stats[0].SessionsReached : 0;
     string Conversion(long reached) => first <= 0 ? "—" : ((double)reached / first * 100).ToString("F1") + "%";
 }
-@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Analytics funnels", $"Step-by-step session counts for operator-defined funnels. Window: last {Model.Window} days. Conversion is relative to step 0."))
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Analytics funnels", $"How many sessions reach each step of a flow, and where they drop off. Window: last {Model.Window} days."))
 
-<p>
-    Each step shows how many distinct sessions completed that step (and all preceding steps) within the window.
-    Steps are matched in order by event name and type — a session must emit step 0's event before step 1, step 1 before step 2, and so on, determined by <code>sequence ASC, occurred_at ASC</code>.
-    Out-of-order events don't advance the funnel.
-    Conversion is always relative to step 0: 100% at step 0 means every session that started the funnel; a lower percentage at step N means that fraction of starters reached that step.
-    Use the platform filter to compare Android vs iOS drop-off — large divergences often point to a platform-specific UX bug.
-    Funnel definitions are managed here and in the <code>Analytics:SeedFunnels</code> config section; operator edits made on this page survive service restarts.
-</p>
+<hint-box docs-href="/Documentation#06-analytics--reading-funnels">
+    <p>
+        A funnel shows how many sessions get through an ordered flow and where they drop off. Each step
+        counts the distinct sessions that completed it <em>and</em> every step before it, in order — so the
+        numbers can only fall as you go down. <strong>Conversion</strong> compares each step back to step 0;
+        <strong>vs previous</strong> is the step-to-step rate and is the clearest signal of <em>where</em>
+        people leave. Use the platform filter to compare Android against iOS — a large gap usually points to
+        a platform-specific problem.
+    </p>
+</hint-box>
 
 <form method="get" class="filters" aria-label="Funnel filters">
     <label>Funnel
@@ -40,25 +42,26 @@
 
 @if (Model.Definitions.Count == 0)
 {
-    <p class="muted">No funnels defined. The funnel worker seeds default definitions on first start; if it hasn't run yet, restart the service or wait one funnel interval.</p>
+    <empty-state>No funnels defined. The funnel worker seeds default definitions on first start; if it hasn't run yet, restart the service or wait one funnel interval.</empty-state>
 }
 else if (Model.Selected is null)
 {
-    <p class="muted">Funnel not found.</p>
+    <empty-state>Funnel not found.</empty-state>
 }
 else
 {
     <section class="card">
         <h2>@Model.Selected.DisplayName <span class="mono muted">(@Model.Selected.FunnelKey)</span></h2>
-        <table>
+        <table class="funnel-table">
             <thead>
                 <tr>
-                    <th scope="col">#</th>
-                    <th scope="col">Step</th>
-                    <th scope="col">Event</th>
-                    <th scope="col">Type</th>
-                    <th scope="col">Sessions</th>
-                    <th scope="col">Conversion</th>
+                    <th scope="col" sort="num" tip="Step position in the funnel sequence (0 = entry). Sort to restore sequence order.">#</th>
+                    <th scope="col" sort="text" tip="Human-readable name of this funnel step.">Step</th>
+                    <th scope="col" tip="The event name and type that advances a session to this step ('any' = type not constrained).">Event</th>
+                    <th scope="col" sort="num" tip="Distinct sessions that completed this step and every step before it, within the window.">Sessions</th>
+                    <th scope="col" tip="Sessions reaching this step as a share of step 0, drawn as a bar.">Funnel (vs step 0)</th>
+                    <th scope="col" sort="num" tip="Conversion from step 0: this step's sessions ÷ step 0's sessions.">Conversion</th>
+                    <th scope="col" sort="num" tip="Step-over-step conversion: this step's sessions ÷ the previous step's — shows where users drop off.">vs previous</th>
                 </tr>
             </thead>
             <tbody>
@@ -66,13 +69,25 @@ else
             {
                 var s = Model.Stats[i];
                 var def = Model.Selected.Steps[i];
+                var conv = first <= 0 ? 0 : (double)s.SessionsReached / first * 100;
+                var prev = i > 0 ? Model.Stats[i - 1].SessionsReached : s.SessionsReached;
+                var stepOver = prev <= 0 ? "—" : ((double)s.SessionsReached / prev * 100).ToString("F1") + "%";
+                var stepOverVal = prev <= 0 ? -1 : (double)s.SessionsReached / prev;
+                var dropped = i > 0 && prev > s.SessionsReached;
                 <tr>
-                    <td>@i</td>
+                    <td data-sort-value="@i">@i</td>
                     <td>@def.Name</td>
-                    <td class="mono">@def.EventName</td>
-                    <td class="mono">@(def.EventType ?? "(any)")</td>
-                    <td>@s.SessionsReached.ToString("N0")</td>
-                    <td>@Conversion(s.SessionsReached)</td>
+                    <td class="mono">@def.EventName <span class="muted">/ @(def.EventType ?? "any")</span></td>
+                    <td data-sort-value="@s.SessionsReached">@s.SessionsReached.ToString("N0")</td>
+                    <td class="funnel-bar-cell">
+                        @* SVG rect width is an attribute, not an inline style — CSP-safe. *@
+                        <svg class="funnel-bar" viewBox="0 0 100 12" preserveAspectRatio="none" role="img" aria-label="@Conversion(s.SessionsReached) of step 0">
+                            <rect class="funnel-bar-track" x="0" y="0" width="100" height="12"></rect>
+                            <rect class="funnel-bar-fill" x="0" y="0" width="@conv.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)" height="12"></rect>
+                        </svg>
+                    </td>
+                    <td data-sort-value="@conv">@Conversion(s.SessionsReached)</td>
+                    <td class="@(dropped ? "funnel-drop" : "")" data-sort-value="@stepOverVal">@stepOver</td>
                 </tr>
             }
             </tbody>

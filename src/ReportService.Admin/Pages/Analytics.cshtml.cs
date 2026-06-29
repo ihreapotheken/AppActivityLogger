@@ -15,15 +15,18 @@ public sealed class RSAAnalyticsModel : PageModel
 
     private readonly IRSAAnalyticsDashboardService _analytics;
     private readonly IRSAReportListingService _listing;
+    private readonly IRSAReportDeletionService _deletion;
     private readonly RSCReportServiceOptions _options;
 
     public RSAAnalyticsModel(
         IRSAAnalyticsDashboardService analytics,
         IRSAReportListingService listing,
+        IRSAReportDeletionService deletion,
         RSCReportServiceOptions options)
     {
         _analytics = analytics;
         _listing = listing;
+        _deletion = deletion;
         _options = options;
     }
 
@@ -50,5 +53,21 @@ public sealed class RSAAnalyticsModel : PageModel
         // Razor's binding gives Filter.Platform the same string, so the listing already inherits
         // the scope. No extra wiring needed.
         Listing = await _listing.ListAsync(Filter, PageSize, Scope, ct).ConfigureAwait(false);
+    }
+
+    public async Task<IActionResult> OnPostDeleteOneAsync(string platform, string fileName, CancellationToken ct)
+    {
+        var ok = await _deletion.DeleteOneAsync(platform, fileName, HttpContext, ct).ConfigureAwait(false);
+        TempData["Flash"] = ok ? $"Deleted {fileName}." : $"Could not delete {fileName}.";
+        return Redirect(Request.Path + Filter.ToQueryString(1));
+    }
+
+    public async Task<IActionResult> OnPostDeleteMatchingAsync(CancellationToken ct)
+    {
+        var res = await _deletion.DeleteMatchingAsync(Filter, Scope, HttpContext, ct).ConfigureAwait(false);
+        TempData["Flash"] = res.Truncated
+            ? $"Deleted {res.Deleted:N0} of {res.Matched:N0} matching reports — capped this pass, run again to continue."
+            : $"Deleted {res.Deleted:N0} of {res.Matched:N0} matching reports.";
+        return Redirect(Request.Path + Filter.ToQueryString(1));
     }
 }

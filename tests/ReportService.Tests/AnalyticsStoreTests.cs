@@ -101,7 +101,11 @@ public class AnalyticsStoreTests : IDisposable
         var beforeMark = await _store.ListUnaggregatedEventsAsync(100, default);
         Assert.Equal(2, beforeMark.Count);
 
-        await _store.MarkEventsAggregatedAsync(new[] { "evt-1", "evt-2" }, default);
+        await _store.MarkEventsAggregatedAsync(new[]
+        {
+            new RSCAggregationEventRef("android", "evt-1"),
+            new RSCAggregationEventRef("android", "evt-2")
+        }, default);
 
         var afterMark = await _store.ListUnaggregatedEventsAsync(100, default);
         Assert.Empty(afterMark);

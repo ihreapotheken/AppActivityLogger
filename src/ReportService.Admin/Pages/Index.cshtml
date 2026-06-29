@@ -6,22 +6,41 @@
 }
 @await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Dashboard", "Live overview of stored reports + service health."))
 
-<section class="tiles" aria-label="Dashboards">
-    <a class="tile" asp-page="/Analytics">
+<h2>Submissions</h2>
+<section class="tiles" aria-label="Submissions">
+    <a class="tile tile-link" asp-page="/Analytics">
         <div class="tile-label">Analytics</div>
-        <div class="tile-value">User tracking</div>
+        <div class="tile-value">@Model.DailyActiveUsers.ToString("N0")</div>
+        <div class="tile-sub">active users today</div>
     </a>
-    <a class="tile" asp-page="/Errors">
-        <div class="tile-label">Errors</div>
-        <div class="tile-value">Crash + error reporting</div>
+    <a class="tile tile-link" asp-page="/AnalyticsRetention">
+        <div class="tile-label">Retention</div>
+        <div class="tile-value">@((Model.RetentionDay1 * 100).ToString("0.0"))%</div>
+        <div class="tile-sub">D1 retention</div>
+    </a>
+    <a class="tile tile-link" asp-page="/AnalyticsFunnels">
+        <div class="tile-label">Funnels</div>
+        <div class="tile-value">@Model.FunnelCount.ToString("N0")</div>
+        <div class="tile-sub">@(Model.FunnelCount == 1 ? "funnel defined" : "funnels defined")</div>
+    </a>
+    <a class="tile tile-link" asp-page="/ProblemReports">
+        <div class="tile-label">Problem reports</div>
+        <div class="tile-value">@Model.Dashboard.ProblemCount.ToString("N0")</div>
+        <div class="tile-sub">@(Model.Dashboard.ProblemCount == 1 ? "report" : "reports")</div>
+    </a>
+    <a class="tile tile-link" asp-page="/Errors">
+        <div class="tile-label">Error reports</div>
+        <div class="tile-value">@Model.Dashboard.CrashCount.ToString("N0")</div>
+        <div class="tile-sub">@(Model.Dashboard.CrashCount == 1 ? "crash report" : "crash reports")</div>
+    </a>
+    <a class="tile tile-link" asp-page="/Reports">
+        <div class="tile-label">All reports</div>
+        <div class="tile-value">@Model.Dashboard.TotalCount.ToString("N0")</div>
+        <div class="tile-sub">total stored</div>
     </a>
 </section>
 
 <section class="tiles" aria-label="Summary">
-    <div class="tile">
-        <div class="tile-label">Reports stored</div>
-        <div class="tile-value">@Model.Dashboard.TotalCount</div>
-    </div>
     <div class="tile">
         <div class="tile-label">Multipart (zip)</div>
         <div class="tile-value">@Model.Dashboard.MultipartCount</div>
@@ -48,15 +67,100 @@
     </div>
 </section>
 
+<h2>Composition</h2>
+<div class="charts-row">
+    <section class="card chart-card">
+        <h3>Reports by platform</h3>
+        @{
+            var platformSlices = Model.Dashboard.Platforms
+                .Select((p, i) => new RSADonutSlice(p.Name, p.Count, $"chart-c{(i % 6) + 1}"))
+                .ToList();
+        }
+        @await Html.PartialAsync("_DonutChart", new RSADonutChartVM(
+            platformSlices, CenterLabel: "reports", AriaLabel: "Stored reports by platform"))
+    </section>
+    <section class="card chart-card">
+        <h3>By channel</h3>
+        @await Html.PartialAsync("_DonutChart", new RSADonutChartVM(
+            new[]
+            {
+                new RSADonutSlice("Multipart (zip)", Model.Dashboard.MultipartCount, "chart-c1"),
+                new RSADonutSlice("JSON", Model.Dashboard.JsonCount, "chart-c2"),
+            },
+            CenterLabel: "reports", AriaLabel: "Stored reports by ingestion channel"))
+    </section>
+    <section class="card chart-card">
+        <h3>Crashes vs other</h3>
+        @await Html.PartialAsync("_DonutChart", new RSADonutChartVM(
+            new[]
+            {
+                new RSADonutSlice("Crash reports", Model.Dashboard.CrashCount, "chart-c4"),
+                new RSADonutSlice("Other reports", Math.Max(0, Model.Dashboard.TotalCount - Model.Dashboard.CrashCount), "chart-c3"),
+            },
+            CenterLabel: "reports", AriaLabel: "Stored reports by kind: crash vs other"))
+    </section>
+</div>
+
+<h2>Trending issues</h2>
+@if (Model.TrendingIssues.Count == 0)
+{
+    <empty-state>No crash fault sites recorded in the last 7 days.</empty-state>
+}
+else
+{
+    <p class="muted">Crash fault sites by occurrences in the last 7 days, with the change vs the previous 7 days. <a asp-page="/Errors">Open error reporting →</a></p>
+    <table>
+        <thead>
+            <tr>
+                <th scope="col" sort="text" tip="Top stack frame of the crash — the fault site occurrences are grouped by. Links into Error reporting filtered to it.">Fault site</th>
+                <th scope="col" sort="text" tip="Platform contributing the most occurrences of this fault site in the last 7 days.">Platform</th>
+                <th scope="col" sort="num" tip="Occurrences in the last 7 days.">Last 7d</th>
+                <th scope="col" sort="num" tip="Change vs the previous 7 days: ▲ rising, ▼ falling, ✦ new this week, → unchanged.">Trend</th>
+                <th scope="col" sort="num" tip="Distinct users affected by this fault site in the last 7 days.">Users</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var t in Model.TrendingIssues)
+            {
+                var delta = t.RecentCount - t.PriorCount;
+                <tr>
+                    <td class="mono cell-frame"><a asp-page="/Errors" asp-route-topFrame="@t.Signature" title="@t.Signature">@t.Signature</a></td>
+                    <td class="mono">@t.Platform</td>
+                    <td>@t.RecentCount.ToString("N0")</td>
+                    <td data-sort-value="@delta">
+                        @if (t.PriorCount == 0)
+                        {
+                            <span class="trend trend-up">✦ new</span>
+                        }
+                        else if (delta > 0)
+                        {
+                            <span class="trend trend-up">▲ @delta.ToString("N0")</span>
+                        }
+                        else if (delta < 0)
+                        {
+                            <span class="trend trend-down">▼ @Math.Abs(delta).ToString("N0")</span>
+                        }
+                        else
+                        {
+                            <span class="trend trend-flat">→ 0</span>
+                        }
+                    </td>
+                    <td>@t.AffectedUsers.ToString("N0")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
 <h2>Platforms</h2>
 <table>
     <thead>
         <tr>
-            <th scope="col">Platform</th>
-            <th scope="col">Reports</th>
-            <th scope="col">Multipart (zip)</th>
-            <th scope="col">JSON</th>
-            <th scope="col">Latest</th>
+            <th scope="col" sort="text" tip="The reporting platform (iOS or Android).">Platform</th>
+            <th scope="col" sort="num" tip="Total reports stored for this platform across all channels.">Reports</th>
+            <th scope="col" sort="num" tip="Count of multipart (zip) reports for this platform; 'view' opens them filtered.">Multipart (zip)</th>
+            <th scope="col" sort="num" tip="Count of plain JSON reports for this platform; 'view' opens them filtered.">JSON</th>
+            <th scope="col" sort="date" tip="When the most recent report for this platform was submitted.">Latest</th>
             <th scope="col"></th>
         </tr>
     </thead>
@@ -66,21 +170,21 @@
         <tr>
             <td class="mono">@p.Name</td>
             <td>@p.Count</td>
-            <td>
+            <td data-sort-value="@p.MultipartCount">
                 @p.MultipartCount
                 @if (p.MultipartCount > 0)
                 {
                     <text> · </text><a asp-page="/Reports" asp-route-platform="@p.Name" asp-route-channel="multipart">view</a>
                 }
             </td>
-            <td>
+            <td data-sort-value="@p.JsonCount">
                 @p.JsonCount
                 @if (p.JsonCount > 0)
                 {
                     <text> · </text><a asp-page="/Reports" asp-route-platform="@p.Name" asp-route-channel="json">view</a>
                 }
             </td>
-            <td>@p.LatestSubmittedAt.AsLocalTimeOrDash()</td>
+            <td data-sort-value="@(p.LatestSubmittedAt?.UtcDateTime.ToString("o") ?? "")">@p.LatestSubmittedAt.AsLocalTimeOrDash()</td>
             <td><a asp-page="/Reports" asp-route-platform="@p.Name">browse all →</a></td>
         </tr>
     }
@@ -90,27 +194,45 @@
 <h2>Latest submissions</h2>
 @if (Model.Dashboard.Recent.Count == 0)
 {
-    <p class="muted">No reports yet.</p>
+    <empty-state>No reports yet.</empty-state>
 }
 else
 {
-    <table>
+    <table class="recent-table">
         <thead>
             <tr>
-                <th scope="col">Submitted</th>
-                <th scope="col">Platform</th>
-                <th scope="col">Channel</th>
-                <th scope="col">File</th>
+                <th scope="col" sort="date" tip="When the report was submitted to the service.">Submitted</th>
+                <th scope="col" sort="text" tip="The reporting platform (iOS or Android).">Platform</th>
+                <th scope="col" sort="text" tip="Whether the report is a crash or a regular (non-crash) report.">Kind</th>
+                <th scope="col" sort="text" tip="The transport channel the report arrived on (multipart zip or JSON).">Channel</th>
+                <th scope="col" sort="num" tip="On-disk size of the report's JSON payload.">Size</th>
+                <th scope="col" sort="num" tip="Size of the attachment if present; a dash means no attachment.">Attachment</th>
+                <th scope="col" tip="Top stack frame of the crash, when available; a dash means none.">Crash fault site</th>
+                <th scope="col"></th>
             </tr>
         </thead>
         <tbody>
             @foreach (var r in Model.Dashboard.Recent)
             {
+                var isCrash = string.Equals(r.Kind, "crash", StringComparison.OrdinalIgnoreCase);
                 <tr>
-                    <td class="mono">@r.SubmittedAt.AsLocalTime()</td>
+                    <td class="mono" data-sort-value="@r.SubmittedAt.UtcDateTime.ToString("o")">@r.SubmittedAt.AsLocalTime()</td>
                     <td class="mono">@r.Platform</td>
+                    <td>
+                        @if (isCrash)
+                        {
+                            <span class="badge badge-bad">crash</span>
+                        }
+                        else
+                        {
+                            <span class="badge">report</span>
+                        }
+                    </td>
                     <td>@await Html.PartialAsync("_ChannelBadge", r)</td>
-                    <td class="mono"><a asp-page="/Report" asp-route-platform="@r.Platform" asp-route-fileName="@r.FileName">@r.FileName</a></td>
+                    <td class="mono" data-sort-value="@r.SizeBytes">@RSAByteFormatter.Format(r.SizeBytes)</td>
+                    <td class="mono" data-sort-value="@(r.AttachmentSizeBytes ?? 0)">@(r.AttachmentFileName is null ? "—" : RSAByteFormatter.Format(r.AttachmentSizeBytes))</td>
+                    <td class="mono cell-frame" title="@r.TopFrame">@(string.IsNullOrEmpty(r.TopFrame) ? "—" : r.TopFrame)</td>
+                    <td><a asp-page="/Report" asp-route-platform="@r.Platform" asp-route-fileName="@r.FileName">view →</a></td>
                 </tr>
             }
         </tbody>
@@ -121,10 +243,10 @@ else
 <table>
     <thead>
         <tr>
-            <th scope="col">Component</th>
-            <th scope="col">State</th>
-            <th scope="col">Detail</th>
-            <th scope="col">At</th>
+            <th scope="col" sort="text" tip="The service component reporting its health (worker, store, etc.).">Component</th>
+            <th scope="col" tip="Current health state: healthy or degraded.">State</th>
+            <th scope="col" tip="Human-readable detail about the component's last status or failure.">Detail</th>
+            <th scope="col" sort="date" tip="When this component last reported its health.">At</th>
         </tr>
     </thead>
     <tbody>
@@ -143,7 +265,7 @@ else
                     }
                 </td>
                 <td>@kvp.Value.Detail</td>
-                <td class="mono">@kvp.Value.At.AsLocalTime()</td>
+                <td class="mono" data-sort-value="@kvp.Value.At.UtcDateTime.ToString("o")">@kvp.Value.At.AsLocalTime()</td>
             </tr>
         }
         @if (Model.Health.Count == 0)
@@ -152,6 +274,54 @@ else
         }
     </tbody>
 </table>
+
+@if (Model.HasLifetimeStats)
+{
+    <h2>Lifetime totals</h2>
+    <p class="muted">Cumulative across the service's lifetime, including reports already purged by deletion or retention. Banked at deletion time so the figures never drop when old data is removed.</p>
+    <section class="tiles" aria-label="Lifetime totals">
+        <div class="tile">
+            <div class="tile-label">Reports received</div>
+            <div class="tile-value">@Model.LifetimeReportsReceived.ToString("N0")</div>
+            <div class="tile-sub">@Model.Dashboard.TotalCount.ToString("N0") retained + @Model.LifetimeDeletedReports.ToString("N0") deleted</div>
+        </div>
+        <div class="tile">
+            <div class="tile-label">Reports deleted</div>
+            <div class="tile-value">@Model.LifetimeDeletedReports.ToString("N0")</div>
+            <div class="tile-sub">over the service's lifetime</div>
+        </div>
+        <div class="tile">
+            <div class="tile-label">Storage reclaimed</div>
+            <div class="tile-value">@RSAByteFormatter.Format(Model.LifetimeDeletedBytes)</div>
+            <div class="tile-sub">freed by deletions</div>
+        </div>
+    </section>
+    <table>
+        <thead>
+            <tr>
+                <th scope="col" sort="text" tip="Platform the deleted reports belonged to.">Platform</th>
+                <th scope="col" sort="number" tip="Reports deleted for this platform over the service's lifetime.">Deleted</th>
+                <th scope="col" sort="number" tip="Of those, how many carried an attachment.">With attachment</th>
+                <th scope="col" sort="number" tip="JSON + attachment bytes reclaimed by those deletions.">Bytes reclaimed</th>
+                <th scope="col" sort="date" tip="When the first report for this platform was deleted.">First deleted</th>
+                <th scope="col" sort="date" tip="When the most recent report for this platform was deleted.">Last deleted</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var row in Model.LifetimeStats)
+            {
+                <tr>
+                    <td class="mono">@row.Platform</td>
+                    <td data-sort-value="@row.DeletedReports">@row.DeletedReports.ToString("N0")</td>
+                    <td data-sort-value="@row.DeletedWithAttachment">@row.DeletedWithAttachment.ToString("N0")</td>
+                    <td data-sort-value="@row.DeletedTotalBytes">@RSAByteFormatter.Format(row.DeletedTotalBytes)</td>
+                    <td class="mono" data-sort-value="@(row.FirstDeletedAt?.UtcDateTime.ToString("o"))">@(row.FirstDeletedAt is { } f ? f.AsLocalTime() : "—")</td>
+                    <td class="mono" data-sort-value="@(row.LastDeletedAt?.UtcDateTime.ToString("o"))">@(row.LastDeletedAt is { } l ? l.AsLocalTime() : "—")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
 
 @if (Model.IndexStatus is { } status)
 {

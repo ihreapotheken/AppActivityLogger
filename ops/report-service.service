@@ -17,6 +17,13 @@
 Description=Report Ingestion Service (ASP.NET Core 8)
 After=network-online.target
 Wants=network-online.target
+# Cap restarts (process crashes AND health-watchdog restarts both count): if the
+# service dies/flaps more than StartLimitBurst times within StartLimitIntervalSec,
+# systemd parks it in `failed` instead of restarting forever — so a hard crash loop
+# pages an operator rather than spinning silently. Recover with
+# `systemctl reset-failed report-service`.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -25,6 +32,10 @@ Group=report-service
 WorkingDirectory=/opt/report-service
 ExecStart=/usr/bin/dotnet /opt/report-service/ReportService.dll
 EnvironmentFile=-/etc/report-service/report-service.env
+# Restart= recovers a process that EXITS (crash, OOM-kill, unhandled exception).
+# It cannot detect a hung-but-alive process — that gap is closed by
+# report-service-watchdog.{service,timer}, which probe /api/health and force a
+# restart on repeated failure. Install both together (install.sh does).
 Restart=on-failure
 RestartSec=5
 

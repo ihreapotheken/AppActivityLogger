@@ -4,18 +4,20 @@
 @{
     ViewData["Title"] = "Analytics retention";
     string Pct(double v) => (v * 100).ToString("F1") + "%";
+    string Bucket(double r) => r >= 0.80 ? "ret-c4" : r >= 0.60 ? "ret-c3" : r >= 0.40 ? "ret-c2" : r >= 0.20 ? "ret-c1" : "ret-c0";
 }
-@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Analytics retention", $"D1 / D7 / D30 retention by install cohort. Cohorts younger than the window can't have observed it yet and are excluded. Window: last {Model.WindowDays} days."))
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Analytics retention", $"What fraction of each day's new users came back 1, 7, and 30 days later. Window: last {Model.WindowDays} days."))
 
-<p>
-    <strong>D1</strong> retention asks: of all users whose first event fell on a given install day, what fraction returned with at least one event the next day?
-    <strong>D7</strong> and <strong>D30</strong> apply the same logic at 7 and 30 days after install.
-    The weighted summary at the top averages across all cohorts old enough to have observed each window — a cohort installed yesterday is excluded from D7 because it's impossible for it to have reached day 7 yet.
-    The <em>cohorts used</em> figure shows how many install-day buckets contributed to each mean.
-    A cohort of size N with 0 retained users is still displayed — it's valid data that those users churned.
-    The hash version column reflects which pepper key was active when the cohort was last computed;
-    after a pepper rotation the anonymous ID hashes change, making pre- and post-rotation cohorts incomparable without a full rebuild.
-</p>
+<hint-box docs-href="/Documentation#06-analytics--reading-retention">
+    <p>
+        Retention measures whether new users come back. Users are grouped by the day they first appeared
+        (their <em>cohort</em>). <strong>D1</strong> is the share of a cohort that returned the next day;
+        <strong>D7</strong> and <strong>D30</strong> ask the same at 7 and 30 days. The weighted summary
+        averages each figure only over cohorts old enough to have reached that day, so a cohort that
+        installed yesterday isn't counted against D7 yet — the <em>cohorts used</em> count shows how much
+        data sits behind each number.
+    </p>
+</hint-box>
 
 <form method="get" class="filters" aria-label="Retention filters">
     <label>Platform
@@ -32,47 +34,96 @@
 
 <section class="card">
     <h2>Weighted summary</h2>
-    <ul class="kv">
-        <li><span>D1</span>@Pct(Model.Summary.Day1) <span class="muted">(over @Model.Summary.CohortsUsedDay1.ToString("N0") cohorts)</span></li>
-        <li><span>D7</span>@Pct(Model.Summary.Day7) <span class="muted">(over @Model.Summary.CohortsUsedDay7.ToString("N0") cohorts)</span></li>
-        <li><span>D30</span>@Pct(Model.Summary.Day30) <span class="muted">(over @Model.Summary.CohortsUsedDay30.ToString("N0") cohorts)</span></li>
-    </ul>
+    <div class="ret-summary">
+        <div class="ret-stat @Bucket(Model.Summary.Day1)">
+            <div class="ret-k">D1 returned</div>
+            <div class="ret-v">@Pct(Model.Summary.Day1)</div>
+            <div class="ret-n">over @Model.Summary.CohortsUsedDay1.ToString("N0") cohorts</div>
+        </div>
+        <div class="ret-stat @Bucket(Model.Summary.Day7)">
+            <div class="ret-k">D7 returned</div>
+            <div class="ret-v">@Pct(Model.Summary.Day7)</div>
+            <div class="ret-n">over @Model.Summary.CohortsUsedDay7.ToString("N0") cohorts</div>
+        </div>
+        <div class="ret-stat @Bucket(Model.Summary.Day30)">
+            <div class="ret-k">D30 returned</div>
+            <div class="ret-v">@Pct(Model.Summary.Day30)</div>
+            <div class="ret-n">over @Model.Summary.CohortsUsedDay30.ToString("N0") cohorts</div>
+        </div>
+    </div>
 </section>
+
+@if (Model.Cohorts.Count > 0)
+{
+    @* New-users-per-day and the D0→D30 decay curve, both derived from the cohort rows already
+       loaded for the table below — no extra queries. *@
+    var newUsersByDay = Model.Cohorts
+        .GroupBy(c => c.InstallDay)
+        .OrderBy(g => g.Key)
+        .Select(g => new RSALinePoint(g.Key.ToString("MM-dd"), g.Sum(c => c.CohortSize)))
+        .ToList();
+    var newUsersStep = Math.Max(1, (int)Math.Ceiling(newUsersByDay.Count / 8.0));
+    var retentionCurve = new List<RSALinePoint>
+    {
+        new("Day 0", 100),
+        new("Day 1", Math.Round(Model.Summary.Day1 * 100, 1)),
+        new("Day 7", Math.Round(Model.Summary.Day7 * 100, 1)),
+        new("Day 30", Math.Round(Model.Summary.Day30 * 100, 1)),
+    };
+
+    <div class="charts-row">
+        <section class="card chart-card">
+            <h3>New users / day</h3>
+            @await Html.PartialAsync("_LineChart", new RSALineChartVM(
+                newUsersByDay, ValueNoun: "users", LabelStep: newUsersStep,
+                AriaLabel: $"New users per install day over the last {Model.WindowDays} days"))
+        </section>
+        <section class="card chart-card">
+            <h3>Retention curve</h3>
+            @await Html.PartialAsync("_LineChart", new RSALineChartVM(
+                retentionCurve, ValueNoun: "%",
+                AriaLabel: "Weighted retention from install through day 30"))
+        </section>
+    </div>
+    <p class="legend">New users counts each install-day cohort's size; the retention curve plots the weighted D1/D7/D30 share still active, anchored at 100% on install day.</p>
+}
 
 <section class="card">
     <h2>Cohorts</h2>
     @if (Model.Cohorts.Count == 0)
     {
-        <p class="muted">No cohorts in the window. The cohort worker writes one row per (platform, install_day) on every tick.</p>
+        <empty-state>No cohorts in the window. The cohort worker writes one row per (platform, install_day) on every tick.</empty-state>
     }
     else
     {
         <table>
             <thead>
                 <tr>
-                    <th scope="col">Install day</th>
-                    <th scope="col">Platform</th>
-                    <th scope="col">Cohort</th>
-                    <th scope="col">D1</th>
-                    <th scope="col">D7</th>
-                    <th scope="col">D30</th>
-                    <th scope="col">Hash v.</th>
-                    <th scope="col">Computed</th>
+                    <th scope="col" sort="date" tip="The install-day cohort — every user whose first-ever event fell on this date.">Install day</th>
+                    <th scope="col" sort="text" tip="The platform the cohort's users are on (iOS or Android).">Platform</th>
+                    <th scope="col" sort="num" tip="Cohort size: distinct new users who installed on this day.">Cohort</th>
+                    <th scope="col" sort="num" tip="Fraction of the cohort that returned with an event 1 day after install (retained count in parentheses).">D1</th>
+                    <th scope="col" sort="num" tip="Fraction of the cohort that returned 7 days after install (retained count in parentheses).">D7</th>
+                    <th scope="col" sort="num" tip="Fraction of the cohort that returned 30 days after install (retained count in parentheses).">D30</th>
+                    <th scope="col" tip="Which anonymous-ID pepper key was active when the cohort was computed — cohorts across a key rotation aren't directly comparable.">Hash v.</th>
+                    <th scope="col" sort="date" tip="When the cohort worker last recomputed this row.">Computed</th>
                 </tr>
             </thead>
             <tbody>
             @foreach (var c in Model.Cohorts)
             {
                 string Rate(long r) => c.CohortSize <= 0 ? "—" : ((double)r / c.CohortSize * 100).ToString("F1") + "%";
+                string Cell(long r) => c.CohortSize <= 0 ? "" : Bucket((double)r / c.CohortSize);
+                double SortRate(long r) => c.CohortSize <= 0 ? -1 : (double)r / c.CohortSize;
                 <tr>
-                    <td class="mono">@c.InstallDay.ToString("yyyy-MM-dd")</td>
+                    <td class="mono" data-sort-value="@c.InstallDay.ToString("yyyy-MM-dd")">@c.InstallDay.ToString("yyyy-MM-dd")</td>
                     <td class="mono">@c.Platform</td>
-                    <td>@c.CohortSize.ToString("N0")</td>
-                    <td>@Rate(c.Day1Retained) <span class="muted">(@c.Day1Retained.ToString("N0"))</span></td>
-                    <td>@Rate(c.Day7Retained) <span class="muted">(@c.Day7Retained.ToString("N0"))</span></td>
-                    <td>@Rate(c.Day30Retained) <span class="muted">(@c.Day30Retained.ToString("N0"))</span></td>
+                    <td data-sort-value="@c.CohortSize">@c.CohortSize.ToString("N0")</td>
+                    <td class="ret-cell @Cell(c.Day1Retained)" data-sort-value="@SortRate(c.Day1Retained)">@Rate(c.Day1Retained) <span class="muted">(@c.Day1Retained.ToString("N0"))</span></td>
+                    <td class="ret-cell @Cell(c.Day7Retained)" data-sort-value="@SortRate(c.Day7Retained)">@Rate(c.Day7Retained) <span class="muted">(@c.Day7Retained.ToString("N0"))</span></td>
+                    <td class="ret-cell @Cell(c.Day30Retained)" data-sort-value="@SortRate(c.Day30Retained)">@Rate(c.Day30Retained) <span class="muted">(@c.Day30Retained.ToString("N0"))</span></td>
                     <td class="mono">@c.HashVersion</td>
-                    <td class="mono">@c.ComputedAt.AsLocalTime()</td>
+                    <td class="mono" data-sort-value="@c.ComputedAt.UtcDateTime.ToString("o")">@c.ComputedAt.AsLocalTime()</td>
                 </tr>
             }
             </tbody>
