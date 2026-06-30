@@ -4,6 +4,12 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine AS build
 WORKDIR /src
 
+# Directory.Build.props carries the build-time feature flags (FeatureAnalytics / FeatureProblemReports
+# → FEATURE_* compile constants). It's auto-imported by every project during restore + build, so it
+# MUST be present before either runs — otherwise the FEATURE_* constants are undefined and every
+# optional feature compiles OFF (endpoints 500 / admin pages show "not enabled").
+COPY Directory.Build.props ./
+
 # Copy project files first for better NuGet layer caching. Restore per project rather than
 # through the solution — the solution references tests/ which is intentionally not in the image.
 COPY src/ReportService.Core/ReportService.Core.csproj src/ReportService.Core/

@@ -1,0 +1,243 @@
+@page
+@model RSAAnalyticsSalesModel
+@using ReportService.Admin.ViewModels
+@{
+    ViewData["Title"] = "Sales";
+    var scope = Model.CanonicalPlatform;
+    var subtitle = scope switch
+    {
+        "ios" => "iOS commerce signals — OTC purchases, payment, shipping and prescription activity.",
+        "android" => "Android commerce signals — OTC purchases, payment, shipping and prescription activity.",
+        _ => "Commerce signals from ingested purchase events (iOS + Android) — revenue, orders, payment, shipping, prescriptions.",
+    };
+    var s = Model.Sales;
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Sales", subtitle))
+@await Html.PartialAsync("_AnalyticsNav")
+
+<hint-box docs-href="/Documentation#06-analytics--reading-the-engagement-dashboard">
+    <p>
+        These numbers come from <code>purchase</code> events the SDK emits when an order is placed. <strong>Revenue</strong>
+        is the sum of each order's <code>total</code>; <strong>orders</strong> counts completed purchases and <strong>avg order
+        value</strong> divides one by the other. The breakdowns split orders by <strong>payment method</strong> and
+        <strong>shipping method</strong>, the table ranks the best-selling <strong>products</strong> by revenue, and
+        <strong>prescriptions</strong> tracks how many prescriptions were uploaded, scanned, added to a cart and sent to a
+        pharmacy in the window.
+    </p>
+</hint-box>
+
+@await Html.PartialAsync("_ScopeTabs", new RSAScopeTabsVM("/AnalyticsSales", scope))
+@await Html.PartialAsync("_TenantScope", Model.TenantScope)
+
+<section class="tiles" aria-label="Sales summary">
+    <tile label="Revenue · last 30 days">@Money(s.TotalRevenue)</tile>
+    <tile label="Orders">@s.Orders.ToString("N0")</tile>
+    <tile label="Avg order value">@Money(s.AverageOrderValue)</tile>
+    <tile label="Items sold">@s.ItemsSold.ToString("N0")</tile>
+</section>
+
+<h2>Revenue over time · last 30 days</h2>
+@{
+    var trend = s.RevenueTrend;
+    var trendStep = Math.Max(1, (int)Math.Ceiling(trend.Count / 6.0));
+    var revenuePts = trend.Select(p => new RSALinePoint(p.Label, (double)p.Revenue)).ToList();
+    var ordersPts = trend.Select(p => new RSALinePoint(p.Label, p.Orders)).ToList();
+}
+@if (trend.Count == 0 || s.Orders == 0)
+{
+    <empty-state>No purchases recorded yet. This fills in once <code>purchase</code> events arrive from the SDK.</empty-state>
+}
+else
+{
+    <div class="chart-tabs-group" data-chart-tabs>
+        <div class="chart-tabs" role="tablist" aria-label="Sales over time series" hidden>
+            <button type="button" class="chart-tab is-active" role="tab" id="sales-tab-revenue"
+                    data-chart-tab="revenue" aria-controls="sales-panel-revenue" aria-selected="true">Revenue</button>
+            <button type="button" class="chart-tab" role="tab" id="sales-tab-orders"
+                    data-chart-tab="orders" aria-controls="sales-panel-orders" aria-selected="false" tabindex="-1">Orders</button>
+        </div>
+        <section class="card chart-card" role="tabpanel" id="sales-panel-revenue"
+                 data-chart-panel="revenue" aria-labelledby="sales-tab-revenue">
+            <h3>Revenue / day (@s.Currency)</h3>
+            @await Html.PartialAsync("_LineChart", new RSALineChartVM(
+                revenuePts, ValueNoun: s.Currency, LabelStep: trendStep,
+                AriaLabel: "Revenue per day over the last 30 days", ViewHeight: 260))
+        </section>
+        <section class="card chart-card" role="tabpanel" id="sales-panel-orders"
+                 data-chart-panel="orders" aria-labelledby="sales-tab-orders">
+            <h3>Orders / day</h3>
+            @await Html.PartialAsync("_LineChart", new RSALineChartVM(
+                ordersPts, ValueNoun: "orders", LabelStep: trendStep,
+                AriaLabel: "Orders placed per day over the last 30 days", ViewHeight: 260))
+        </section>
+    </div>
+    <p class="legend">Revenue and orders per UTC day@(scope is null ? " (iOS + Android)" : $" on {scope}") — hover a point for the exact value.</p>
+}
+
+<h2>Payment &amp; shipping</h2>
+<div class="charts-row">
+    <section class="card chart-card">
+        <h3>Orders by payment method</h3>
+        @{
+            var paymentSlices = s.PaymentMethods
+                .Select((p, i) => new RSADonutSlice(p.Label, p.Orders, $"chart-c{(i % 6) + 1}"))
+                .ToList();
+        }
+        @await Html.PartialAsync("_DonutChart", new RSADonutChartVM(
+            paymentSlices, CenterLabel: "ORDERS", AriaLabel: "Orders by payment method"))
+    </section>
+    <section class="card chart-card">
+        <h3>Orders by shipping method</h3>
+        @{
+            var shippingSlices = s.ShippingMethods
+                .Select((p, i) => new RSADonutSlice(p.Label, p.Orders, $"chart-c{(i % 6) + 1}"))
+                .ToList();
+        }
+        @await Html.PartialAsync("_DonutChart", new RSADonutChartVM(
+            shippingSlices, CenterLabel: "ORDERS", AriaLabel: "Orders by shipping method"))
+    </section>
+</div>
+
+<div class="charts-row">
+    <section class="card">
+        <h3>Payment methods</h3>
+        @if (s.PaymentMethods.Count == 0)
+        {
+            <empty-state>No purchases in this window.</empty-state>
+        }
+        else
+        {
+            <table>
+                <thead>
+                    <tr>
+                        <th scope="col" sort="text" tip="Payment method reported on the purchase event.">Method</th>
+                        <th scope="col" sort="num" tip="Number of orders paid with this method.">Orders</th>
+                        <th scope="col" sort="num" tip="Total revenue from orders paid with this method.">Revenue</th>
+                    </tr>
+                </thead>
+                <tbody>
+                @foreach (var p in s.PaymentMethods)
+                {
+                    <tr>
+                        <td>@p.Label</td>
+                        <td>@p.Orders.ToString("N0")</td>
+                        <td>@Money(p.Revenue)</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        }
+    </section>
+    <section class="card">
+        <h3>Shipping methods</h3>
+        @if (s.ShippingMethods.Count == 0)
+        {
+            <empty-state>No purchases in this window.</empty-state>
+        }
+        else
+        {
+            <table>
+                <thead>
+                    <tr>
+                        <th scope="col" sort="text" tip="Shipping method reported on the purchase event.">Method</th>
+                        <th scope="col" sort="num" tip="Number of orders using this shipping method.">Orders</th>
+                        <th scope="col" sort="num" tip="Total revenue from orders using this shipping method.">Revenue</th>
+                    </tr>
+                </thead>
+                <tbody>
+                @foreach (var p in s.ShippingMethods)
+                {
+                    <tr>
+                        <td>@p.Label</td>
+                        <td>@p.Orders.ToString("N0")</td>
+                        <td>@Money(p.Revenue)</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        }
+    </section>
+</div>
+
+<h2>Top selling products</h2>
+@if (s.TopItems.Count == 0)
+{
+    <empty-state>No products sold in this window.</empty-state>
+}
+else
+{
+    <table>
+        <thead>
+            <tr>
+                <th scope="col" sort="text" tip="Product display name (falls back to its SKU / PZN).">Product</th>
+                <th scope="col" sort="text" tip="Product category reported on the line item.">Category</th>
+                <th scope="col" sort="num" tip="Total units sold across all orders in the window.">Units</th>
+                <th scope="col" sort="num" tip="Revenue these units represent (price × quantity).">Revenue</th>
+            </tr>
+        </thead>
+        <tbody>
+        @foreach (var it in s.TopItems)
+        {
+            <tr>
+                <td>@it.Name</td>
+                <td class="mono">@(it.Category ?? "—")</td>
+                <td>@it.Units.ToString("N0")</td>
+                <td>@Money(it.Revenue)</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+
+<h2>Prescriptions</h2>
+@{
+    var rxTotal = s.Prescriptions.Sum(p => p.Count);
+}
+@if (rxTotal == 0)
+{
+    <empty-state>No prescription activity recorded in this window.</empty-state>
+}
+else
+{
+    <div class="charts-row">
+        <section class="card chart-card">
+            <h3>Prescription activity</h3>
+            @{
+                var rxSlices = s.Prescriptions
+                    .Select((p, i) => new RSADonutSlice(p.Label, p.Count, $"chart-c{(i % 6) + 1}"))
+                    .ToList();
+            }
+            @await Html.PartialAsync("_DonutChart", new RSADonutChartVM(
+                rxSlices, CenterLabel: "RX", AriaLabel: "Prescription activity by step"))
+        </section>
+        <section class="card">
+            <h3>By step</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th scope="col" sort="text" tip="Prescription funnel step.">Step</th>
+                        <th scope="col" sort="num" tip="Events recorded for this step in the window.">Count</th>
+                    </tr>
+                </thead>
+                <tbody>
+                @foreach (var p in s.Prescriptions)
+                {
+                    <tr>
+                        <td>@p.Label</td>
+                        <td>@p.Count.ToString("N0")</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </section>
+    </div>
+    <p class="legend">Prescriptions aren't priced in the analytics contract, so this tracks funnel activity (counts), not revenue.</p>
+}
+
+@section Scripts {
+    <script src="~/js/chart-tabs.js" asp-append-version="true"></script>
+}
+
+@functions {
+    static string Money(decimal v) => "€" + v.ToString("N2", System.Globalization.CultureInfo.InvariantCulture);
+}

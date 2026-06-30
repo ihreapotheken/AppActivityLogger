@@ -21,6 +21,7 @@
       "properties": {
         "order_id": "order-7c1a",
         "shipping_method": "standard",
+        "payment_method": "paypal",
         "currency": "EUR",
         "items_count": "2",
         "total": "23.45"

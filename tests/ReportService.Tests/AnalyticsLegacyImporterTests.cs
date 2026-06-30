@@ -40,7 +40,7 @@ public class AnalyticsLegacyImporterTests : IDisposable
             IdentifierHashPepper = "pepper-test"
         };
         _store = new RSCSqliteAnalyticsStore(reportOptions, analyticsOptions, NullLogger<RSCSqliteAnalyticsStore>.Instance);
-        var validator = new RSCAnalyticsValidator(analyticsOptions, reportOptions);
+        var validator = new RSCAnalyticsValidator(analyticsOptions, reportOptions, RSATestCatalog.Permissive, new ReportService.Options.RSCCatalogOptions());
         var hasher = new RSCAnalyticsIdentifierHasher(analyticsOptions);
 
         var reportStore = new FakeReportStore();

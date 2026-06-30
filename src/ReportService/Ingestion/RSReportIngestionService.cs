@@ -5,7 +5,9 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using ReportService.Models;
 using ReportService.Options;
+using ReportService.Security;
 using ReportService.Storage;
+using ReportService.Storage.Catalog;
 using ReportService.Validation;
 
 namespace ReportService.Ingestion;
@@ -28,18 +30,64 @@ public sealed class RSReportIngestionService
     private readonly RSCIReportStore _store;
     private readonly RSCReportValidator _validator;
     private readonly RSCReportServiceOptions _options;
+    private readonly RSCICatalog _catalog;
+    private readonly RSCCatalogOptions _catalogOptions;
     private readonly ILogger<RSReportIngestionService> _logger;
 
     public RSReportIngestionService(
         RSCIReportStore store,
         RSCReportValidator validator,
         RSCReportServiceOptions options,
+        RSCICatalog catalog,
+        RSCCatalogOptions catalogOptions,
         ILogger<RSReportIngestionService> logger)
     {
         _store = store;
         _validator = validator;
         _options = options;
+        _catalog = catalog;
+        _catalogOptions = catalogOptions;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Resolves + validates the report's tenancy (database-per-app). The <b>client</b> comes from the
+    /// authenticated API key's <c>rsc:client_id</c> claim (the key IS the client); an unbound/root key
+    /// falls back to the <c>X-Report-Client</c> header → body → default. <b>app</b>/<b>environment</b>
+    /// resolve header (<c>X-Report-App</c> / <c>X-Report-Environment</c>) → body → default. The resolved
+    /// triple is validated against the catalog (app must belong to the client) when
+    /// <c>Catalog:Enabled</c>; an unknown value rejects the whole submission. Returns the
+    /// attribution-stamped report, or a rejection result.
+    /// </summary>
+    private (RSCProblemReport Report, RSIngestionResult? Rejection) ResolveAttribution(HttpRequest request, RSCProblemReport report)
+    {
+        string Pick(string headerName, string? bodyValue, string fallback)
+        {
+            var header = request.Headers[headerName].ToString();
+            var chosen = !string.IsNullOrWhiteSpace(header) ? header
+                : !string.IsNullOrWhiteSpace(bodyValue) ? bodyValue
+                : fallback;
+            return chosen.Trim().ToLowerInvariant();
+        }
+
+        var keyClient = request.HttpContext.User?.FindFirst(RSCTenantClaims.ClientId)?.Value;
+        var client = !string.IsNullOrWhiteSpace(keyClient)
+            ? keyClient.Trim().ToLowerInvariant()
+            : Pick("X-Report-Client", report.ClientId, _catalogOptions.DefaultClientSlug);
+        var app = Pick("X-Report-App", report.AppId, _catalogOptions.DefaultAppSlug);
+        var env = Pick("X-Report-Environment", report.Environment, _catalogOptions.DefaultEnvironment);
+
+        if (_catalogOptions.Enabled)
+        {
+            if (!_catalog.IsValidClient(client))
+                return (report, RSIngestionResult.BadRequest($"client '{client}' is not registered"));
+            if (!_catalog.IsValidApp(client, app))
+                return (report, RSIngestionResult.BadRequest($"app '{app}' is not registered for client '{client}'"));
+            if (!_catalog.IsValidEnvironment(client, app, env))
+                return (report, RSIngestionResult.BadRequest($"environment '{env}' is not declared for app '{app}' (client '{client}')"));
+        }
+
+        return (report with { ClientId = client, AppId = app, Environment = env }, null);
     }
 
     /// <summary>Parses + validates the multipart submission, then persists via <see cref="RSCIReportStore"/>. Returns the matching <see cref="RSIngestionResult"/> status code.</summary>
@@ -165,7 +213,12 @@ public sealed class RSReportIngestionService
             var jsonBytes = Encoding.UTF8.GetBytes(jsonField);
             var jsonMemory = new ReadOnlyMemory<byte>(jsonBytes);
 
-            var stored = await _store.SaveAsync(report!, jsonMemory, attachmentStream, attachmentLength,
+            // Database-per-app: attribute (client from key, app from X-Report-App/body) + validate,
+            // then the store routes to that app's own report tree.
+            var (attributed, rejection) = ResolveAttribution(request, report!);
+            if (rejection is not null) return rejection;
+
+            var stored = await _store.SaveAsync(attributed, jsonMemory, attachmentStream, attachmentLength,
                 RSCIngestionChannels.Multipart, ct).ConfigureAwait(false);
 
             _logger.LogInformation(
@@ -237,7 +290,10 @@ public sealed class RSReportIngestionService
         var vr = _validator.ValidateReport(report);
         if (!vr.IsValid) return RSIngestionResult.BadRequest(vr.Error ?? "validation failed");
 
-        var stored = await _store.SaveAsync(report!, jsonBytes, attachment: null, attachmentLength: null,
+        var (attributed, rejection) = ResolveAttribution(request, report!);
+        if (rejection is not null) return rejection;
+
+        var stored = await _store.SaveAsync(attributed, jsonBytes, attachment: null, attachmentLength: null,
             RSCIngestionChannels.Json, ct).ConfigureAwait(false);
 
         _logger.LogInformation(

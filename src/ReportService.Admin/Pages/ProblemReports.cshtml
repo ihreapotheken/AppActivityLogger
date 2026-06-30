@@ -11,6 +11,16 @@
     "Problem reports",
     "User-initiated Report-a-Problem submissions with attached logs. Crash auto-uploads (Errors) and analytics events live in their own sections."))
 
+<hint-box docs-href="/Documentation#01-overview--report-a-problem">
+    <p>
+        These are bug reports a user <em>chose</em> to send from inside the app via the SDK's
+        "Report a Problem" feature — each one is a JSON document, often with a gzip-compressed
+        <strong>log bundle</strong> attached. The tiles summarise the current filter; the table lists the
+        newest submissions first, and each <strong>file</strong> link opens the decoded report and its logs.
+        Automatic crash uploads are not shown here — they live on the <a asp-page="/Errors">Errors</a> page.
+    </p>
+</hint-box>
+
 @{ var sum = Model.Summary; }
 <section class="tiles" aria-label="Analytics for the current filter">
     <tile label="Matching reports">@sum.Total.ToString("N0")</tile>
@@ -25,6 +35,7 @@
     <p class="muted">Breakdown computed from the most recent 2,000 matches; the “matching reports” total is exact. Narrow the filter for an exact breakdown.</p>
 }
 
+<h2>Submissions</h2>
 @await Html.PartialAsync("_ReportsFilter", new RSAReportsFilterPanelVM(
     "/ProblemReports",
     filter,
@@ -41,14 +52,15 @@
     · source: <span class="mono">@(vm.UsedIndex ? "sqlite index" : "filesystem scan")</span>
 </p>
 
+@await Html.PartialAsync("_DeleteFilteredBar", new RSADeleteBarVM(
+    $"/ProblemReports{filter.ToQueryString(1)}&handler=DeleteMatching", vm.TotalMatched, "problem report"))
+
 @if (vm.Items.Count == 0)
 {
     <empty-state>No user-submitted problem reports match the current filter. Submissions appear here when the SDK posts to <code>/partners/api/v2/report-problem</code> with a non-crash <code>kind</code>.</empty-state>
 }
 else
 {
-    @await Html.PartialAsync("_DeleteFilteredBar", new RSADeleteBarVM(
-        $"/ProblemReports{filter.ToQueryString(1)}&handler=DeleteMatching", vm.TotalMatched, "problem report"))
     <table>
         <thead>
             <tr>

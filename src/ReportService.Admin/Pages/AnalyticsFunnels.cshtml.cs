@@ -1,7 +1,9 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using ReportService.Admin.ViewModels;
 using ReportService.Analytics;
 using ReportService.Options;
+using ReportService.Storage.Catalog;
 
 namespace ReportService.Admin.Pages;
 
@@ -11,24 +13,31 @@ public sealed class RSAAnalyticsFunnelsModel : PageModel
 
     private readonly RSCIAnalyticsStore _store;
     private readonly RSCReportServiceOptions _options;
+    private readonly RSCICatalog _catalog;
 
-    public RSAAnalyticsFunnelsModel(RSCIAnalyticsStore store, RSCReportServiceOptions options)
+    public RSAAnalyticsFunnelsModel(RSCIAnalyticsStore store, RSCReportServiceOptions options, RSCICatalog catalog)
     {
         _store = store;
         _options = options;
+        _catalog = catalog;
     }
 
     [BindProperty(SupportsGet = true, Name = "funnel")] public string? FunnelKey { get; set; }
     [BindProperty(SupportsGet = true)]                  public string? Platform  { get; set; }
+    [BindProperty(SupportsGet = true, Name = "app")]    public string? App { get; set; }
+    [BindProperty(SupportsGet = true, Name = "env")]    public string? Env { get; set; }
+    [BindProperty(SupportsGet = true, Name = "client")] public string? Client { get; set; }
 
     public IReadOnlyList<RSCAnalyticsFunnelDefinition> Definitions { get; private set; } = Array.Empty<RSCAnalyticsFunnelDefinition>();
     public RSCAnalyticsFunnelDefinition? Selected { get; private set; }
     public IReadOnlyList<RSCAnalyticsFunnelStepStat> Stats { get; private set; } = Array.Empty<RSCAnalyticsFunnelStepStat>();
     public IReadOnlyList<string> AvailablePlatforms => _options.AllowedPlatforms;
+    public RSATenantScopeVM TenantScope { get; private set; } = default!;
     public int Window => LookbackDays;
 
     public async Task OnGetAsync(CancellationToken ct)
     {
+        TenantScope = await RSATenantScopes.BuildVmAsync(_catalog, "/AnalyticsFunnels", App, Env, Client, Platform, ct).ConfigureAwait(false);
         Definitions = await _store.ListFunnelDefinitionsAsync(onlyEnabled: false, ct).ConfigureAwait(false);
 
         if (Definitions.Count == 0) return;
@@ -39,9 +48,10 @@ public sealed class RSAAnalyticsFunnelsModel : PageModel
         Selected = Definitions.FirstOrDefault(d => string.Equals(d.FunnelKey, key, StringComparison.Ordinal));
         if (Selected is null) return;
 
+        var scope = RSATenantScopes.Build(App, Env, Client, Platform);
         var until = DateTimeOffset.UtcNow.AddDays(1);
         var from = until.AddDays(-LookbackDays - 1);
-        var raw = await _store.GetFunnelSummaryAsync(Selected.FunnelKey, from, until, Platform, ct).ConfigureAwait(false);
+        var raw = await _store.GetFunnelSummaryAsync(Selected.FunnelKey, from, until, scope, ct).ConfigureAwait(false);
 
         // Pad the result with zero rows for steps the matcher didn't reach inside the window so
         // the table always renders one row per defined step.

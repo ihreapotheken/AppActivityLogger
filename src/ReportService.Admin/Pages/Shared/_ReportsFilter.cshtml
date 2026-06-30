@@ -1,5 +1,5 @@
 @*
-    Shared filter form. Used by /Reports, /ProblemReports, /Analytics, and /Errors so all four
+    Shared filter form. Used by /ProblemReports, /Analytics, and /Errors so all three
     listings expose the same field set + behaviour. The owning page passes its own page name so
     GET / Clear point back at the right route, and can hide the channel / attachment filters when
     the page already constrains them implicitly.
@@ -21,6 +21,7 @@
            asp-route-phone="@Model.Filter.Phone"
            asp-route-appVersion="@Model.Filter.AppVersion"
            asp-route-channel="@Model.Filter.Channel"
+           asp-route-kind="@Model.Filter.Kind"
            asp-route-q="@Model.Filter.Q">× clear signature</a>
     </div>
 }
@@ -30,6 +31,19 @@
     @if (!string.IsNullOrEmpty(Model.Filter.TopFrame))
     {
         <input type="hidden" name="topFrame" value="@Model.Filter.TopFrame" />
+    }
+    @if (Model.KindOptions is { Count: > 0 } kindOptions)
+    {
+        <label>
+            <span>Kind <span class="hint" tabindex="0" role="tooltip" aria-label="Report kind. Crashes are fatal auto-uploads (kind=crash); errors are non-fatal faults the SDK reports without the app crashing (kind=error). Leave at all to see both." data-tip="Report kind. Crashes are fatal auto-uploads (kind=crash); errors are non-fatal faults the SDK reports without the app crashing (kind=error). Leave at all to see both.">?</span></span>
+            <select name="kind">
+                <option value="" selected="@(string.IsNullOrEmpty(filter.Kind))">all</option>
+                @foreach (var k in kindOptions)
+                {
+                    <option value="@k.Value" selected="@(string.Equals(filter.Kind, k.Value, StringComparison.OrdinalIgnoreCase))">@k.Label</option>
+                }
+            </select>
+        </label>
     }
     <label>
         <span>Platform <span class="hint" tabindex="0" role="tooltip" aria-label="Mobile platform the report came from. iOS or Android." data-tip="Mobile platform the report came from. iOS or Android.">?</span></span>

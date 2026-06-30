@@ -1,5 +1,6 @@
 using System.Text.Json;
 using ReportService.Admin.ViewModels;
+using ReportService.Analytics;
 using ReportService.Options;
 using ReportService.Storage;
 
@@ -25,8 +26,11 @@ public sealed class RSAReportStoreAnalyticsDashboardService : IRSAAnalyticsDashb
         _options = options;
     }
 
-    public RSAAnalyticsDashboardVM Build(string? platform = null)
+    public RSAAnalyticsDashboardVM Build(RSCAnalyticsScope scope = default)
     {
+        // Legacy report-scan path predates the app/environment/client tenancy axes; it only
+        // understands platform scoping. The other axes are ignored here.
+        var platform = scope.Platform;
         var now = DateTimeOffset.UtcNow;
         var dayAgo = now.AddDays(-1);
         var monthAgo = now.AddDays(-30);
@@ -41,7 +45,7 @@ public sealed class RSAReportStoreAnalyticsDashboardService : IRSAAnalyticsDashb
 
         foreach (var p in _options.AllowedPlatforms)
         {
-            if (platform is { Length: > 0 } scope && !string.Equals(p, scope, StringComparison.OrdinalIgnoreCase))
+            if (platform is { Length: > 0 } sel && !string.Equals(p, sel, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }

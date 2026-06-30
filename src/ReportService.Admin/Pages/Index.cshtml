@@ -33,11 +33,6 @@
         <div class="tile-value">@Model.Dashboard.CrashCount.ToString("N0")</div>
         <div class="tile-sub">@(Model.Dashboard.CrashCount == 1 ? "crash report" : "crash reports")</div>
     </a>
-    <a class="tile tile-link" asp-page="/Reports">
-        <div class="tile-label">All reports</div>
-        <div class="tile-value">@Model.Dashboard.TotalCount.ToString("N0")</div>
-        <div class="tile-sub">total stored</div>
-    </a>
 </section>
 
 <section class="tiles" aria-label="Summary">
@@ -174,18 +169,18 @@ else
                 @p.MultipartCount
                 @if (p.MultipartCount > 0)
                 {
-                    <text> · </text><a asp-page="/Reports" asp-route-platform="@p.Name" asp-route-channel="multipart">view</a>
+                    <text> · </text><a asp-page="/ProblemReports" asp-route-platform="@p.Name" asp-route-channel="multipart">view</a>
                 }
             </td>
             <td data-sort-value="@p.JsonCount">
                 @p.JsonCount
                 @if (p.JsonCount > 0)
                 {
-                    <text> · </text><a asp-page="/Reports" asp-route-platform="@p.Name" asp-route-channel="json">view</a>
+                    <text> · </text><a asp-page="/ProblemReports" asp-route-platform="@p.Name" asp-route-channel="json">view</a>
                 }
             </td>
             <td data-sort-value="@(p.LatestSubmittedAt?.UtcDateTime.ToString("o") ?? "")">@p.LatestSubmittedAt.AsLocalTimeOrDash()</td>
-            <td><a asp-page="/Reports" asp-route-platform="@p.Name">browse all →</a></td>
+            <td><a asp-page="/ProblemReports" asp-route-platform="@p.Name">browse →</a></td>
         </tr>
     }
     </tbody>

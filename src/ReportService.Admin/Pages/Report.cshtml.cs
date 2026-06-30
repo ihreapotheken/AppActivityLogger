@@ -614,7 +614,8 @@ public sealed class RSAReportModel : PageModel
                 User?.Identity?.Name, p, fileName);
         }
 
-        return RedirectToPage("/Reports", new { platform = p });
+        // "All reports" was retired; land back on the general report listing scoped to the platform.
+        return RedirectToPage("/ProblemReports", new { platform = p });
     }
 
     /// <summary>

@@ -150,7 +150,7 @@ else
     </div>
 
     <div class="stats-stack">
-        @* Device model has no corresponding /Reports filter, so we pass empty FilterParam — the
+        @* Device model has no corresponding /ProblemReports filter, so we pass empty FilterParam — the
            partial will render the bucket without a per-row "filter" link. *@
         @await Html.PartialAsync("_StatsBucket", new RSAStatsBucketArgs(
             "Top device models", stats.ByDeviceModel, "", Model.DevicePage, RSAStatsModel.BucketPageSize,

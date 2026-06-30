@@ -48,8 +48,11 @@ public sealed record RSCAnalyticsOptions
     /// clocks drift; this is the threshold that says "we no longer trust this timestamp".</summary>
     public int MaxClockSkewSeconds { get; init; } = 86400;
 
-    /// <summary>Hashing pepper for <c>anonymousId</c> and <c>clientId</c>. NEVER store user IDs
-    /// verbatim. A change here invalidates every retention cohort that crosses the change
+    /// <summary>Hashing pepper for the per-user identity <c>anonymousId</c>. NEVER store user IDs
+    /// verbatim — anonymousId is always hashed before it lands. (<c>clientId</c> is NOT hashed: it's
+    /// a business/tenant key stored verbatim as the client tenancy axis — see
+    /// <see cref="Models.RSCAnalyticsBatch.ClientId"/>; the legacy <c>client_id_hash</c> column is no
+    /// longer populated.) A change here invalidates every retention cohort that crosses the change
     /// boundary — the aggregation worker writes the active hash version into <c>analytics_user_days</c>
     /// so post-rotation rebuilds are at least possible.</summary>
     public string IdentifierHashPepper { get; init; } = string.Empty;

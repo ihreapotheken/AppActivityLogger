@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using ReportService.Models;
 using ReportService.Options;
+using ReportService.Storage.Catalog;
 
 namespace ReportService.Analytics;
 
@@ -18,6 +19,8 @@ public sealed class RSCAnalyticsValidator
     };
 
     private readonly RSCAnalyticsOptions _options;
+    private readonly RSCICatalog _catalog;
+    private readonly RSCCatalogOptions _catalogOptions;
     private readonly HashSet<string> _forbiddenKeys;
     // Two distinct allow-lists keep the SDK and server endpoints from leaking each other's
     // platforms. The SDK path (POST /api/v2/analytics/events) only accepts the problem-report
@@ -38,9 +41,15 @@ public sealed class RSCAnalyticsValidator
     private readonly int _maxPropertyKeyLength;
     private readonly int _maxClockSkewSeconds;
 
-    public RSCAnalyticsValidator(RSCAnalyticsOptions options, RSCReportServiceOptions reportOptions)
+    public RSCAnalyticsValidator(
+        RSCAnalyticsOptions options,
+        RSCReportServiceOptions reportOptions,
+        RSCICatalog catalog,
+        RSCCatalogOptions catalogOptions)
     {
         _options = options;
+        _catalog = catalog;
+        _catalogOptions = catalogOptions;
         _maxEventsPerBatch = Math.Max(1, options.MaxEventsPerBatch);
         _maxPropertiesPerEvent = Math.Max(1, options.MaxPropertiesPerEvent);
         _maxPropertyValueLength = Math.Max(1, options.MaxPropertyValueLength);
@@ -117,6 +126,29 @@ public sealed class RSCAnalyticsValidator
                 $"platform '{batch.Platform}' is not in the allow-list");
         }
 
+        // Tenancy validation (batch-level, like platform). The client is the top-level tenant: it's
+        // derived from the authenticated API key by the ingestion layer (not the body) and apps are
+        // nested under it, so we validate client first, then the app within that client, then the
+        // environment the client declared for that app. We coalesce null → the configured default so
+        // direct callers (seeder/tests) and key-less/root traffic resolve to the seeded default
+        // tenant. Unknown ⇒ whole batch rejected, mirroring platform_unknown.
+        if (_catalogOptions.Enabled)
+        {
+            var clientSlug = Coalesce(batch.ClientId, _catalogOptions.DefaultClientSlug);
+            var appSlug = Coalesce(batch.AppId, _catalogOptions.DefaultAppSlug);
+            var environment = Coalesce(batch.Environment, _catalogOptions.DefaultEnvironment);
+
+            if (!_catalog.IsValidClient(clientSlug))
+                return RejectAll(batch, RSCAnalyticsDeadLetterReasons.ClientUnknown,
+                    $"client '{clientSlug}' is not registered");
+            if (!_catalog.IsValidApp(clientSlug, appSlug))
+                return RejectAll(batch, RSCAnalyticsDeadLetterReasons.AppUnknown,
+                    $"app '{appSlug}' is not registered for client '{clientSlug}'");
+            if (!_catalog.IsValidEnvironment(clientSlug, appSlug, environment))
+                return RejectAll(batch, RSCAnalyticsDeadLetterReasons.EnvironmentUnknown,
+                    $"environment '{environment}' is not declared for app '{appSlug}' (client '{clientSlug}')");
+        }
+
         var accepted = new List<RSCAcceptedAnalyticsEvent>(events.Count);
         var rejected = new List<RSCRejectedAnalyticsEvent>();
         var seenEventIds = new HashSet<string>(StringComparer.Ordinal);
@@ -140,6 +172,11 @@ public sealed class RSCAnalyticsValidator
             Accepted: accepted,
             Rejected: rejected);
     }
+
+    // Trim+lowercase the supplied tenancy value, falling back to the configured default when blank.
+    // Mirrors RSCCatalogSlug.Normalize so registry lookups match what the store stamps.
+    private static string Coalesce(string? value, string fallback) =>
+        string.IsNullOrWhiteSpace(value) ? fallback.Trim().ToLowerInvariant() : value.Trim().ToLowerInvariant();
 
     private RSCAnalyticsValidationResult RejectAll(RSCAnalyticsBatch batch, string reason, string detail)
     {

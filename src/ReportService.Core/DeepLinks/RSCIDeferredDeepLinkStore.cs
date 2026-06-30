@@ -9,8 +9,15 @@ public interface RSCIDeferredDeepLinkStore
 {
     // -------- Link definitions (admin-managed) --------
 
-    /// <summary>All configured links, most recently updated first.</summary>
-    Task<IReadOnlyList<RSCDeferredDeepLink>> ListLinksAsync(CancellationToken ct);
+    /// <summary>
+    /// A page of configured links, most recently updated first. <paramref name="search"/> (when
+    /// non-blank) filters by a case-insensitive substring of slug/name/page-pattern. Paginated so the
+    /// admin surface stays bounded with thousands of definitions.
+    /// </summary>
+    Task<IReadOnlyList<RSCDeferredDeepLink>> ListLinksAsync(string? search, int limit, int offset, CancellationToken ct);
+
+    /// <summary>Total links matching the same <paramref name="search"/> filter, for the pager.</summary>
+    Task<int> CountLinksAsync(string? search, CancellationToken ct);
 
     /// <summary>One link by its operator-chosen slug, or null if none.</summary>
     Task<RSCDeferredDeepLink?> GetLinkBySlugAsync(string slug, CancellationToken ct);
@@ -34,11 +41,27 @@ public interface RSCIDeferredDeepLinkStore
     /// <summary>
     /// Records a website visit. The visited <paramref name="pageUrl"/> is matched against the
     /// enabled link definitions (longest matching <c>page_pattern</c> substring wins) and the
-    /// resolved link is denormalised onto the stored row. Returns the stored click, including the
-    /// resolved match (if any).
+    /// resolved link is denormalised onto the stored row. <paramref name="queryParams"/> and
+    /// <paramref name="signals"/> (both already normalised/capped by the caller) are stored with the
+    /// click — the former is later forwarded onto the redirect, the latter is device-identification
+    /// metadata. Returns the stored click, including the resolved match (if any).
     /// </summary>
     Task<RSCDeferredDeepLinkClick> RecordClickAsync(
-        string ip, string pageUrl, string? userAgent, DateTimeOffset at, CancellationToken ct);
+        string ip, string pageUrl, string? userAgent,
+        IReadOnlyDictionary<string, string>? queryParams, IReadOnlyDictionary<string, string>? signals,
+        DateTimeOffset at, CancellationToken ct);
+
+    /// <summary>
+    /// Records a click bound to a <em>known</em> link — used by the hosted smart-link redirect
+    /// (<c>GET /dl/{slug}</c>) where the slug already names the link, so no page-pattern resolution
+    /// is needed. The click is denormalised to <paramref name="link"/>'s slug + redirect address, and
+    /// <paramref name="queryParams"/> + <paramref name="signals"/> (already normalised/capped) are
+    /// stored with it.
+    /// </summary>
+    Task<RSCDeferredDeepLinkClick> RecordClickForLinkAsync(
+        RSCDeferredDeepLink link, string ip, string pageUrl, string? userAgent,
+        IReadOnlyDictionary<string, string>? queryParams, IReadOnlyDictionary<string, string>? signals,
+        DateTimeOffset at, CancellationToken ct);
 
     /// <summary>
     /// Finds the most recent recorded click for <paramref name="ip"/> within
@@ -51,4 +74,26 @@ public interface RSCIDeferredDeepLinkStore
 
     /// <summary>Most recent recorded clicks for the admin page, newest first.</summary>
     Task<IReadOnlyList<RSCDeferredDeepLinkClick>> ListRecentClicksAsync(int limit, CancellationToken ct);
+
+    /// <summary>
+    /// Most recent recorded clicks matching <paramref name="filter"/> (newest first), for the admin
+    /// page's filterable recent-clicks view. The filter narrows by the captured request "header data"
+    /// — IP, <c>User-Agent</c>, a free-text search across the User-Agent + device-identification
+    /// signals, and matched/unmatched state. An all-empty filter is equivalent to
+    /// <see cref="ListRecentClicksAsync"/>.
+    /// </summary>
+    Task<IReadOnlyList<RSCDeferredDeepLinkClick>> ListClicksAsync(RSCDeepLinkClickFilter filter, int limit, CancellationToken ct);
+
+    // -------- Click retention (runtime-configurable) --------
+
+    /// <summary>The persisted click-retention override in days, or null when unset (caller falls
+    /// back to the configured default).</summary>
+    Task<int?> GetClickRetentionDaysAsync(CancellationToken ct);
+
+    /// <summary>Persists the click-retention override (in days). Takes effect on the next sweep.</summary>
+    Task SetClickRetentionDaysAsync(int days, CancellationToken ct);
+
+    /// <summary>Deletes recorded clicks older than <paramref name="cutoff"/>. Returns the row count
+    /// deleted. Link definitions are never touched. Used by the background retention worker.</summary>
+    Task<int> PurgeClicksOlderThanAsync(DateTimeOffset cutoff, CancellationToken ct);
 }

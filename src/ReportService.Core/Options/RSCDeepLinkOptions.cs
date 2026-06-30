@@ -23,4 +23,35 @@ public sealed record RSCDeepLinkOptions
     /// <summary>Cap on the number of recent clicks the admin page lists. Keeps the page bounded on
     /// a busy capture stream.</summary>
     public int RecentClicksLimit { get; init; } = 200;
+
+    /// <summary>
+    /// Maximum number of query parameters captured per click (from the smart link's query string or
+    /// the JSON capture body's <c>params</c>). Excess parameters beyond this cap are dropped — never
+    /// rejected — so a smart-link redirect is never broken by an over-decorated URL. Captured params
+    /// are stored with the click, forwarded onto the redirect address, and returned on match. The cap
+    /// bounds storage and the length of the forwarded redirect. Default 16.
+    /// </summary>
+    public int MaxQueryParams { get; init; } = 16;
+
+    /// <summary>
+    /// Maximum length (characters) of any single captured query-parameter key or value. Longer
+    /// keys/values are truncated to this length rather than rejected. Default 256.
+    /// </summary>
+    public int MaxQueryParamLength { get; init; } = 256;
+
+    /// <summary>
+    /// Default age, in days, after which recorded clicks are purged by the background retention
+    /// worker. This is the seed value: operators can override it at runtime via the admin-key
+    /// <c>/api/v2/deeplinks/click-retention</c> endpoint or the admin page, and the override is
+    /// persisted in the deep-link DB. Link definitions are never purged — only the click stream.
+    /// Default 30.
+    /// </summary>
+    public int ClickRetentionDays { get; init; } = 30;
+
+    /// <summary>How often the click-retention sweep runs, in seconds. Floored at 60s. Default 1 hour.</summary>
+    public int RetentionScanIntervalSeconds { get; init; } = 3600;
+
+    /// <summary>Page size for the admin links list. Bounds the rows rendered per page so the page
+    /// stays responsive with thousands of definitions. Default 50.</summary>
+    public int LinksPageSize { get; init; } = 50;
 }

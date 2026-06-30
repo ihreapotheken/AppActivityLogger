@@ -69,14 +69,18 @@ public sealed class RSApiKeyAuthenticationHandler : AuthenticationHandler<RSApiK
 
         await _abuse.ClearAsync(source, Context.RequestAborted).ConfigureAwait(false);
 
-        var identity = new ClaimsIdentity(
-            new[]
-            {
-                new Claim(ClaimTypes.NameIdentifier, resolution.KeyId),
-                new Claim(ClaimTypes.Name, resolution.KeyId),
-                new Claim(ClaimTypes.Role, resolution.Role),
-            },
-            Scheme.Name);
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.NameIdentifier, resolution.KeyId),
+            new(ClaimTypes.Name, resolution.KeyId),
+            new(ClaimTypes.Role, resolution.Role),
+        };
+        // Key-derived tenancy: a client's batch is attributed to the client its key is bound to, not a
+        // body-declared value. Absent on root/unbound keys (they fall back to the default client).
+        if (!string.IsNullOrEmpty(resolution.ClientId))
+            claims.Add(new Claim(RSCTenantClaims.ClientId, resolution.ClientId));
+
+        var identity = new ClaimsIdentity(claims, Scheme.Name);
         var principal = new ClaimsPrincipal(identity);
         var ticket = new AuthenticationTicket(principal, Scheme.Name);
         return AuthenticateResult.Success(ticket);

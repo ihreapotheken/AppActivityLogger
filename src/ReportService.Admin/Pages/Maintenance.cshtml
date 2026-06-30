@@ -30,19 +30,17 @@
         Mint and revoke API keys for the ingestion API. Admin keys can manage keys + ingest; user
         keys can only ingest. The static configured key is the permanent root-admin and isn't listed here.
     </p>
-    <form method="post" asp-page-handler="CreateApiKey">
+    <form method="post" asp-page-handler="CreateApiKey" class="form-row">
         @Html.AntiForgeryToken()
-        <div class="kv">
-            <label>Role
-                <select name="role">
-                    <option value="user" selected>user (ingest only)</option>
-                    <option value="admin">admin (manage keys + ingest)</option>
-                </select>
-            </label>
-            <label>Label <input type="text" name="label" placeholder="e.g. partner-acme-prod" maxlength="200" /></label>
-            <label>Expires in (days) <input type="number" name="expiresInDays" min="1" placeholder="blank = never" /></label>
-            <label>Rate limit / min <input type="number" name="rateLimitPerMinute" min="1" placeholder="blank = role default" /></label>
-        </div>
+        <label>Role
+            <select name="role">
+                <option value="user" selected>user (ingest only)</option>
+                <option value="admin">admin (manage keys + ingest)</option>
+            </select>
+        </label>
+        <label>Label <input type="text" name="label" placeholder="e.g. partner-acme-prod" maxlength="200" /></label>
+        <label>Expires in (days) <input type="number" name="expiresInDays" min="1" placeholder="blank = never" /></label>
+        <label>Rate limit / min <input type="number" name="rateLimitPerMinute" min="1" placeholder="blank = role default" /></label>
         <button type="submit" class="primary">Create key</button>
     </form>
 

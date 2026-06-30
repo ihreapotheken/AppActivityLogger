@@ -13,7 +13,7 @@ public class AnalyticsValidatorTests
     {
         var opts = overrideOpts ?? new RSCAnalyticsOptions();
         var report = new RSCReportServiceOptions { AllowedPlatforms = new[] { "android", "ios" } };
-        return new RSCAnalyticsValidator(opts, report);
+        return new RSCAnalyticsValidator(opts, report, RSATestCatalog.Permissive, new ReportService.Options.RSCCatalogOptions());
     }
 
     private static RSCAnalyticsBatch MakeBatch(params RSCAnalyticsEvent[] events) =>

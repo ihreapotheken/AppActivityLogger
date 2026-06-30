@@ -35,7 +35,7 @@ public class AnalyticsStoreTests : IDisposable
             IdentifierHashPepper = "pepper-test",
         };
         _store = new RSCSqliteAnalyticsStore(_reportOptions, _analyticsOptions, NullLogger<RSCSqliteAnalyticsStore>.Instance);
-        _validator = new RSCAnalyticsValidator(_analyticsOptions, _reportOptions);
+        _validator = new RSCAnalyticsValidator(_analyticsOptions, _reportOptions, RSATestCatalog.Permissive, new ReportService.Options.RSCCatalogOptions());
         _hasher = new RSCAnalyticsIdentifierHasher(_analyticsOptions);
     }
 
@@ -92,6 +92,37 @@ public class AnalyticsStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Batch_level_reject_never_writes_a_forbidden_value_to_the_dlq()
+    {
+        // A batch-level reject (here platform_unknown) short-circuits the per-event PII guard:
+        // RejectAll captures the whole event JSON, so a forbidden property would otherwise ride
+        // along verbatim into the durable, age-trimmed dead-letter table. The store must scrub the
+        // forbidden value regardless of the reject reason.
+        var carriesPii = MakeEvent("evt-1") with
+        {
+            Properties = new Dictionary<string, string> { ["password"] = "hunter2", ["screen"] = "home" }
+        };
+        var batch = MakeBatch("windows", carriesPii); // not in AllowedPlatforms → platform_unknown
+        var verdict = _validator.Validate(batch, DateTimeOffset.UtcNow);
+        Assert.True(verdict.BatchRejected);
+        Assert.Equal(RSCAnalyticsDeadLetterReasons.PlatformUnknown, verdict.BatchRejectReason);
+
+        await _store.WriteBatchAsync(batch, _hasher.Hash("anon-1"), null, verdict, DateTimeOffset.UtcNow, default);
+
+        var health = await _store.GetHealthSnapshotAsync(10, default);
+        Assert.NotEmpty(health.RecentSamples);
+        foreach (var sample in health.RecentSamples)
+        {
+            Assert.Equal(RSCAnalyticsDeadLetterReasons.PlatformUnknown, sample.Reason);
+            // The forbidden value must be gone…
+            Assert.DoesNotContain("hunter2", sample.RawJson);
+            // …but the key and other (non-forbidden) values survive for debuggability.
+            Assert.Contains("password", sample.RawJson);
+            Assert.Contains("home", sample.RawJson);
+        }
+    }
+
+    [Fact]
     public async Task Mark_events_aggregated_drops_them_from_the_unaggregated_pool()
     {
         var batch = MakeBatch("android", MakeEvent("evt-1"), MakeEvent("evt-2"));
@@ -103,8 +134,8 @@ public class AnalyticsStoreTests : IDisposable
 
         await _store.MarkEventsAggregatedAsync(new[]
         {
-            new RSCAggregationEventRef("android", "evt-1"),
-            new RSCAggregationEventRef("android", "evt-2")
+            new RSCAggregationEventRef("default", "production", "default", "android", "evt-1"),
+            new RSCAggregationEventRef("default", "production", "default", "android", "evt-2")
         }, default);
 
         var afterMark = await _store.ListUnaggregatedEventsAsync(100, default);
@@ -157,6 +188,29 @@ public class AnalyticsStoreTests : IDisposable
         var android = summaries.Single(s => s.Platform == "android");
         Assert.Equal(1, android.Batches);
         Assert.Equal(1, android.AcceptedEvents);
+    }
+
+    [Fact]
+    public async Task Same_batch_id_across_two_clients_keeps_envelopes_separate()
+    {
+        // batch_id is client-generated and reused across retries, so two tenants can legitimately
+        // emit the same value. Before RSCM006 the envelope PK was batch_id alone, so the second
+        // tenant's batch collided and was folded into the first tenant's row (lost envelope +
+        // inflated counts). With the tenant+platform-scoped key they stay two distinct envelopes.
+        const string sharedBatchId = "shared-batch-id";
+        var first = MakeBatch("android", MakeEvent("evt-c1")) with { BatchId = sharedBatchId, ClientId = "pharmacy-1" };
+        await _store.WriteBatchAsync(first, _hasher.Hash("anon-1"), null,
+            _validator.Validate(first, DateTimeOffset.UtcNow), DateTimeOffset.UtcNow, default);
+
+        var second = MakeBatch("android", MakeEvent("evt-c2")) with { BatchId = sharedBatchId, ClientId = "pharmacy-2" };
+        await _store.WriteBatchAsync(second, _hasher.Hash("anon-2"), null,
+            _validator.Validate(second, DateTimeOffset.UtcNow), DateTimeOffset.UtcNow, default);
+
+        var summaries = await _store.GetPlatformSummariesAsync(default);
+        var android = summaries.Single(s => s.Platform == "android");
+        // Two separate tenant envelopes (not one merged row), and both events landed.
+        Assert.Equal(2, android.Batches);
+        Assert.Equal(2, android.AcceptedEvents);
     }
 
     [Fact]

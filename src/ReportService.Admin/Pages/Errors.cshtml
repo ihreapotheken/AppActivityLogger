@@ -6,7 +6,7 @@
     var scope = Model.CanonicalPlatform;
     var drilledIn = !string.IsNullOrEmpty(Model.Filter.TopFrame);
     var subtitle = drilledIn
-        ? $"Crash reports matching this signature{(scope is null ? "" : $" on {scope}")}."
+        ? $"Crash & error reports matching this signature{(scope is null ? "" : $" on {scope}")}."
         : scope switch
         {
             "ios" => "iOS crashes and errors from ingested crash reports.",
@@ -24,8 +24,28 @@
     var labelStep = Math.Max(1, (int)Math.Ceiling(errorRatePoints.Count / 12.0));
 
     var rowDeleteUrl = $"/Errors{Model.Filter.ToQueryString(1)}&handler=DeleteOne";
+
+    // Singular noun for the listing chrome below, narrowed to whatever kind the operator picked
+    // (the listing spans crashes + errors unless the Kind dropdown narrows it). Pluralised inline.
+    var kindNoun = Model.Filter.Kind switch
+    {
+        "crash" => "crash report",
+        "error" => "error report",
+        _ => "crash/error report",
+    };
 }
 @await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM(heading, subtitle))
+
+<hint-box docs-href="/Documentation#01-overview--automatic-crash-reporting-forced-captures">
+    <p>
+        Crashes and non-fatal errors arrive automatically from the SDK — there's no user action behind
+        them. At ingest the service extracts the topmost stack frame as the <strong>signature</strong> and
+        groups reports by it, so each row is one <em>fault site</em> rather than one crash. Use the
+        signature counts and the <strong>error-rate</strong> trend to spot what's breaking and whether it's
+        getting worse; click a signature to drill into just the reports that match it. User-submitted bug
+        reports are separate and live on the <a asp-page="/ProblemReports">Problem reports</a> page.
+    </p>
+</hint-box>
 
 @if (!drilledIn)
 {
@@ -56,7 +76,7 @@
             <td>@p.CrashesLast24h.ToString("N0")</td>
             <td>@p.ErrorsLast24h.ToString("N0")</td>
             <td>@p.AffectedUsers.ToString("N0")</td>
-            <td><a asp-page="/Reports" asp-route-platform="@p.Name">reports →</a></td>
+            <td><a asp-page="/ProblemReports" asp-route-platform="@p.Name">reports →</a></td>
         </tr>
     }
     </tbody>
@@ -160,23 +180,28 @@
     Model.Filter,
     Model.AvailablePlatforms,
     ShowChannelFilter: true,
-    ShowAttachmentFilter: false))
+    ShowAttachmentFilter: false,
+    KindOptions: new[]
+    {
+        new RSAReportsFilterKindOption("crash", "Crashes (fatal)"),
+        new RSAReportsFilterKindOption("error", "Errors (non-fatal)"),
+    }))
 
 @section Scripts {
     <script src="~/js/auto-submit.js" asp-append-version="true"></script>
 }
 
 <p class="muted">
-    @Model.Listing.TotalMatched matching crash report@(Model.Listing.TotalMatched == 1 ? "" : "s") · page @Model.Listing.PageNumber of @Model.Listing.TotalPages
+    @Model.Listing.TotalMatched matching @kindNoun@(Model.Listing.TotalMatched == 1 ? "" : "s") · page @Model.Listing.PageNumber of @Model.Listing.TotalPages
     · source: <span class="mono">@(Model.Listing.UsedIndex ? "sqlite index" : "filesystem scan")</span>
 </p>
 
 @await Html.PartialAsync("_DeleteFilteredBar", new RSADeleteBarVM(
-    $"/Errors{Model.Filter.ToQueryString(1)}&handler=DeleteMatching", Model.Listing.TotalMatched, "crash report"))
+    $"/Errors{Model.Filter.ToQueryString(1)}&handler=DeleteMatching", Model.Listing.TotalMatched, kindNoun))
 
 @if (Model.Listing.Items.Count == 0)
 {
-    <empty-state>No crash reports match the current filter. Crash auto-uploads arrive with <code>kind = "crash"</code>.</empty-state>
+    <empty-state>No @(kindNoun)s match the current filter. Crash auto-uploads arrive with <code>kind = "crash"</code>; non-fatal errors with <code>kind = "error"</code>.</empty-state>
 }
 else
 {

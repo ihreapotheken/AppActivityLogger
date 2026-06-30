@@ -84,7 +84,7 @@ public sealed class RSAIndexModel : PageModel
 
         try
         {
-            var a = await _analytics.BuildAsync(null, ct).ConfigureAwait(false);
+            var a = await _analytics.BuildAsync(ReportService.Analytics.RSCAnalyticsScope.All, ct).ConfigureAwait(false);
             DailyActiveUsers = a.DailyActiveUsers;
             RetentionDay1 = a.Retention.Day1;
         }

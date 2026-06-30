@@ -1,16 +1,18 @@
 @page
 @model RSADeepLinksModel
+@using System.Linq
 @using ReportService.Admin.ViewModels
 @{
     ViewData["Title"] = "Deep links";
     var editing = Model.Editing;
     var enabledChecked = editing?.Enabled ?? true;
+    var linkBase = Model.LinkBase;
 }
 @await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM(
     "Deferred deep links",
     "Map the page a visitor was on to the place the app should open after they install. Visits are recorded by IP and matched on first launch."))
 
-<hint-box docs-href="/Documentation#04-api-reference">
+<hint-box docs-href="/Documentation#08-admin-console--deferred-deep-linking">
     <p>
         Deferred deep linking bridges the gap between a website visit and a fresh app install. A page
         records the visitor's IP and the URL they were on (<code>POST /api/v2/deeplinks/clicks</code>);
@@ -19,6 +21,24 @@
         <strong>redirect address</strong>. A click resolves to the link whose <strong>page pattern</strong>
         is the longest case-insensitive substring of the visited URL. Matching is a best-effort heuristic
         keyed on a shared IP within the last @Model.MatchWindowHours hours.
+    </p>
+    <p>
+        The quickest integration is the <strong>hosted smart link</strong> shown for each link below
+        (<code>/dl/{slug}</code>): hand that URL to visitors — opening it records their IP and forwards
+        them to the redirect address in one step, no website code required. Alternatively a backend can
+        POST visits to <code>/api/v2/deeplinks/clicks</code> directly.
+    </p>
+    <p>
+        <strong>Query parameters</strong> on the smart link (e.g. <code>/dl/@(Model.Links.Count > 0 ? Model.Links[0].Slug : "spring-promo")?utm_source=newsletter</code>)
+        are captured with the click and appended to the redirect address, so attribution flows through to
+        the app via the match response. They are capped at @Model.MaxQueryParams parameters,
+        @Model.MaxQueryParamLength characters each — extras are dropped, never rejected.
+    </p>
+    <p>
+        <strong>Device signals</strong> — screen dimensions, browser, timezone, device time, language —
+        are captured alongside the IP from custom <code>X-DeepLink-*</code> request headers and standard
+        client-hint headers, and returned in the match response so the app can use them as extra
+        identification confidence. They are stored per click (see the <em>Signals</em> column below).
     </p>
 </hint-box>
 
@@ -36,6 +56,8 @@
     </p>
     <form method="post" asp-page-handler="Save" class="filters">
         @Html.AntiForgeryToken()
+        <input type="hidden" name="q" value="@Model.Search" />
+        <input type="hidden" name="page" value="@Model.PageNumber" />
         <label>
             <span>Slug</span>
             <input name="slug" required maxlength="128" placeholder="spring-promo"
@@ -68,11 +90,50 @@
     </form>
 </section>
 
+<section class="card">
+    <h2>Click retention</h2>
+    <p class="muted">
+        Recorded clicks are purged after this many days by the background sweep — link definitions are
+        never deleted. Currently <strong>@Model.ClickRetentionDays days</strong>@(Model.ClickRetentionOverridden ? "" : " (default)").
+        The same setting is available to automation via the admin-key <code>PUT /api/v2/deeplinks/click-retention</code> endpoint.
+    </p>
+    <form method="post" asp-page-handler="Retention" class="filters">
+        @Html.AntiForgeryToken()
+        <input type="hidden" name="q" value="@Model.Search" />
+        <input type="hidden" name="page" value="@Model.PageNumber" />
+        <label>
+            <span>Retention (days)</span>
+            <input type="number" name="retentionDays" min="1" max="3650" required value="@Model.ClickRetentionDays" />
+        </label>
+        <button type="submit" class="primary">Save retention</button>
+    </form>
+</section>
+
 <section>
-    <h2>Configured links (@Model.Links.Count)</h2>
-    @if (Model.Links.Count == 0)
+    <h2>Configured links (@Model.TotalLinks.ToString("N0"))</h2>
+
+    <form method="get" class="filters" aria-label="Link search">
+        <label>
+            <span>Search</span>
+            <input name="q" value="@Model.Search" placeholder="slug, name, or page pattern" maxlength="256" />
+        </label>
+        <button type="submit" class="primary">Search</button>
+        @if (!string.IsNullOrWhiteSpace(Model.Search))
+        {
+            <a class="link" asp-page="/DeepLinks">clear</a>
+        }
+    </form>
+
+    @if (Model.TotalLinks == 0)
     {
-        <empty-state>No deep links defined yet. Add one above; recorded visits matching its page pattern will resolve to its redirect address.</empty-state>
+        @if (string.IsNullOrWhiteSpace(Model.Search))
+        {
+            <empty-state>No deep links defined yet. Add one above; recorded visits matching its page pattern will resolve to its redirect address.</empty-state>
+        }
+        else
+        {
+            <empty-state>No links match “@Model.Search”.</empty-state>
+        }
     }
     else
     {
@@ -83,6 +144,7 @@
                     <th scope="col" sort="text" tip="Human-readable label.">Name</th>
                     <th scope="col" tip="Matched as a case-insensitive substring of the visited page URL. Longest match wins.">Page pattern</th>
                     <th scope="col" tip="Absolute URL the app opens on a match (https universal link or custom scheme).">Redirect address</th>
+                    <th scope="col" tip="Public URL to hand out. Opening it records the visitor's IP, then redirects to the address.">Smart link</th>
                     <th scope="col" sort="text" tip="Disabled links neither resolve new clicks nor get handed to apps.">State</th>
                     <th scope="col" sort="date" tip="When this link was last created or edited.">Updated (UTC)</th>
                     <th scope="col"></th>
@@ -96,6 +158,7 @@
                         <td>@l.Name</td>
                         <td class="mono">@l.PagePattern</td>
                         <td class="mono">@l.RedirectUrl</td>
+                        <td class="mono"><a href="@linkBase/dl/@l.Slug" target="_blank" rel="noopener noreferrer">@linkBase/dl/@l.Slug</a></td>
                         <td>@(l.Enabled ? "enabled" : "disabled")</td>
                         <td class="mono" data-sort-value="@l.UpdatedAt.UtcDateTime.ToString("o")">@l.UpdatedAt.AsLocalTime()</td>
                         <td>
@@ -105,12 +168,16 @@
                                 @Html.AntiForgeryToken()
                                 <input type="hidden" name="slug" value="@l.Slug" />
                                 <input type="hidden" name="enabled" value="@(l.Enabled ? "false" : "true")" />
+                                <input type="hidden" name="q" value="@Model.Search" />
+                                <input type="hidden" name="page" value="@Model.PageNumber" />
                                 <button type="submit" class="link" aria-label="@(l.Enabled ? "Disable" : "Enable") @l.Slug">@(l.Enabled ? "disable" : "enable")</button>
                             </form>
                             &nbsp;
                             <form method="post" asp-page-handler="Delete" class="inline">
                                 @Html.AntiForgeryToken()
                                 <input type="hidden" name="slug" value="@l.Slug" />
+                                <input type="hidden" name="q" value="@Model.Search" />
+                                <input type="hidden" name="page" value="@Model.PageNumber" />
                                 <button type="submit" class="link-danger" aria-label="Delete @l.Slug">delete</button>
                             </form>
                         </td>
@@ -118,14 +185,68 @@
                 }
             </tbody>
         </table>
+        @if (Model.TotalPages > 1)
+        {
+            <nav class="pager" aria-label="Links pagination">
+                @if (Model.PageNumber > 1)
+                {
+                    <a class="link" asp-page="/DeepLinks" asp-route-q="@Model.Search" asp-route-page="@(Model.PageNumber - 1)">← prev</a>
+                }
+                <span class="muted">Page @Model.PageNumber of @Model.TotalPages</span>
+                @if (Model.PageNumber < Model.TotalPages)
+                {
+                    <a class="link" asp-page="/DeepLinks" asp-route-q="@Model.Search" asp-route-page="@(Model.PageNumber + 1)">next →</a>
+                }
+            </nav>
+        }
     }
 </section>
 
 <section>
     <h2>Recent clicks (@Model.Clicks.Count)</h2>
+
+    @* Filter the recent clicks by the captured request "header data": IP, User-Agent, a free-text
+       search across the User-Agent + device-identification signals (X-DeepLink-* / client-hint
+       headers), and matched state. Auto-submits on change; q/page preserve the links view above. *@
+    <form method="get" class="filters" data-auto-submit aria-label="Recent-clicks filters">
+        <input type="hidden" name="q" value="@Model.Search" />
+        <input type="hidden" name="page" value="@Model.PageNumber" />
+        <label>
+            <span>IP</span>
+            <input name="clickIp" value="@Model.ClickIp" placeholder="e.g. 203.0.113" />
+        </label>
+        <label>
+            <span>User agent</span>
+            <input name="clickUa" value="@Model.ClickUserAgent" placeholder="e.g. iPhone, Chrome" />
+        </label>
+        <label>
+            <span>Header / signal</span>
+            <input name="clickHeader" value="@Model.ClickHeader" placeholder="key or value, e.g. timezone, de-DE, X-DeepLink-Screen" />
+        </label>
+        <label>
+            <span>Matched</span>
+            <select name="clickMatched">
+                <option value="" selected="@(string.IsNullOrEmpty(Model.ClickMatched))">Any</option>
+                <option value="matched" selected="@(Model.ClickMatched == "matched")">Matched</option>
+                <option value="unmatched" selected="@(Model.ClickMatched == "unmatched")">Unmatched</option>
+            </select>
+        </label>
+        @if (Model.HasClickFilter)
+        {
+            <a class="link" asp-page="/DeepLinks" asp-route-q="@Model.Search" asp-route-page="@Model.PageNumber">Clear filters</a>
+        }
+    </form>
+
     @if (Model.Clicks.Count == 0)
     {
-        <empty-state>No clicks recorded yet. A website calls <code>POST /api/v2/deeplinks/clicks</code> with the visitor's IP and page to capture one.</empty-state>
+        @if (Model.HasClickFilter)
+        {
+            <empty-state>No recorded clicks match these header filters.</empty-state>
+        }
+        else
+        {
+            <empty-state>No clicks recorded yet. A website calls <code>POST /api/v2/deeplinks/clicks</code> with the visitor's IP and page to capture one.</empty-state>
+        }
     }
     else
     {
@@ -134,8 +255,11 @@
                 <tr>
                     <th scope="col" sort="date" tip="When the visit was recorded.">When (UTC)</th>
                     <th scope="col" sort="text" tip="The visitor's IP — the key the app's match request is correlated against.">IP</th>
+                    <th scope="col" sort="text" tip="The captured User-Agent request header.">User agent</th>
                     <th scope="col" tip="The page URL the visitor was on.">Page</th>
                     <th scope="col" sort="text" tip="The deep link this visit resolved to, or — if none matched.">Matched link</th>
+                    <th scope="col" tip="Attribution/campaign query parameters captured with the click and forwarded onto the redirect.">Params</th>
+                    <th scope="col" tip="Device-identification signals (screen size, browser, timezone, …) captured from X-DeepLink-* / client-hint headers for match confidence.">Signals</th>
                     <th scope="col" sort="date" tip="When an app claimed this click via the match endpoint. Blank = still unclaimed.">Claimed (UTC)</th>
                 </tr>
             </thead>
@@ -145,8 +269,11 @@
                     <tr>
                         <td class="mono" data-sort-value="@c.CreatedAt.UtcDateTime.ToString("o")">@c.CreatedAt.AsLocalTime()</td>
                         <td class="mono">@c.Ip</td>
+                        <td class="mono" title="@c.UserAgent">@(string.IsNullOrEmpty(c.UserAgent) ? "—" : c.UserAgent)</td>
                         <td class="mono">@c.PageUrl</td>
                         <td class="mono">@(c.LinkSlug ?? "—")</td>
+                        <td class="mono">@(c.QueryParams is { Count: > 0 } qp ? string.Join(" · ", qp.Select(kv => $"{kv.Key}={kv.Value}")) : "—")</td>
+                        <td class="mono">@(c.Signals is { Count: > 0 } sg ? string.Join(" · ", sg.Select(kv => $"{kv.Key}={kv.Value}")) : "—")</td>
                         <td class="mono" data-sort-value="@(c.MatchedAt?.UtcDateTime.ToString("o") ?? "")">@(c.MatchedAt is { } m ? m.AsLocalTime() : "—")</td>
                     </tr>
                 }

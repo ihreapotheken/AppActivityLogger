@@ -15,16 +15,22 @@ public sealed record RSCAnalyticsAggregationTick(
 
 /// <summary>
 /// Identity of one source event the tick is marking aggregated. The table is keyed by
-/// <c>UNIQUE(platform, event_id)</c>, so the same <c>event_id</c> can legitimately exist on two
-/// platforms (mobile collisions, and the backend server-events path where callers control ids).
-/// Carrying <see cref="Platform"/> alongside <see cref="EventId"/> lets the mark target exactly
-/// the row that was aggregated instead of every row sharing the id.
+/// <c>UNIQUE(app_id, environment, client_id, platform, event_id)</c>, so the same <c>event_id</c>
+/// can legitimately exist on two platforms or tenants. Carrying the full tenancy + platform
+/// alongside <see cref="EventId"/> lets the mark target exactly the row that was aggregated instead
+/// of every row sharing the id.
 /// </summary>
 public sealed record RSCAggregationEventRef(
+    string AppId,
+    string Environment,
+    string ClientId,
     string Platform,
     string EventId);
 
 public sealed record RSCAggregationSessionDelta(
+    string AppId,
+    string Environment,
+    string ClientId,
     string Platform,
     string SessionId,
     string? AnonymousIdHash,
@@ -34,6 +40,9 @@ public sealed record RSCAggregationSessionDelta(
     long ScreenCount);
 
 public sealed record RSCAggregationUserDayDelta(
+    string AppId,
+    string Environment,
+    string ClientId,
     string Platform,
     DateOnly Day,
     string AnonymousIdHash,
@@ -41,6 +50,9 @@ public sealed record RSCAggregationUserDayDelta(
     long Events);
 
 public sealed record RSCAggregationDailyRollupDelta(
+    string AppId,
+    string Environment,
+    string ClientId,
     DateOnly Day,
     string Platform,
     long Events,

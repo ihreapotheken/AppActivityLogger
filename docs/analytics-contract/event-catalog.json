@@ -47,7 +47,7 @@
     { "name": "remove_from_cart",       "type": "ecommerce",  "owner": "otc",          "properties": ["item_id"] },
     { "name": "cart_view",              "type": "screen",     "owner": "otc",          "properties": ["items_count", "total"] },
     { "name": "checkout_step",          "type": "action",     "owner": "otc",          "properties": ["step_name", "step_index"] },
-    { "name": "purchase",               "type": "ecommerce",  "owner": "otc",          "properties": ["order_id", "items_count", "total", "currency", "shipping_method"] },
+    { "name": "purchase",               "type": "ecommerce",  "owner": "otc",          "properties": ["order_id", "items_count", "total", "currency", "shipping_method", "payment_method"] },
     { "name": "reorder",                "type": "action",     "owner": "otc",          "properties": ["order_id"] },
 
     { "name": "prescription_scan_start",    "type": "action", "owner": "prescription", "properties": ["scan_source"] },

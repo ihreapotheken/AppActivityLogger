@@ -28,5 +28,12 @@ public sealed record RSCProblemReport(
     string? StackTrace = null,
     IReadOnlyDictionary<string, string>? EventProperties = null,
     string? OccurredAt = null,
-    string? UserId = null
+    string? UserId = null,
+    // Tenancy attribution (database-per-app). appId/environment may be sent on the body (or the
+    // X-Report-App / X-Report-Environment headers); clientId is derived server-side from the
+    // authenticated API key, not trusted from the body. All optional so older SDK builds still parse
+    // under UnmappedMemberHandling.Disallow.
+    string? AppId = null,
+    string? Environment = null,
+    string? ClientId = null
 );

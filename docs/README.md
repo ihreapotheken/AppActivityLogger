@@ -46,6 +46,27 @@ It performs three steps:
   Redocly. The spec covers every public route on the ingestion service, including the multipart
   `/partners/api/v2/report-problem` and the JSON-API `/api/v1/reports`.
 
+## Postman collection
+
+A ready-to-import collection lives at `postman/report-service.postman_collection.json` (tracked, v2.1.0
+format — imports cleanly into Postman, Bruno, Insomnia, Hoppscotch). It is **hand-curated**: each
+request carries test scripts, body fixtures, the DevAutoSignIn flow, and admin-only NDJSON export
+calls that aren't part of the ingestion OpenAPI spec.
+
+`scripts/update-postman.sh` keeps it in sync with the generated spec without clobbering that curation —
+it's an *additive* sync, not a regeneration:
+
+```bash
+./scripts/update-postman.sh            # scaffold any spec operation missing from the collection
+./scripts/update-postman.sh --check    # report-only; exits non-zero if the collection is missing an
+                                       #   operation (use as a drift gate — manually, or in CI later)
+./scripts/update-postman.sh --generate # regenerate the OpenAPI spec (via generate-docs.sh) first
+```
+
+Missing endpoints land in a managed `OpenAPI (auto-generated — review)` folder (rebuilt each run, so
+the sync is idempotent); curated requests are never modified or deleted. Review the scaffolded
+requests, add bodies/tests, then move the keepers into a curated folder. Requires `jq`.
+
 ## Hand-written guides
 
 - [architecture.md](architecture.md) — high-level component map and resilience model.

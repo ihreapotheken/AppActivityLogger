@@ -4,6 +4,7 @@ using ReportService.Admin.Models;
 using ReportService.Admin.Services;
 using ReportService.Admin.ViewModels;
 using ReportService.Options;
+using ReportService.Storage.Catalog;
 
 namespace ReportService.Admin.Pages;
 
@@ -17,27 +18,35 @@ public sealed class RSAAnalyticsModel : PageModel
     private readonly IRSAReportListingService _listing;
     private readonly IRSAReportDeletionService _deletion;
     private readonly RSCReportServiceOptions _options;
+    private readonly RSCICatalog _catalog;
 
     public RSAAnalyticsModel(
         IRSAAnalyticsDashboardService analytics,
         IRSAReportListingService listing,
         IRSAReportDeletionService deletion,
-        RSCReportServiceOptions options)
+        RSCReportServiceOptions options,
+        RSCICatalog catalog)
     {
         _analytics = analytics;
         _listing = listing;
         _deletion = deletion;
         _options = options;
+        _catalog = catalog;
     }
 
     [BindProperty(SupportsGet = true, Name = "platform")]
     public string? Platform { get; set; }
+
+    [BindProperty(SupportsGet = true, Name = "app")] public string? App { get; set; }
+    [BindProperty(SupportsGet = true, Name = "env")] public string? Env { get; set; }
+    [BindProperty(SupportsGet = true, Name = "client")] public string? Client { get; set; }
 
     [BindProperty(SupportsGet = true)]
     public RSAReportsFilterInput Filter { get; set; } = new();
 
     public RSAAnalyticsDashboardVM Dashboard { get; private set; } = default!;
     public RSAReportsPageVM Listing { get; private set; } = default!;
+    public RSATenantScopeVM TenantScope { get; private set; } = default!;
 
     public string? CanonicalPlatform =>
         Platform is { Length: > 0 } p && Array.IndexOf(AllowedPlatforms, p.ToLowerInvariant()) >= 0
@@ -48,7 +57,9 @@ public sealed class RSAAnalyticsModel : PageModel
 
     public async Task OnGetAsync(CancellationToken ct)
     {
-        Dashboard = await _analytics.BuildAsync(CanonicalPlatform, ct).ConfigureAwait(false);
+        var scope = RSATenantScopes.Build(App, Env, Client, CanonicalPlatform);
+        TenantScope = await RSATenantScopes.BuildVmAsync(_catalog, "/Analytics", App, Env, Client, CanonicalPlatform, ct).ConfigureAwait(false);
+        Dashboard = await _analytics.BuildAsync(scope, ct).ConfigureAwait(false);
         // The scope-tab platform (URL ?platform=) and the bound filter share one query field.
         // Razor's binding gives Filter.Platform the same string, so the listing already inherits
         // the scope. No extra wiring needed.

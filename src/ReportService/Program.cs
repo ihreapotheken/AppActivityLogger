@@ -15,6 +15,7 @@ using ReportService.Options;
 using ReportService.Security;
 using ReportService.Storage;
 using ReportService.Storage.ApiKeys;
+using ReportService.Storage.Catalog;
 using ReportService.Storage.Retention;
 using ReportService.Validation;
 
@@ -41,10 +42,20 @@ var deepLinkOptions = builder.Configuration
     .GetSection(RSCDeepLinkOptions.SectionName)
     .Get<RSCDeepLinkOptions>() ?? new RSCDeepLinkOptions();
 
+var catalogOptions = builder.Configuration
+    .GetSection(RSCCatalogOptions.SectionName)
+    .Get<RSCCatalogOptions>() ?? new RSCCatalogOptions();
+
+var fanoutOptions = builder.Configuration
+    .GetSection(RSCAnalyticsFanoutOptions.SectionName)
+    .Get<RSCAnalyticsFanoutOptions>() ?? new RSCAnalyticsFanoutOptions();
+
 builder.Services.AddSingleton(options);
 builder.Services.AddSingleton(proxyHeaders);
 builder.Services.AddSingleton(analyticsOptions);
 builder.Services.AddSingleton(deepLinkOptions);
+builder.Services.AddSingleton(catalogOptions);
+builder.Services.AddSingleton(fanoutOptions);
 
 builder.WebHost.ConfigureKestrel(k => RSCHostingExtensions.ConfigureHardenedKestrel(k, maxRequestBodySize: options.MaxUploadBytes));
 
@@ -54,8 +65,8 @@ if (options.Storage == "SqliteIndex")
 {
     builder.Services.AddSingleton<RSCFileSystemReportStore>();
     // Lazy-construct the SQLite index inside a resilient shell so an unopenable DB (read-only
-    // FS, missing disk, corrupt file) doesn't crash ingestion. The decorator exposes the inner
-    // index for maintenance paths that SHOULD surface failure.
+    // FS, missing disk, corrupt file) doesn't crash ingestion. Kept for any direct RSCIReportIndex
+    // consumer; the active report STORE is the per-app fan-out below.
     builder.Services.AddSingleton<RSCResilientReportIndex>(sp =>
         new RSCResilientReportIndex(
             () => new RSCSqliteReportIndex(sp.GetRequiredService<RSCReportServiceOptions>(),
@@ -63,23 +74,33 @@ if (options.Storage == "SqliteIndex")
             sp.GetRequiredService<RSCComponentHealth>(),
             sp.GetRequiredService<ILogger<RSCResilientReportIndex>>()));
     builder.Services.AddSingleton<RSCIReportIndex>(sp => sp.GetRequiredService<RSCResilientReportIndex>());
-    builder.Services.AddSingleton<RSCIReportStore, RSCSqliteIndexingReportStore>();
 }
-else
-{
-    builder.Services.AddSingleton<RSCIReportStore, RSCFileSystemReportStore>();
-}
+// Database-per-app problem reports (both storage modes): each (client, app) owns its own report
+// tree + reports.db; the fan-out store routes writes per-app and merges reads across apps.
+builder.Services.AddSingleton<RSCIReportStoreFactory, RSCReportStoreFactory>();
+builder.Services.AddSingleton<RSCIReportStore, RSCFanOutReportStore>();
 builder.Services.AddSingleton<RSReportIngestionService>();
 builder.Services.AddSingleton<RSCIForcedReportStore, RSCSqliteForcedReportStore>();
+
+// Tenancy catalog (apps + environments + clients). Its own SQLite DB so it works under a read-only
+// content root regardless of Storage mode; the ingestion validator resolves it for attribution
+// validation, the admin UI manages it. Self-seeds the default app/env/client + any config seeds.
+builder.Services.AddSingleton<RSCICatalog, RSCSqliteCatalog>();
 
 // v2 analytics pipeline. Enabled by default; toggled off via Analytics:Enabled=false.
 builder.Services.AddSingleton<RSCAnalyticsIdentifierHasher>();
 builder.Services.AddSingleton<RSCAnalyticsValidator>();
-builder.Services.AddSingleton<RSCIAnalyticsStore, RSCSqliteAnalyticsStore>();
+// Database-per-app: ingestion + workers resolve a specific app's store via the factory; the
+// RSCIAnalyticsStore singleton is the fan-out facade the dashboards/exports read through (delegates
+// to one app when scoped, merges across apps when not).
+builder.Services.AddSingleton<RSCIAnalyticsStoreFactory, RSCSqliteAnalyticsStoreFactory>();
+builder.Services.AddSingleton<RSCIAnalyticsStore, RSCFanOutAnalyticsStore>();
 builder.Services.AddSingleton<RSAnalyticsIngestionService>();
 
 // Deferred deep linking. Own SQLite DB under ReportsRoot; serves the click-capture + match routes.
+// The retention worker purges the captured click stream on the configured schedule.
 builder.Services.AddSingleton<RSCIDeferredDeepLinkStore, RSCSqliteDeferredDeepLinkStore>();
+builder.Services.AddHostedService<RSCDeepLinkClickRetentionWorker>();
 
 if (analyticsOptions.Enabled)
 {
@@ -416,8 +437,19 @@ app.MapProblemReportEndpoints();
 app.MapAnalyticsEndpoints();
 app.MapDeepLinkEndpoints();
 app.MapApiKeyManagementEndpoints();
+app.MapAppManagementEndpoints();
 
 app.Run();
 
 // Exposed so WebApplicationFactory<Program> in the test project can host the app in-process.
 public partial class Program { }
+
+// Distinct, namespaced marker for the test host's IngestionAppFactory. The Admin project is
+// InternalsVisibleTo the test project, which exposes ITS compiler-generated global `Program`
+// (both hosts use top-level statements) and makes a bare `WebApplicationFactory<Program>`
+// ambiguous. Mirrors ReportService.Admin.AdminProgram so each factory targets its own assembly
+// by a unique type name.
+namespace ReportService
+{
+    public sealed class IngestionProgram { }
+}

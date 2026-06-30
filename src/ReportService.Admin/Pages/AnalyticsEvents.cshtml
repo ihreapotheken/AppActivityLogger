@@ -5,6 +5,7 @@
     ViewData["Title"] = "Analytics events";
 }
 @await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Analytics events", "Raw event search across analytics_events. Click a session to see the full timeline."))
+@await Html.PartialAsync("_TenantScope", Model.TenantScope)
 
 <p>
     Each row is one validated event from <code>analytics_events</code>.
@@ -76,7 +77,7 @@ else
                 <td class="mono">@e.Name</td>
                 <td class="mono">@(e.Screen ?? "—")</td>
                 <td>@(e.DurationMs is { } ms ? ms.ToString("N0") + " ms" : "—")</td>
-                <td class="mono"><a asp-page="/AnalyticsSession" asp-route-platform="@e.Platform" asp-route-id="@e.SessionId">@e.SessionId</a></td>
+                <td class="mono"><a asp-page="/AnalyticsSession" asp-route-app="@e.AppId" asp-route-env="@e.Environment" asp-route-client="@e.ClientId" asp-route-platform="@e.Platform" asp-route-id="@e.SessionId">@e.SessionId</a></td>
             </tr>
         }
         </tbody>

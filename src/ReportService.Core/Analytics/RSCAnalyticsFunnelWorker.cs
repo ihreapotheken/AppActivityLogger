@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ReportService.Options;
+using ReportService.Storage.Catalog;
 
 namespace ReportService.Analytics;
 
@@ -18,16 +19,19 @@ public sealed class RSCAnalyticsFunnelWorker : BackgroundService
     /// without scanning the full <c>analytics_events</c> retention pool every tick.</summary>
     private const int FunnelWindowDays = 14;
 
-    private readonly RSCIAnalyticsStore _store;
+    private readonly RSCIAnalyticsStoreFactory _factory;
+    private readonly RSCICatalog _catalog;
     private readonly RSCAnalyticsOptions _options;
     private readonly ILogger<RSCAnalyticsFunnelWorker> _logger;
 
     public RSCAnalyticsFunnelWorker(
-        RSCIAnalyticsStore store,
+        RSCIAnalyticsStoreFactory factory,
+        RSCICatalog catalog,
         RSCAnalyticsOptions options,
         ILogger<RSCAnalyticsFunnelWorker> logger)
     {
-        _store = store;
+        _factory = factory;
+        _catalog = catalog;
         _options = options;
         _logger = logger;
     }
@@ -40,17 +44,8 @@ public sealed class RSCAnalyticsFunnelWorker : BackgroundService
             return;
         }
 
-        try
-        {
-            await SeedDefinitionsAsync(stoppingToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
-        catch (Exception ex)
-        {
-            // Seeding failure should not stop the worker — operators can manage definitions
-            // from the admin page once the page lands.
-            _logger.LogError(ex, "Funnel seed failed; continuing without seeded definitions");
-        }
+        // Funnel-definition seeding is per-app and folded into each app's tick below (idempotent,
+        // INSERT-only), so a newly-registered app gets its definitions on the first tick that sees it.
 
         // Floor 5s (matches the aggregation worker) so the documented fast dev cadence
         // (FunnelIntervalSeconds=15 in appsettings.Development.json) is actually honoured rather
@@ -83,15 +78,18 @@ public sealed class RSCAnalyticsFunnelWorker : BackgroundService
         }
     }
 
-    private async Task SeedDefinitionsAsync(CancellationToken ct)
+    /// <summary>Seeds the configured funnel definitions into one app's database (INSERT-only —
+    /// never overwrites operator edits). Idempotent + safe to call every tick.</summary>
+    internal static async Task SeedStoreAsync(
+        RSCIAnalyticsStore store, RSCAnalyticsOptions options, ILogger logger, CancellationToken ct)
     {
-        if (_options.SeedFunnels.Length == 0) return;
+        if (options.SeedFunnels.Length == 0) return;
 
-        var existing = await _store.ListFunnelDefinitionsAsync(onlyEnabled: false, ct).ConfigureAwait(false);
+        var existing = await store.ListFunnelDefinitionsAsync(onlyEnabled: false, ct).ConfigureAwait(false);
         var existingKeys = new HashSet<string>(existing.Select(d => d.FunnelKey), StringComparer.Ordinal);
 
         var now = DateTimeOffset.UtcNow;
-        foreach (var seed in _options.SeedFunnels)
+        foreach (var seed in options.SeedFunnels)
         {
             if (string.IsNullOrWhiteSpace(seed.FunnelKey)) continue;
             if (existingKeys.Contains(seed.FunnelKey)) continue;
@@ -112,17 +110,46 @@ public sealed class RSCAnalyticsFunnelWorker : BackgroundService
                 Enabled: true,
                 CreatedAt: now,
                 UpdatedAt: now);
-            await _store.UpsertFunnelDefinitionAsync(def, ct).ConfigureAwait(false);
-            _logger.LogInformation("Seeded funnel definition {Key} with {Steps} steps", def.FunnelKey, def.Steps.Count);
+            await store.UpsertFunnelDefinitionAsync(def, ct).ConfigureAwait(false);
+            logger.LogInformation("Seeded funnel definition {Key} with {Steps} steps", def.FunnelKey, def.Steps.Count);
         }
     }
 
+    /// <summary>Fan-out tick: seed (idempotent) + recompute funnels for every registered app's
+    /// database. A per-app try/catch isolates one bad app DB. Returns total step observations.</summary>
     internal async Task<int> TickAsync(CancellationToken ct)
     {
-        var defs = await _store.ListFunnelDefinitionsAsync(onlyEnabled: true, ct).ConfigureAwait(false);
+        var apps = await _catalog.ListAllAppsAsync(includeArchived: false, ct).ConfigureAwait(false);
+        var total = 0;
+        foreach (var app in apps)
+        {
+            try
+            {
+                var store = _factory.Get(app.ClientSlug, app.Slug);
+                await SeedStoreAsync(store, _options, _logger, ct).ConfigureAwait(false);
+                total += await TickStoreAsync(store, _options, _logger, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Funnel recompute failed for app {Client}/{App}; skipping", app.ClientSlug, app.Slug);
+            }
+        }
+        return total;
+    }
+
+    /// <summary>Recompute every enabled funnel for one app's database. Isolated for direct testing +
+    /// fan-out reuse (the caller seeds definitions first).</summary>
+    internal static async Task<int> TickStoreAsync(
+        RSCIAnalyticsStore store, RSCAnalyticsOptions options, ILogger logger, CancellationToken ct)
+    {
+        var defs = await store.ListFunnelDefinitionsAsync(onlyEnabled: true, ct).ConfigureAwait(false);
         if (defs.Count == 0)
         {
-            _logger.LogDebug("No enabled funnel definitions; nothing to recompute.");
+            logger.LogDebug("No enabled funnel definitions; nothing to recompute.");
             return 0;
         }
 
@@ -132,14 +159,14 @@ public sealed class RSCAnalyticsFunnelWorker : BackgroundService
         {
             try
             {
-                var observed = await _store.RecomputeFunnelStepsAsync(def, windowStart, ct).ConfigureAwait(false);
+                var observed = await store.RecomputeFunnelStepsAsync(def, windowStart, ct).ConfigureAwait(false);
                 total += observed;
-                _logger.LogInformation("Funnel {Key}: recorded {Count} step observations in {Window}-day window",
+                logger.LogInformation("Funnel {Key}: recorded {Count} step observations in {Window}-day window",
                     def.FunnelKey, observed, FunnelWindowDays);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Funnel {Key} recompute failed", def.FunnelKey);
+                logger.LogError(ex, "Funnel {Key} recompute failed", def.FunnelKey);
             }
         }
         return total;

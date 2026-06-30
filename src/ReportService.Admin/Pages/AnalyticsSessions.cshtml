@@ -5,6 +5,7 @@
     ViewData["Title"] = "Analytics sessions";
 }
 @await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Analytics sessions", "Most recently active sessions. Click into a session for the full event timeline."))
+@await Html.PartialAsync("_TenantScope", Model.TenantScope)
 
 <p>
     One row per logical user session as identified by the SDK's <code>sessionId</code> field.
@@ -53,7 +54,7 @@ else
                 <td class="mono">@s.Platform</td>
                 <td>@s.EventCount.ToString("N0")</td>
                 <td>@s.ScreenCount.ToString("N0")</td>
-                <td class="mono"><a asp-page="/AnalyticsSession" asp-route-platform="@s.Platform" asp-route-id="@s.SessionId">@s.SessionId</a></td>
+                <td class="mono"><a asp-page="/AnalyticsSession" asp-route-app="@s.AppId" asp-route-env="@s.Environment" asp-route-client="@s.ClientId" asp-route-platform="@s.Platform" asp-route-id="@s.SessionId">@s.SessionId</a></td>
             </tr>
         }
         </tbody>

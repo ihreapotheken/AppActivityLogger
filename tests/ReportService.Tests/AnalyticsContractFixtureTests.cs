@@ -28,7 +28,7 @@ public class AnalyticsContractFixtureTests
     {
         var opts = overrideOpts ?? new RSCAnalyticsOptions { IdentifierHashPepper = "fixture-pepper" };
         var report = new RSCReportServiceOptions { AllowedPlatforms = new[] { "android", "ios" } };
-        return new RSCAnalyticsValidator(opts, report);
+        return new RSCAnalyticsValidator(opts, report, RSATestCatalog.Permissive, new ReportService.Options.RSCCatalogOptions());
     }
 
     private static RSCAnalyticsBatch LoadBatch(string relativePath)
@@ -256,6 +256,12 @@ public class AnalyticsContractFixtureTests
             // property_too_large requires a 2KB+ string; the SDK round-trip tests cover that and
             // it adds disproportionate noise to a wire-shape fixture.
             RSCAnalyticsDeadLetterReasons.PropertyTooLarge,
+            // app/environment/client validity is a server-side CATALOG-registration property, not a
+            // wire-shape one — an SDK cannot determine it from a fixture. These are covered by the
+            // dedicated tenancy validation tests (against the real catalog), not wire fixtures.
+            RSCAnalyticsDeadLetterReasons.AppUnknown,
+            RSCAnalyticsDeadLetterReasons.EnvironmentUnknown,
+            RSCAnalyticsDeadLetterReasons.ClientUnknown,
         };
 
         var rejectDir = Path.Combine(FixturesRoot, "reject");

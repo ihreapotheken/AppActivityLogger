@@ -56,9 +56,10 @@ gen_key() {
 }
 
 if [ ! -f "$ENV_FILE" ]; then
-    echo "==> Generating $ENV_FILE with fresh API and admin keys"
+    echo "==> Generating $ENV_FILE with fresh API, admin and analytics-pepper keys"
     SDK_KEY="$(gen_key)"
     ADMIN_KEY="$(gen_key)"
+    ANALYTICS_PEPPER="$(gen_key)"
 
     umask 077
     cat > "$ENV_FILE" <<EOF
@@ -72,6 +73,11 @@ ReportService__ApiKey=${SDK_KEY}
 # Admin UI — separate secret for human operators (entered on /Login).
 Admin__AdminKey=${ADMIN_KEY}
 
+# Analytics — pepper mixed into the SHA-256 of every anonymousId before storage. The merged host's
+# analytics pipeline REFUSES TO BOOT in Production without it (RSCSecretValidation), so generate it
+# up front; the dev compose stack needs it too once ASPNETCORE_ENVIRONMENT=Production.
+Analytics__IdentifierHashPepper=${ANALYTICS_PEPPER}
+
 # Uncomment and edit any of the following to override appsettings.json defaults.
 #ReportService__ReportsRoot=reports
 #ReportService__MaxUploadBytes=524288000
@@ -81,6 +87,9 @@ Admin__AdminKey=${ADMIN_KEY}
 #ReportService__Storage=FileSystem
 #ReportService__SqliteDbPath=reports.db
 #Admin__SessionMinutes=60
+# Tenancy catalog (apps/environments/clients). Strict validation is on by default; set false to
+# stamp+default but never reject during a phased client onboarding.
+#Catalog__Enabled=true
 EOF
     chmod 600 "$ENV_FILE"
 else
@@ -97,7 +106,10 @@ cat <<'EOF'
 
 Setup complete.
 
-Next steps:
-  ./scripts/run.sh           # starts the ingestion API with values from .env loaded
-  ./scripts/run.sh admin     # starts the admin UI (separate process, loopback port)
+Next steps (Docker Compose is the supported runtime — see CLAUDE.md / docs/guide/02-quickstart.md):
+  ./scripts/run.sh                                # build + start the merged host on :8082
+  # …or directly:
+  HOST_PORT=8082 docker compose up --build -d     # 8080=prod, 18080=staging, 8082=this dev box
+  docker compose logs -f                          # tail
+Then open http://localhost:8082
 EOF

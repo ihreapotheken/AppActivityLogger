@@ -1,0 +1,145 @@
+@page
+@model RSAAppsModel
+@using ReportService.Admin.ViewModels
+@{
+    ViewData["Title"] = "Apps";
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM(
+    "Apps",
+    "Apps are owned by a client and differentiate that client's analytics. Each app has its own environments (e.g. production, staging) and its own dashboard."))
+
+@if (!string.IsNullOrEmpty(Model.Flash))
+{
+    <div class="flash @(Model.FlashKind == "err" ? "flash-err" : "flash-ok")" role="status">@Model.Flash</div>
+}
+
+<hint-box>
+    Apps are nested under a <strong>client</strong>; a slug (the <code>appId</code> the SDK sends) is unique only within
+    its client, so two clients can each have an app with the same slug. Clients can self-manage their apps over
+    <code>/api/v2/apps</code> with their access key; this console is the admin-side equivalent. Pick a client below to
+    manage its apps, or leave it on “All clients” to review every client's apps.
+</hint-box>
+
+<section class="card">
+    <h2>Client</h2>
+    <form method="get" class="filter-form" data-auto-submit>
+        <label>
+            <span>Manage apps for</span>
+            <select name="client" aria-label="Client">
+                <option value="">All clients (overview)</option>
+                @foreach (var c in Model.Clients)
+                {
+                    <option value="@c.Slug" selected="@(Model.SelectedClient == c.Slug)">@c.DisplayName (@c.Slug)</option>
+                }
+            </select>
+        </label>
+        <noscript><button type="submit" class="primary">Go</button></noscript>
+    </form>
+</section>
+
+@if (Model.SelectedClient is not null)
+{
+    <section class="card">
+        <h2>Create app for <span class="mono">@Model.SelectedClient</span></h2>
+        <form method="post" asp-page-handler="Create" class="filter-form">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="client" value="@Model.SelectedClient" />
+            <label>
+                <span>Display name</span>
+                <input name="displayName" required maxlength="128" placeholder="e.g. App A" />
+            </label>
+            <label>
+                <span>Slug</span>
+                <input name="slug" required maxlength="64" placeholder="e.g. app-a" pattern="[a-z0-9][a-z0-9\-]*" />
+            </label>
+            <label>
+                <span>Environments</span>
+                <input name="environments" required placeholder="production, staging" />
+            </label>
+            <button type="submit" class="primary">Create</button>
+        </form>
+    </section>
+}
+
+<section>
+    <h2>@(Model.SelectedClient is null ? "All apps" : $"Apps for {Model.SelectedClient}") (@Model.Apps.Count)</h2>
+    @if (Model.Apps.Count == 0)
+    {
+        <empty-state>
+            @if (Model.SelectedClient is null)
+            {
+                <text>No apps registered yet. Pick a client above to add one; the <code>default</code> client's <code>default</code> app is seeded automatically.</text>
+            }
+            else
+            {
+                <text>No apps for this client yet. Create one above.</text>
+            }
+        </empty-state>
+    }
+    else
+    {
+        <table>
+            <thead>
+                <tr>
+                    <th scope="col" sort="text" tip="Owning client.">Client</th>
+                    <th scope="col" sort="text" tip="Immutable key the SDK sends as appId (unique within the client).">Slug</th>
+                    <th scope="col" sort="text" tip="Editable human-readable name.">Display name</th>
+                    <th scope="col" tip="Environments declared for this app. Batches must use one of these.">Environments</th>
+                    <th scope="col" sort="date" tip="When the app was registered.">Created (UTC)</th>
+                    <th scope="col"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var app in Model.Apps)
+                {
+                    <tr class="@(app.IsArchived ? "muted" : null)">
+                        <td class="mono">@app.ClientSlug</td>
+                        <td class="mono">@app.Slug @(app.IsArchived ? "(archived)" : null)</td>
+                        <td>
+                            <form method="post" asp-page-handler="Rename" class="inline">
+                                @Html.AntiForgeryToken()
+                                <input type="hidden" name="client" value="@app.ClientSlug" />
+                                <input type="hidden" name="slug" value="@app.Slug" />
+                                <input name="displayName" value="@app.DisplayName" maxlength="128" aria-label="Rename @app.Slug" />
+                                <button type="submit" class="link">save</button>
+                            </form>
+                        </td>
+                        <td>
+                            @foreach (var env in app.Environments)
+                            {
+                                <span class="badge">@env
+                                    <form method="post" asp-page-handler="RemoveEnv" class="inline">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="client" value="@app.ClientSlug" />
+                                        <input type="hidden" name="slug" value="@app.Slug" />
+                                        <input type="hidden" name="environment" value="@env" />
+                                        <button type="submit" class="link" aria-label="Remove @env from @app.Slug">×</button>
+                                    </form>
+                                </span>
+                            }
+                            <form method="post" asp-page-handler="AddEnv" class="inline">
+                                @Html.AntiForgeryToken()
+                                <input type="hidden" name="client" value="@app.ClientSlug" />
+                                <input type="hidden" name="slug" value="@app.Slug" />
+                                <input name="environment" maxlength="64" placeholder="add env" aria-label="Add environment to @app.Slug" />
+                                <button type="submit" class="link">add</button>
+                            </form>
+                        </td>
+                        <td class="mono" data-sort-value="@app.CreatedAt.UtcDateTime.ToString("o")">@app.CreatedAt.AsLocalTime()</td>
+                        <td>
+                            @if (!app.IsArchived)
+                            {
+                                <form method="post" asp-page-handler="Archive" class="inline">
+                                    @Html.AntiForgeryToken()
+                                    <input type="hidden" name="client" value="@app.ClientSlug" />
+                                    <input type="hidden" name="slug" value="@app.Slug" />
+                                    <button type="submit" class="link-danger" aria-label="Archive @app.Slug">archive</button>
+                                </form>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</section>

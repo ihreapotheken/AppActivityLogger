@@ -58,7 +58,9 @@ public sealed record RSCServerAnalyticsRequest(
     string? ClientId,
     string? Source,
     string? BatchId,
-    IReadOnlyList<RSCServerAnalyticsEvent>? Events
+    IReadOnlyList<RSCServerAnalyticsEvent>? Events,
+    string? AppId = null,
+    string? Environment = null
 );
 
 /// <summary>

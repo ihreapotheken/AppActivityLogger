@@ -11,7 +11,17 @@ public sealed class RSAErrorsModel : PageModel
 {
     private const int PageSize = 25;
     private static readonly string[] AllowedPlatforms = { "ios", "android" };
-    private static readonly RSAReportListingScope Scope = new(KindIn: new[] { "crash" });
+    // The listing covers the full fault population the dashboard tiles count — fatal crashes plus
+    // non-fatal Kind="error" reports. The Kind dropdown narrows to one or the other; "all" shows both.
+    // Tenancy scope from the global client/app selection (rsc_scope cookie / explicit ?client/?app);
+    // null = all apps. Applies to the listing AND "delete matching" so deletes can't cross app bounds.
+    [BindProperty(SupportsGet = true, Name = "client")] public string? Client { get; set; }
+    [BindProperty(SupportsGet = true, Name = "app")] public string? App { get; set; }
+
+    private RSAReportListingScope Scope => new(
+        KindIn: new[] { "crash", "error" },
+        ClientId: string.IsNullOrWhiteSpace(Client) ? null : Client.Trim().ToLowerInvariant(),
+        AppId: string.IsNullOrWhiteSpace(App) ? null : App.Trim().ToLowerInvariant());
 
     private readonly IRSAErrorDashboardService _errors;
     private readonly IRSAReportListingService _listing;

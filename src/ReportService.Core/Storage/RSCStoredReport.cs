@@ -16,5 +16,9 @@ public sealed record RSCStoredReport(
     string? IngestionChannel = null,
     string? TopFrame = null,
     string? LogSummaryJson = null,
-    string? Kind = null
+    string? Kind = null,
+    // Owning tenant (database-per-app). Stamped from the per-app store's own (client, app) identity
+    // when a report is listed, so a fan-out view across apps can group/scope + route open/delete.
+    string? ClientId = null,
+    string? AppId = null
 );

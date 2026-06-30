@@ -7,8 +7,10 @@
     string Conversion(long reached) => first <= 0 ? "—" : ((double)reached / first * 100).ToString("F1") + "%";
 }
 @await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Analytics funnels", $"How many sessions reach each step of a flow, and where they drop off. Window: last {Model.Window} days."))
+@await Html.PartialAsync("_AnalyticsNav")
+@await Html.PartialAsync("_TenantScope", Model.TenantScope)
 
-<hint-box docs-href="/Documentation#06-analytics--reading-funnels">
+<hint-box docs-href="/Documentation#05-analytics--reading-funnels">
     <p>
         A funnel shows how many sessions get through an ordered flow and where they drop off. Each step
         counts the distinct sessions that completed it <em>and</em> every step before it, in order — so the

@@ -10,10 +10,8 @@ namespace ReportService.Admin.Services;
 /// </summary>
 public interface IRSAReportListingService
 {
-    Task<RSAReportsPageVM> ListAsync(RSAReportsFilterInput filter, int pageSize, CancellationToken ct);
-
     /// <summary>
-    /// Variant used by the per-category pages (Analytics, ProblemReports, Errors). The optional
+    /// Used by the per-category pages (Analytics, ProblemReports, Errors). The
     /// <paramref name="scope"/> applies invisibly on top of the user's bound filter — pages set it
     /// to the kind/attachment constraints that define their listing scope. Filters surfaced in the
     /// UI flow through <paramref name="filter"/> as usual.
@@ -29,4 +27,9 @@ public interface IRSAReportListingService
 public sealed record RSAReportListingScope(
     IReadOnlyList<string>? KindIn = null,
     IReadOnlyList<string>? KindNotIn = null,
-    bool? RequireAttachment = null);
+    bool? RequireAttachment = null,
+    // Tenancy scope (database-per-app, FileSystem mode): restrict the listing to one client/app.
+    // Null = all apps (the operator-wide view). The fan-out report store stamps each row's owning
+    // (client, app), which the listing service filters on.
+    string? ClientId = null,
+    string? AppId = null);

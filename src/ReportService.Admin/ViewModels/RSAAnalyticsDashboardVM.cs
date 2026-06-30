@@ -22,7 +22,11 @@ public sealed record RSAAnalyticsPlatformRowVM(
     int DailyActiveUsers,
     int MonthlyActiveUsers,
     int SessionsToday,
-    TimeSpan AverageSessionLength);
+    TimeSpan AverageSessionLength,
+    // Total analytics events recorded on this platform over the trailing 30 days, summed from the
+    // daily rollups. Optional (defaults to 0) so the legacy report-store dashboard — which has no
+    // rollup table — keeps compiling without supplying it.
+    int EventsLast30Days = 0);
 
 public sealed record RSATopScreenVM(
     string Screen,

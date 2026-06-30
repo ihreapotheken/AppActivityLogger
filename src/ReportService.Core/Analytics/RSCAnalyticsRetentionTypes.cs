@@ -6,6 +6,9 @@ namespace ReportService.Analytics;
 /// converts to percentages at render time.
 /// </summary>
 public sealed record RSCAnalyticsRetentionCohortRow(
+    string AppId,
+    string Environment,
+    string ClientId,
     string Platform,
     DateOnly InstallDay,
     long CohortSize,

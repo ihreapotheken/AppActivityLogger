@@ -19,7 +19,8 @@ public sealed record RSCApiKeyRecord(
     string Role,
     int? RateLimitPerMinute,
     DateTimeOffset? ExpiresAt,
-    DateTimeOffset? RevokedAt);
+    DateTimeOffset? RevokedAt,
+    string? ClientId = null);
 
 /// <summary>Operator/audit-facing metadata for a key. Excludes the hash and plaintext.</summary>
 public sealed record RSCApiKeyMetadata(
@@ -31,7 +32,8 @@ public sealed record RSCApiKeyMetadata(
     DateTimeOffset? ExpiresAt,
     DateTimeOffset? RevokedAt,
     int? RateLimitPerMinute,
-    DateTimeOffset? LastUsedAt)
+    DateTimeOffset? LastUsedAt,
+    string? ClientId = null)
 {
     public bool IsRevoked => RevokedAt is not null;
     public bool IsExpired(DateTimeOffset now) => ExpiresAt is { } e && e <= now;
@@ -55,14 +57,17 @@ public interface RSCIApiKeyStore
     /// </summary>
     RSCApiKeyRecord? Resolve(string presentedKey);
 
-    /// <summary>Mint a new key. Returns metadata + the one-time plaintext (never stored).</summary>
+    /// <summary>Mint a new key. Returns metadata + the one-time plaintext (never stored).
+    /// <paramref name="clientId"/> binds the key to a catalog client (the key becomes that client's
+    /// identity); pass <c>null</c> for an unbound operator/SDK key.</summary>
     Task<RSCApiKeyCreated> CreateAsync(
         string role,
         string? label,
         DateTimeOffset? expiresAt,
         int? rateLimitPerMinute,
         string createdBy,
-        CancellationToken ct);
+        CancellationToken ct,
+        string? clientId = null);
 
     /// <summary>All keys' metadata, newest first. Never returns hashes or plaintext.</summary>
     Task<IReadOnlyList<RSCApiKeyMetadata>> ListAsync(CancellationToken ct);

@@ -24,6 +24,17 @@ namespace ReportService.Analytics;
 public interface RSCIAnalyticsStore
 {
     // -------- Ingestion --------
+    /// <summary>Persists one batch's accepted + rejected rows in a single transaction.</summary>
+    /// <param name="batch">The normalized, attribution-stamped batch envelope to persist.</param>
+    /// <param name="anonymousIdHash">Peppered hash of the batch's <c>anonymousId</c> — the per-user
+    /// identity, which is never stored verbatim.</param>
+    /// <param name="clientIdHash">Legacy. The client is now identified by the verbatim tenancy key
+    /// <c>batch.ClientId</c> (stored as <c>client_id</c>), so production callers pass <c>null</c> and
+    /// the write-only <c>client_id_hash</c> column is left unpopulated. Kept on the signature only so
+    /// the column can still be set when replaying historical data.</param>
+    /// <param name="verdict">Validation result splitting the batch into accepted vs dead-lettered events.</param>
+    /// <param name="receivedAt">Server receive timestamp stamped on every row of this batch.</param>
+    /// <param name="ct">Cancellation token.</param>
     Task<RSCAnalyticsBatchReceipt> WriteBatchAsync(
         RSCAnalyticsBatch batch,
         string? anonymousIdHash,
@@ -52,19 +63,30 @@ public interface RSCIAnalyticsStore
     Task MarkEventsAggregatedAsync(IReadOnlyList<RSCAggregationEventRef> events, CancellationToken ct);
 
     // -------- Dashboards --------
-    Task<RSCAnalyticsTotals> GetTotalsAsync(string? platform, CancellationToken ct);
+    Task<RSCAnalyticsTotals> GetTotalsAsync(RSCAnalyticsScope scope, CancellationToken ct);
     Task<IReadOnlyList<RSCAnalyticsPlatformSummary>> GetPlatformSummariesAsync(CancellationToken ct);
-    Task<IReadOnlyList<RSCAnalyticsTopScreen>> GetTopScreensAsync(string? platform, int topN, CancellationToken ct);
+    Task<IReadOnlyList<RSCAnalyticsTopScreen>> GetTopScreensAsync(RSCAnalyticsScope scope, int topN, CancellationToken ct);
     Task<IReadOnlyList<RSCAnalyticsDailyRollup>> GetDailyRollupsAsync(
-        DateTimeOffset from, DateTimeOffset until, string? platform, CancellationToken ct);
+        DateTimeOffset from, DateTimeOffset until, RSCAnalyticsScope scope, CancellationToken ct);
+
+    /// <summary>
+    /// Sales / revenue projection for the <c>/AnalyticsSales</c> page. Scans the <c>purchase</c>
+    /// events (and prescription-activity events) inside the <c>[from, until)</c> UTC-day window and
+    /// folds them into totals, a daily revenue trend, shipping/payment breakdowns, and the top
+    /// <paramref name="topItems"/> products by revenue. Computed on read — there is no sales rollup
+    /// table — so the cost scales with the (small) number of purchase events in the window.
+    /// </summary>
+    Task<RSCAnalyticsSalesReport> GetSalesReportAsync(
+        DateTimeOffset from, DateTimeOffset until, RSCAnalyticsScope scope, int topItems, CancellationToken ct);
+
     Task<RSCAnalyticsHealthSnapshot> GetHealthSnapshotAsync(int sampleSize, CancellationToken ct);
 
     // -------- Search / detail --------
     Task<RSCAnalyticsEventPage> SearchEventsAsync(RSCAnalyticsEventFilter filter, CancellationToken ct);
     Task<IReadOnlyList<RSCAnalyticsStoredEvent>> GetSessionTimelineAsync(
-        string platform, string sessionId, CancellationToken ct);
+        RSCAnalyticsScope scope, string sessionId, CancellationToken ct);
     Task<IReadOnlyList<RSCAnalyticsSessionRow>> ListSessionsAsync(
-        string? platform, int limit, int offset, CancellationToken ct);
+        RSCAnalyticsScope scope, int limit, int offset, CancellationToken ct);
 
     // -------- Retention cohorts --------
     /// <summary>
@@ -79,11 +101,11 @@ public interface RSCIAnalyticsStore
     /// cohorts old enough to have observed each window. Returns 0/0/0 with zero cohorts used
     /// when there isn't enough data yet.
     /// </summary>
-    Task<RSCAnalyticsRetentionSummary> GetRetentionSummaryAsync(string? platform, int windowDays, CancellationToken ct);
+    Task<RSCAnalyticsRetentionSummary> GetRetentionSummaryAsync(RSCAnalyticsScope scope, int windowDays, CancellationToken ct);
 
     /// <summary>Per-cohort retention rows, most recent install_day first. For the admin page.</summary>
     Task<IReadOnlyList<RSCAnalyticsRetentionCohortRow>> ListRetentionCohortsAsync(
-        string? platform, int days, CancellationToken ct);
+        RSCAnalyticsScope scope, int days, CancellationToken ct);
 
     // -------- Funnels --------
     Task<IReadOnlyList<RSCAnalyticsFunnelDefinition>> ListFunnelDefinitionsAsync(
@@ -105,7 +127,7 @@ public interface RSCIAnalyticsStore
     /// the admin page renders a complete table).
     /// </summary>
     Task<IReadOnlyList<RSCAnalyticsFunnelStepStat>> GetFunnelSummaryAsync(
-        string funnelKey, DateTimeOffset from, DateTimeOffset until, string? platform, CancellationToken ct);
+        string funnelKey, DateTimeOffset from, DateTimeOffset until, RSCAnalyticsScope scope, CancellationToken ct);
 
     // -------- Maintenance --------
     Task<int> PurgeOlderThanAsync(DateTimeOffset eventsCutoff, DateTimeOffset deadLetterCutoff, CancellationToken ct);

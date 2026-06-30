@@ -7,15 +7,16 @@ screen.
 
 ## 8.1 Pages
 
-Routes follow the page name (`Reports.cshtml` → `/Reports`); `/` is the dashboard.
+Routes follow the page name (`ProblemReports.cshtml` → `/ProblemReports`); `/` is the dashboard.
 
 | Page | Route | Purpose |
 |---|---|---|
 | Dashboard | `/` | Platform overview — configured platforms, report counts, headline stats. |
-| Reports | `/Reports`, `/ProblemReports` | Newest-first report list with filters (platform, channel, search). |
+| Problem reports | `/ProblemReports` | Newest-first list of user-submitted (non-crash) reports with filters (platform, pharmacy, search). |
 | Report detail | `/Report/{platform}/{fileName}` | Renders the JSON body (truncated for display), downloads JSON or the `.log.gz` sibling, and deletes (confirmation dialog + antiforgery + cookie required). |
 | Errors | `/Errors`, `/Error` | Crash reports grouped by extracted `top_frame` — one row per fault site with occurrence counts. |
 | Forced | `/ForcedReports` | Manage the forced-capture allow-list (add/remove client ids with a note). Drives `GET /api/v1/forced-reports/{id}`. |
+| Deep links | `/DeepLinks` | Manage deferred deep-link definitions (page pattern → redirect address, enable/disable) and watch recorded clicks. Drives `/dl/{slug}` and the `/api/v2/deeplinks/*` routes — see §8.6. |
 | Analytics | `/Analytics` | Engagement tiles, per-platform rows, top screens, daily-active trend. |
 | Analytics events | `/AnalyticsEvents` | Raw event search/filter (type, name, screen, feature, platform). |
 | Sessions | `/AnalyticsSessions`, `/AnalyticsSession` | Session list and per-session event timeline. |
@@ -40,7 +41,7 @@ address, and filename, and recorded in the audit log. No destructive operation r
 authenticated cookie **and** an antiforgery token.
 
 Every report-delete control — single delete on the detail page, the per-row and "delete all
-matching" buttons on the listings (`/Reports`, `/ProblemReports`, `/Errors`, `/Analytics`), and the
+matching" buttons on the listings (`/ProblemReports`, `/Errors`, `/Analytics`), and the
 "Wipe all data" action on `/Maintenance` — is additionally gated by a **confirmation dialog** that
 names the scope (the filename, the exact match count, or the wipe warning) before the form submits.
 The dialog is a shared modal driven by [`confirm-dialog.js`](../../src/ReportService.Admin/wwwroot/js/confirm-dialog.js):
@@ -132,3 +133,88 @@ flushed, the response is a clean `500` `application/problem+json`. If it fails *
 `200` and attachment headers are already on the wire — the status can no longer change, so the server
 **aborts the connection** rather than silently truncating. A broken transfer is the signal; do not
 treat a partial file as complete.
+
+## 8.6 Deferred deep linking
+
+Deferred deep linking carries a visitor from a web page they saw *before* installing the app to the
+right in-app destination *after* they install. The `/DeepLinks` page defines the links; three routes
+drive the runtime, and recorded clicks (IP, page, matched link, claim time) are listed back on the page.
+
+A **link definition** is a stable `slug`, a **page pattern**, and a **redirect address** — an absolute
+URL, either an https universal link or a custom scheme such as `myapp://promo/spring` — plus an enabled
+flag. Definitions and recorded clicks live in their own `deeplinks.db` (anchored under `ReportsRoot`),
+so the feature works regardless of the report `Storage` mode and under a read-only content root.
+
+{.deeplink-routes}
+| Method | Route | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/dl/{slug}` | anonymous | Hosted **smart link** — the single URL you hand to visitors (ad, SMS, email). Opening it records the visitor's IP (plus the referring page and user-agent), then `302`-redirects to the link's redirect address. `404` for an unknown or disabled slug. Anonymous because a browser cannot carry the `apiKey`; still rate-limited per IP by the global limiter. |
+| `POST` | `/api/v2/deeplinks/clicks` | apiKey | Record a visit from your own backend instead of the hosted link: `{ pageUrl, ip?, params?, signals? }`. The IP defaults to the connection address (resolved from `X-Forwarded-For`). The page is matched against the enabled links — the **longest** matching page-pattern substring wins — and the resolved redirect (with `params` appended) is returned. |
+| `GET` | `/api/v2/deeplinks/match` | apiKey | Called by the app on first launch. Looks up a recent recorded click for the caller's IP (`?ip=` to override) and returns `{ matched, slug, name, redirectUrl, pageUrl, clickedAt, params, signals }`. `redirectUrl` already has the captured `params` appended. By default it **claims** the click so it is handed out at most once; pass `?claim=false` to peek without consuming. |
+| `GET`/`PUT` | `/api/v2/deeplinks/click-retention` | **admin** apiKey | Get/set how many days recorded clicks are kept — see *Click retention* below. |
+
+Matching is a best-effort heuristic: a website visit and the app's first launch are correlated by a
+shared **IP** within `DeepLinks:MatchWindowHours` (default 24). Behind a proxy/tunnel the visitor's real
+client IP must reach the service for both calls — `ForwardedHeaders` resolves it from `X-Forwarded-For`;
+directly behind Docker's port forwarding the recorded address is the bridge gateway, not the real client.
+
+### Query parameters
+
+Attribution/campaign parameters ride along end to end. On the smart link they come from the URL's own
+query string (`/dl/spring-promo?utm_source=newsletter&promo=ABC`); on the JSON capture route they come
+from the optional `params` object. They are stored with the click, **appended to the redirect address**
+(percent-encoded, after any query the redirect already carries, before any `#fragment`), and returned in
+the match response — so a campaign tag set on the link a visitor clicked reaches the app on first launch.
+
+The captured set is **bounded** so an over-decorated URL can never break the redirect or bloat storage:
+
+| Option | Default | Effect |
+|---|---|---|
+| `DeepLinks:MaxQueryParams` | `16` | Maximum parameters captured per click. Extras are **dropped** (never an error). |
+| `DeepLinks:MaxQueryParamLength` | `256` | Maximum characters per key and per value; longer ones are **truncated**. |
+
+Repeated keys keep the first value seen, and blank keys are skipped. The same caps apply to both the
+smart link and the JSON capture route. Operators see the captured params per click in the **Params**
+column of the `/DeepLinks` page.
+
+### Device signals
+
+Alongside the IP, each click captures **device-identification signals** — screen dimensions, browser,
+timezone, device time, language — to firm up the otherwise IP-only match. They come from:
+
+- any custom **`X-DeepLink-*`** request header (e.g. `X-DeepLink-Screen: 1920x1080`,
+  `X-DeepLink-Timezone: Europe/Berlin`, `X-DeepLink-Device-Time: …`) — the prefix is stripped and the
+  remainder lower-cased into the signal key;
+- a curated set of standard fingerprint headers that ride along on a plain browser navigation, no JS
+  required: `Accept-Language` → `language`, and the client hints `Sec-CH-UA*`,
+  `Sec-CH-Viewport-Width`/`Height`, `Sec-CH-Width`, `Sec-CH-DPR`, `Sec-CH-Device-Memory`;
+- the optional `signals` object on the JSON capture route (highest precedence).
+
+Signals are stored with the click, shown in the **Signals** column of the `/DeepLinks` page, and
+returned in the match response so the app can use them as extra match confidence. Unlike query
+parameters they are **not** forwarded onto the redirect. They are bounded by the same
+`MaxQueryParams` / `MaxQueryParamLength` caps.
+
+### Click retention
+
+Recorded clicks (the captured IP stream) are purged after a configurable age by a background sweep; the
+**link definitions are never purged**. This bounds the growth of a public smart link's click stream and
+limits how long captured IPs are retained.
+
+The period seeds from `DeepLinks:ClickRetentionDays` (default 30) and is overridable at runtime — the
+override is persisted in `deeplinks.db` and survives restarts. Set it two ways:
+
+- **REST** (automation): `GET`/`PUT /api/v2/deeplinks/click-retention`, gated by an **admin-role** API
+  key (same policy as key management). `PUT { "retentionDays": 14 }` (1..3650) persists it and writes
+  an audit row (`deeplink.retention.set`); `GET` returns `{ retentionDays, overridden }`.
+- **Admin page**: the *Click retention* control on `/DeepLinks` (operator cookie auth).
+
+The sweep runs every `DeepLinks:RetentionScanIntervalSeconds` (default 1h, floored at 60s).
+
+### Scale
+
+The feature is built for **thousands** of link definitions. The smart link and match are slug-/IP-indexed
+(`O(log n)`); the capture route's longest-page-pattern resolution scans only the **enabled** set, which is
+cached in memory (write-invalidated, with a short TTL backstop) so a high-volume capture stream doesn't
+reload definitions from SQLite on every hit. The admin links list is **paginated** (`DeepLinks:LinksPageSize`,
+default 50) and **searchable** (slug/name/page-pattern substring), so the page stays responsive at scale.

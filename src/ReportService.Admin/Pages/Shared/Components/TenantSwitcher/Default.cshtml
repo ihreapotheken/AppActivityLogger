@@ -1,0 +1,41 @@
+@model ReportService.Admin.ViewComponents.RSATenantSwitcherVM
+@inject Microsoft.AspNetCore.Antiforgery.IAntiforgery Antiforgery
+@{
+    var allLabel = Model.IsClientLogin ? "All my apps" : "All clients";
+    var ariaLabel = Model.IsClientLogin ? "Select app" : "Select client and app";
+    var tokens = Antiforgery.GetAndStoreTokens(Context);
+}
+@* Selecting an option POSTs to /Scope, which sets the sticky scope cookie and redirects back to the
+   current page (returnUrl) — so the choice persists across pages instead of bouncing to Analytics.
+   Submission is via tenant-switcher.js (no inline handler) to satisfy the strict CSP. *@
+<form class="tenant-switcher" method="post" action="/Scope" data-tenant-switcher-form>
+    <input type="hidden" name="@tokens.FormFieldName" value="@tokens.RequestToken" />
+    <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" />
+    <label class="visually-hidden" for="tenant-switcher-select">@ariaLabel</label>
+    <select id="tenant-switcher-select" class="tenant-switcher-select" name="sel" data-tenant-switcher aria-label="@ariaLabel">
+        <option value="" selected="@(!Model.HasSelection)">@allLabel</option>
+        @if (Model.IsClientLogin)
+        {
+            @foreach (var g in Model.Groups)
+            {
+                @foreach (var a in g.Apps)
+                {
+                    <option value="@a.Value" selected="@a.Selected">@a.AppDisplay</option>
+                }
+            }
+        }
+        else
+        {
+            @foreach (var g in Model.Groups)
+            {
+                <optgroup label="@g.ClientDisplay (@g.ClientSlug)">
+                    @foreach (var a in g.Apps)
+                    {
+                        <option value="@a.Value" selected="@a.Selected">@a.AppDisplay</option>
+                    }
+                </optgroup>
+            }
+        }
+    </select>
+    <noscript><button type="submit" class="link">Go</button></noscript>
+</form>

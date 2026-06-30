@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using ReportService.Analytics;
 using ReportService.Models;
 using ReportService.Options;
+using ReportService.Security;
 
 namespace ReportService.Ingestion;
 
@@ -27,27 +28,71 @@ public sealed class RSAnalyticsIngestionService
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
 
-    private readonly RSCIAnalyticsStore _store;
+    // Optional request-header overrides for tenancy attribution. Let an operator/gateway pin
+    // app / environment / client without the SDK changing its JSON body. Header wins over the body.
+    private const string AppHeader = "X-Analytics-App";
+    private const string EnvHeader = "X-Analytics-Environment";
+    private const string ClientHeader = "X-Analytics-Client";
+
+    private readonly RSCIAnalyticsStoreFactory _storeFactory;
     private readonly RSCAnalyticsValidator _validator;
     private readonly RSCAnalyticsIdentifierHasher _hasher;
     private readonly RSCReportServiceOptions _reportOptions;
     private readonly RSCAnalyticsOptions _analyticsOptions;
+    private readonly RSCCatalogOptions _catalogOptions;
     private readonly ILogger<RSAnalyticsIngestionService> _logger;
 
     public RSAnalyticsIngestionService(
-        RSCIAnalyticsStore store,
+        RSCIAnalyticsStoreFactory storeFactory,
         RSCAnalyticsValidator validator,
         RSCAnalyticsIdentifierHasher hasher,
         RSCReportServiceOptions reportOptions,
         RSCAnalyticsOptions analyticsOptions,
+        RSCCatalogOptions catalogOptions,
         ILogger<RSAnalyticsIngestionService> logger)
     {
-        _store = store;
+        _storeFactory = storeFactory;
         _validator = validator;
         _hasher = hasher;
         _reportOptions = reportOptions;
         _analyticsOptions = analyticsOptions;
+        _catalogOptions = catalogOptions;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Resolves the (app, environment, client) attribution for a batch, each trimmed-lowercased.
+    /// <para><b>Client</b> is the top-level tenant and is taken from the <em>authenticated API key</em>
+    /// (the <see cref="RSCTenantClaims.ClientId"/> claim) when the key is bound to a client — the key
+    /// IS the client's identity, so a body/header value can't override it. Only an unbound key (the
+    /// static root key, or a legacy managed key) falls back to header → body → default, preserving the
+    /// older body-declared flow.</para>
+    /// <para><b>App + environment</b> resolve header → body → default (the header path lets a gateway
+    /// force them); they are later validated against the resolved client's registered apps.</para>
+    /// </summary>
+    private (string AppId, string Environment, string ClientId) ResolveAttribution(
+        HttpRequest request, string? bodyAppId, string? bodyEnvironment, string? bodyClientId)
+    {
+        string Pick(string headerName, string? bodyValue, string fallback)
+        {
+            var header = request.Headers[headerName].ToString();
+            var chosen = !string.IsNullOrWhiteSpace(header) ? header
+                : !string.IsNullOrWhiteSpace(bodyValue) ? bodyValue
+                : fallback;
+            return chosen.Trim().ToLowerInvariant();
+        }
+
+        // Key-bound client wins outright (the access key identifies the client). Absent only for the
+        // root/unbound keys, which keep the header → body → default resolution.
+        var keyClient = request.HttpContext.User?.FindFirst(RSCTenantClaims.ClientId)?.Value;
+        var client = !string.IsNullOrWhiteSpace(keyClient)
+            ? keyClient.Trim().ToLowerInvariant()
+            : Pick(ClientHeader, bodyClientId, _catalogOptions.DefaultClientSlug);
+
+        return (
+            Pick(AppHeader, bodyAppId, _catalogOptions.DefaultAppSlug),
+            Pick(EnvHeader, bodyEnvironment, _catalogOptions.DefaultEnvironment),
+            client);
     }
 
     public async Task<RSAnalyticsIngestionResult> IngestAsync(HttpRequest request, CancellationToken ct)
@@ -96,6 +141,12 @@ public sealed class RSAnalyticsIngestionService
 
         if (batch is null || string.IsNullOrWhiteSpace(batch.BatchId))
             return RSAnalyticsIngestionResult.BadRequest("missing batchId");
+
+        // Stamp the resolved tenancy onto the envelope so validation + storage see concrete,
+        // normalized values regardless of whether the SDK supplied them in the body or a gateway
+        // set them via headers.
+        var (appId, environment, clientId) = ResolveAttribution(request, batch.AppId, batch.Environment, batch.ClientId);
+        batch = batch with { AppId = appId, Environment = environment, ClientId = clientId };
 
         // SDK path: only the problem-report platforms (android/ios) are accepted — never the
         // analytics-only ServerPlatforms — so an SDK client cannot inject "backend" events.
@@ -174,7 +225,8 @@ public sealed class RSAnalyticsIngestionService
         if (RoutesIdentifierIntoEnvelope(req, out var leakDetail))
             return RSAnalyticsIngestionResult.BadRequest(leakDetail);
 
-        var batch = MapToBatch(req);
+        var (appId, environment, clientId) = ResolveAttribution(request, req.AppId, req.Environment, req.ClientId);
+        var batch = MapToBatch(req) with { AppId = appId, Environment = environment, ClientId = clientId };
         // Server path: ServerPlatforms (e.g. "backend") are additionally accepted on top of
         // android/ios.
         return await FinishBatchAsync(batch, "server", allowServerPlatforms: true, ct).ConfigureAwait(false);
@@ -192,9 +244,15 @@ public sealed class RSAnalyticsIngestionService
         var verdict = _validator.Validate(batch, receivedAt, allowServerPlatforms);
 
         var anonHash = _hasher.Hash(batch.AnonymousId);
-        var clientHash = _hasher.Hash(batch.ClientId);
-
-        var receipt = await _store.WriteBatchAsync(batch, anonHash, clientHash, verdict, receivedAt, ct)
+        // clientId is no longer hashed: it's a verbatim, queryable tenancy key (a pharmacy/business
+        // id, not user PII — see RSCAnalyticsBatch.ClientId / the tenancy docs). The legacy
+        // client_id_hash column is left unpopulated (write-only; nothing reads it). The per-user
+        // identity (anonymousId) stays hashed.
+        // Database-per-app: route to the store for this batch's resolved (client, app); the factory
+        // provisions + migrates that app's analytics.db on first use. (app_id/client_id columns are
+        // still stamped inside the row — harmless — but the FILE is the real isolation boundary.)
+        var store = _storeFactory.Get(batch.ClientId, batch.AppId);
+        var receipt = await store.WriteBatchAsync(batch, anonHash, clientIdHash: null, verdict, receivedAt, ct)
             .ConfigureAwait(false);
 
         // A wholesale rejection (bad platform/schema/oversize, or every event dead-lettered) is a

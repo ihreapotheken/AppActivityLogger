@@ -20,7 +20,7 @@ public class AnalyticsRetentionPurgeTests : IDisposable
     private readonly RSCSqliteAnalyticsStore _store;
     private readonly RSCAnalyticsValidator _validator;
     private readonly RSCAnalyticsIdentifierHasher _hasher;
-    private readonly RSCAnalyticsAggregationWorker _worker;
+    private readonly RSCAnalyticsOptions _analyticsOptions;
 
     public AnalyticsRetentionPurgeTests()
     {
@@ -38,9 +38,9 @@ public class AnalyticsRetentionPurgeTests : IDisposable
             IdentifierHashPepper = "pepper-test"
         };
         _store = new RSCSqliteAnalyticsStore(reportOptions, analyticsOptions, NullLogger<RSCSqliteAnalyticsStore>.Instance);
-        _validator = new RSCAnalyticsValidator(analyticsOptions, reportOptions);
+        _validator = new RSCAnalyticsValidator(analyticsOptions, reportOptions, RSATestCatalog.Permissive, new ReportService.Options.RSCCatalogOptions());
         _hasher = new RSCAnalyticsIdentifierHasher(analyticsOptions);
-        _worker = new RSCAnalyticsAggregationWorker(_store, analyticsOptions, NullLogger<RSCAnalyticsAggregationWorker>.Instance);
+        _analyticsOptions = analyticsOptions;
     }
 
     private RSCAnalyticsBatch MakeBatch(string platform, params RSCAnalyticsEvent[] events) =>
@@ -69,7 +69,7 @@ public class AnalyticsRetentionPurgeTests : IDisposable
         await WriteAsync(MakeBatch("android", MakeEvent("evt-old-1", old), MakeEvent("evt-old-2", old)), old);
 
         // Fold them so aggregated_at is set — the purge only trims folded rows.
-        var processed = await _worker.TickAsync(default);
+        var processed = await RSCAnalyticsAggregationWorker.TickStoreAsync(_store, _analyticsOptions, NullLogger<RSCAnalyticsAggregationWorker>.Instance, default);
         Assert.Equal(2, processed);
 
         var cutoff = DateTimeOffset.UtcNow.AddDays(-30);
@@ -130,15 +130,15 @@ public class AnalyticsRetentionPurgeTests : IDisposable
         // only trims raw events + dead letters, never the derived rollup tables.
         var old = DateTimeOffset.UtcNow.AddDays(-40);
         await WriteAsync(MakeBatch("android", MakeEvent("evt-r1", old), MakeEvent("evt-r2", old)), old);
-        await _worker.TickAsync(default);
+        await RSCAnalyticsAggregationWorker.TickStoreAsync(_store, _analyticsOptions, NullLogger<RSCAnalyticsAggregationWorker>.Instance, default);
 
-        var rollupsBefore = await _store.GetDailyRollupsAsync(old.AddDays(-1), old.AddDays(1), "android", default);
+        var rollupsBefore = await _store.GetDailyRollupsAsync(old.AddDays(-1), old.AddDays(1), RSCAnalyticsScope.ForPlatform("android"), default);
         Assert.NotEmpty(rollupsBefore);
 
         var cutoff = DateTimeOffset.UtcNow.AddDays(-30);
         await _store.PurgeOlderThanAsync(cutoff, cutoff, default);
 
-        var rollupsAfter = await _store.GetDailyRollupsAsync(old.AddDays(-1), old.AddDays(1), "android", default);
+        var rollupsAfter = await _store.GetDailyRollupsAsync(old.AddDays(-1), old.AddDays(1), RSCAnalyticsScope.ForPlatform("android"), default);
         Assert.NotEmpty(rollupsAfter);
     }
 

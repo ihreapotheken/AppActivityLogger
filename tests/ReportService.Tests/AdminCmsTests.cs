@@ -27,7 +27,7 @@ public class AdminCmsTests
 
     [Theory]
     [InlineData("/")]
-    [InlineData("/Reports")]
+    [InlineData("/ProblemReports")]
     [InlineData("/Status")]
     [InlineData("/Maintenance")]
     [InlineData("/Audit")]
@@ -51,7 +51,7 @@ public class AdminCmsTests
         Assert.Equal(HttpStatusCode.OK, dash.StatusCode);
         var dashHtml = await dash.Content.ReadAsStringAsync();
         Assert.Contains("Dashboard", dashHtml);
-        Assert.Contains("All reports", dashHtml);
+        Assert.Contains("Problem reports", dashHtml);
         Assert.Contains("Health", dashHtml);
 
         var status = await client.GetAsync("/Status");
@@ -61,12 +61,12 @@ public class AdminCmsTests
         var audit = await client.GetAsync("/Audit");
         Assert.Equal(HttpStatusCode.OK, audit.StatusCode);
 
-        var reports = await client.GetAsync("/Reports");
+        var reports = await client.GetAsync("/ProblemReports");
         Assert.Equal(HttpStatusCode.OK, reports.StatusCode);
     }
 
     [Fact]
-    public async Task Reports_page_filter_platform_produces_rows_when_data_present()
+    public async Task ProblemReports_page_filter_platform_produces_rows_when_data_present()
     {
         var factory = NewFactory();
         await using var app = factory;
@@ -84,7 +84,7 @@ public class AdminCmsTests
         }
 
         var client = await AuthenticatedClient(app);
-        var res = await client.GetAsync("/Reports?platform=android");
+        var res = await client.GetAsync("/ProblemReports?platform=android");
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
         var html = await res.Content.ReadAsStringAsync();
         Assert.Contains("problem-report_", html);
@@ -164,6 +164,43 @@ public class AdminCmsTests
         var auditLog = scope2.ServiceProvider.GetRequiredService<RSCIAuditLog>();
         var entries = await auditLog.RecentAsync(20, default);
         Assert.Contains(entries, e => e.Action == "report.delete" && e.Target!.EndsWith(fileName, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Toggling_a_deep_link_redirects_and_does_not_500()
+    {
+        // Regression: the DeepLinks redirect helpers passed `page` (the pager number) as a route
+        // value, but `page` is a RESERVED Razor Pages route key (the page-path slot). RedirectToPage
+        // then threw "No page named '' matches the supplied values" (HTTP 500) on every
+        // save/toggle/delete. The fix builds a plain local-URL redirect instead.
+        await using var app = NewFactory();
+        var client = app.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+
+        var loginToken = ExtractAntiforgery(await client.GetStringAsync("/Login"));
+        using (var login = new FormUrlEncodedContent(new[]
+        {
+            new KeyValuePair<string, string>("Key", AdminKey),
+            new KeyValuePair<string, string>("__RequestVerificationToken", loginToken!),
+        }))
+        {
+            var lr = await client.PostAsync("/Login", login);
+            Assert.Equal(HttpStatusCode.Redirect, lr.StatusCode);
+        }
+
+        var token = ExtractAntiforgery(await client.GetStringAsync("/DeepLinks"));
+        Assert.False(string.IsNullOrEmpty(token));
+
+        // The slug need not exist — toggling still runs the shared redirect helper.
+        using var toggle = new FormUrlEncodedContent(new[]
+        {
+            new KeyValuePair<string, string>("slug", "regression-probe"),
+            new KeyValuePair<string, string>("enabled", "true"),
+            new KeyValuePair<string, string>("__RequestVerificationToken", token!),
+        });
+        var res = await client.PostAsync("/DeepLinks?handler=Toggle", toggle);
+
+        Assert.Equal(HttpStatusCode.Redirect, res.StatusCode); // 302, not 500
+        Assert.Contains("/DeepLinks", res.Headers.Location!.ToString(), StringComparison.Ordinal);
     }
 
     // -------- plumbing ---------------------------------------------------------------------

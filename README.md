@@ -13,7 +13,7 @@ A single merged process hosts both the SDK-facing ingestion endpoints and the op
 admin UI.
 
 ```text
-                 Report a Problem ─┐                        ┌─ /Reports, /Errors, /Forced
+                 Report a Problem ─┐                        ┌─ /ProblemReports, /Errors, /Forced
  IA SDK ─────────────────────────►│                        │
  (Android / iOS)                  │   report-service  ──────┤─ /Analytics, /Retention, /Funnels
                  Analytics events ─┘   (merged host)        │

@@ -99,6 +99,24 @@ internal static class RSAProblemReportDevDataSeeder
         ("EXC_BREAKPOINT",          "IARx.PrescriptionUploader.upload(PrescriptionUploader.swift:73)",            "Precondition failure: prescription file handle was closed before upload completed."),
     ];
 
+    // Non-fatal error signatures (Kind = "error"). Caught/handled faults the SDK reports without
+    // killing the app — they carry a fault site like a crash, but the user kept going. These drive
+    // the divergence between the Errors page's "Crashes" and "Errors" tiles, and give the Kind
+    // filter an error-only population to narrow to.
+    private static readonly (string Title, string TopFrame, string Message)[] AndroidErrors =
+    [
+        ("java.io.IOException",     "com.ia.net.ReportRemoteDataSource.flush(ReportRemoteDataSource.kt:131)",   "Timed out flushing the analytics outbox; upload retry scheduled."),
+        ("retrofit2.HttpException", "com.ia.checkout.CheckoutRepository.placeOrder(CheckoutRepository.kt:74)",  "HTTP 503 from the order service; surfaced to the user as a soft error."),
+        ("com.ia.cardlink.CardLinkException", "com.ia.cardlink.consent.ConsentViewModel.submit(ConsentViewModel.kt:58)", "CardLink consent was declined by the gateway; user prompted to retry."),
+    ];
+
+    private static readonly (string Title, string TopFrame, string Message)[] IosErrors =
+    [
+        ("URLError.timedOut",      "IANet.ReportRemoteDataSource.flush(ReportRemoteDataSource.swift:118)",     "Request timed out flushing the analytics outbox; upload retry scheduled."),
+        ("DecodingError",          "IACheckout.OrderResponse.decode(OrderResponse.swift:42)",                  "Malformed order response decoded into a soft error banner."),
+        ("CardLinkError.declined", "IACardLink.ConsentCoordinator.submit(ConsentCoordinator.swift:65)",        "CardLink consent declined by the gateway; user prompted to retry."),
+    ];
+
     public static async Task SeedAsync(IServiceProvider sp, ILogger logger, CancellationToken ct)
     {
         // Gated on the SQLite index: present only under Storage=SqliteIndex (the docker dev stack).
@@ -124,12 +142,13 @@ internal static class RSAProblemReportDevDataSeeder
         var scale = ResolveScale(logger);
         var now = DateTimeOffset.UtcNow;
 
-        int written = 0, crashes = 0, analytics = 0, withAttachment = 0;
+        int written = 0, crashes = 0, errors = 0, analytics = 0, withAttachment = 0;
 
         foreach (var platform in Platforms)
         {
             var devices = platform == "android" ? AndroidDevices : IosDevices;
             var crashSigs = platform == "android" ? AndroidCrashes : IosCrashes;
+            var errorSigs = platform == "android" ? AndroidErrors : IosErrors;
             var folder = Path.Combine(options.ReportsRoot, platform, "problem-reports");
             Directory.CreateDirectory(folder);
 
@@ -143,10 +162,14 @@ internal static class RSAProblemReportDevDataSeeder
                     .AddMinutes(-(i * 7 % 60))
                     .AddSeconds(-(i % 47));
 
-                // Three roughly equal buckets: crash (Errors page), analytics submission (legacy
-                // raw-report store on the Analytics page), and a user-written problem report.
+                // Three roughly equal buckets: fault (Errors page), analytics submission (legacy
+                // raw-report store on the Analytics page), and a user-written problem report. The
+                // fault bucket splits ~2:1 into fatal crashes and non-fatal Kind="error" reports so
+                // the Errors page shows both populations and the Kind filter has something to narrow.
                 var category = i % 3;
-                var isCrash = category == 0;
+                var isFault = category == 0;
+                var isError = isFault && i % 9 == 6;
+                var isCrash = isFault && !isError;
                 var isAnalytics = category == 1;
                 var device = devices[i % devices.Length];
                 var pharmacy = Pharmacies[i % Pharmacies.Length];
@@ -167,6 +190,16 @@ internal static class RSAProblemReportDevDataSeeder
                     stackTrace = BuildStackTrace(platform, cTitle, cFrame, i);
                     kind = "crash";
                     crashes++;
+                }
+                else if (isError)
+                {
+                    var (eTitle, eFrame, eMessage) = errorSigs[i % errorSigs.Length];
+                    title = eTitle;
+                    message = eMessage;
+                    topFrame = eFrame;
+                    stackTrace = BuildStackTrace(platform, eTitle, eFrame, i);
+                    kind = "error";
+                    errors++;
                 }
                 else if (isAnalytics)
                 {
@@ -210,9 +243,10 @@ internal static class RSAProblemReportDevDataSeeder
                 var jsonBytes = JsonSerializer.SerializeToUtf8Bytes(report, JsonOptions);
                 var jsonHash12 = ShortHashHex(jsonBytes);
 
-                // Crashes always carry a gzip log bundle; problem reports ~60% do. Analytics
-                // submissions are lightweight tracking docs and never carry a logcat attachment.
-                byte[]? attachment = (isCrash || (!isAnalytics && i % 5 < 3))
+                // Crashes and non-fatal errors always carry a gzip log bundle (both ship the
+                // captured stack trace); user problem reports ~60% do. Analytics submissions are
+                // lightweight tracking docs and never carry a logcat attachment.
+                byte[]? attachment = (isCrash || isError || (!isAnalytics && i % 5 < 3))
                     ? GzipLog(BuildLogText(platform, report, stackTrace, submittedAt))
                     : null;
                 string? attachmentHash12 = attachment is null ? null : ShortHashHex(attachment);
@@ -262,8 +296,8 @@ internal static class RSAProblemReportDevDataSeeder
         await SeedAuditLogAsync(sp, now, ct).ConfigureAwait(false);
 
         logger.LogInformation(
-            "Problem-report seeder (scale {Scale}): wrote {Written} reports ({Crashes} crashes, {Analytics} analytics, {Attachments} with attachments) across {Platforms} platforms",
-            scale, written, crashes, analytics, withAttachment, Platforms.Length);
+            "Problem-report seeder (scale {Scale}): wrote {Written} reports ({Crashes} crashes, {Errors} errors, {Analytics} analytics, {Attachments} with attachments) across {Platforms} platforms",
+            scale, written, crashes, errors, analytics, withAttachment, Platforms.Length);
     }
 
     private static async Task SeedForcedReportsAsync(IServiceProvider sp, DateTimeOffset now, CancellationToken ct)

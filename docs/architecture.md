@@ -109,8 +109,8 @@ to the same on-disk file.
 `ReportService.Admin` runs as its own process bound to host loopback. Key pages:
 
 - `/` — Dashboard: tiles, per-platform totals, latest submissions, component health, index status.
-- `/Reports` — searchable + filterable + paginated. Filters: platform, pharmacy, userId, email,
-  phone, app version, attachment presence, channel, date range, filename contains.
+- `/ProblemReports` — searchable + filterable + paginated list of user-submitted reports (non-crash).
+  Filters: platform, pharmacy, userId, email, phone, app version, date range, filename contains.
 - `/Errors` — error bucketing dashboard, grouped by `top_frame` (extracted at ingest from the
   gzip attachment) with a truncated-message fallback for non-crash submissions.
 - `/ForcedReports` — operator-managed allow-list of identifiers that trigger automatic

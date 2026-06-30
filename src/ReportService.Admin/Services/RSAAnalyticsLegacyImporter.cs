@@ -121,8 +121,9 @@ public sealed class RSAAnalyticsLegacyImporter
 
                     var verdict = _validator.Validate(batch, DateTimeOffset.UtcNow);
                     var anonHash = _hasher.Hash(batch.AnonymousId);
-                    var clientHash = _hasher.Hash(batch.ClientId);
-                    var receipt = await _analyticsStore.WriteBatchAsync(batch, anonHash, clientHash, verdict,
+                    // clientId is stored verbatim as the tenancy key, not hashed; the legacy
+                    // client_id_hash column is left unpopulated. See RSAnalyticsIngestionService.
+                    var receipt = await _analyticsStore.WriteBatchAsync(batch, anonHash, clientIdHash: null, verdict,
                         DateTimeOffset.UtcNow, ct).ConfigureAwait(false);
 
                     // Count only events that were genuinely inserted this run. Because the

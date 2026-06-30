@@ -18,6 +18,25 @@ public static class RSCMigrationHelpers
         return false;
     }
 
+    /// <summary>
+    /// Number of columns that make up <paramref name="table"/>'s primary key (0 for a rowid-only
+    /// table, 1 for a single-column PK, &gt;1 for a composite). Lets a rebuild migration detect
+    /// whether it already widened a PK so a re-entry after a rolled-back partial apply is a no-op.
+    /// </summary>
+    public static int PrimaryKeyColumnCount(SqliteConnection conn, string table)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"PRAGMA table_info({table});";
+        using var reader = cmd.ExecuteReader();
+        var count = 0;
+        // table_info columns: cid, name, type, notnull, dflt_value, pk (pk = position in key, 0 = not part of it).
+        while (reader.Read())
+        {
+            if (reader.GetInt32(5) > 0) count++;
+        }
+        return count;
+    }
+
     /// <summary>Convenience for migrations that just need to fire a single statement.</summary>
     public static void Execute(SqliteConnection conn, string sql)
     {

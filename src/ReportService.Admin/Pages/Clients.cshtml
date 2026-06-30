@@ -1,0 +1,105 @@
+@page
+@model RSAClientsModel
+@using ReportService.Admin.ViewModels
+@{
+    ViewData["Title"] = "Clients";
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM(
+    "Clients",
+    "The top-level tenant, identified by an API access key. A client owns its apps (each its own dashboard) and uses its key to ingest analytics and self-manage apps via /api/v2/apps."))
+
+@if (!string.IsNullOrEmpty(Model.Flash))
+{
+    <div class="flash @(Model.FlashKind == "err" ? "flash-err" : "flash-ok")" role="status">@Model.Flash</div>
+}
+
+@if (!string.IsNullOrEmpty(Model.NewKey))
+{
+    <section class="card" style="border:2px solid var(--accent, #2d7);">
+        <h2>Access key for <span class="mono">@Model.NewKeyClient</span></h2>
+        <p><strong>Copy this now — it is shown only once.</strong> Only its hash is stored; it can't be retrieved again.
+           Hand it to the client; their SDK sends it as the <code>apiKey</code> header and it identifies them as this client.</p>
+        <pre class="mono" style="user-select:all; padding:.6rem; background:var(--code-bg,#111); overflow-x:auto;">@Model.NewKey</pre>
+    </section>
+}
+
+<hint-box>
+    A client is identified by its <strong>access key</strong>, not a body field — every batch sent with that key is
+    attributed to this client, and the same key authorizes the client to manage its own apps over
+    <code>/api/v2/apps</code>. Registering a client mints its first key (shown once below); use <em>issue key</em> to
+    mint more (e.g. to rotate). The slug is a non-PII business key (e.g. a pharmacy id), stored verbatim. Batches sent
+    with an unbound/root key fall back to the <code>default</code> client.
+</hint-box>
+
+<section class="card">
+    <h2>Register client</h2>
+    <form method="post" asp-page-handler="Create" class="filter-form">
+        @Html.AntiForgeryToken()
+        <label>
+            <span>Display name</span>
+            <input name="displayName" required maxlength="128" placeholder="e.g. Pharmacy 42" />
+        </label>
+        <label>
+            <span>Slug</span>
+            <input name="slug" required maxlength="64" placeholder="e.g. pharmacy-42" pattern="[a-z0-9][a-z0-9\-]*" />
+        </label>
+        <button type="submit" class="primary">Register + mint key</button>
+    </form>
+</section>
+
+<section>
+    <h2>Registered clients (@Model.Clients.Count)</h2>
+    @if (Model.Clients.Count == 0)
+    {
+        <empty-state>No clients registered yet. Register one above; the <code>default</code> client is seeded automatically.</empty-state>
+    }
+    else
+    {
+        <table>
+            <thead>
+                <tr>
+                    <th scope="col" sort="text" tip="Immutable client slug.">Slug</th>
+                    <th scope="col" sort="text" tip="Editable human-readable name.">Display name</th>
+                    <th scope="col" sort="number" tip="Active (non-revoked, non-expired) access keys bound to this client.">Keys</th>
+                    <th scope="col" sort="date" tip="When the client was registered.">Created (UTC)</th>
+                    <th scope="col"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var c in Model.Clients)
+                {
+                    var keyCount = Model.KeyCounts.TryGetValue(c.Slug, out var n) ? n : 0;
+                    <tr class="@(c.IsArchived ? "muted" : null)">
+                        <td class="mono">@c.Slug @(c.IsArchived ? "(archived)" : null)</td>
+                        <td>
+                            <form method="post" asp-page-handler="Rename" class="inline">
+                                @Html.AntiForgeryToken()
+                                <input type="hidden" name="slug" value="@c.Slug" />
+                                <input name="displayName" value="@c.DisplayName" maxlength="128" aria-label="Rename @c.Slug" />
+                                <button type="submit" class="link">save</button>
+                            </form>
+                        </td>
+                        <td class="mono" data-sort-value="@keyCount">@keyCount</td>
+                        <td class="mono" data-sort-value="@c.CreatedAt.UtcDateTime.ToString("o")">@c.CreatedAt.AsLocalTime()</td>
+                        <td>
+                            <a class="link" asp-page="/Apps" asp-route-client="@c.Slug">apps</a>
+                            @if (!c.IsArchived)
+                            {
+                                <form method="post" asp-page-handler="IssueKey" class="inline">
+                                    @Html.AntiForgeryToken()
+                                    <input type="hidden" name="slug" value="@c.Slug" />
+                                    <button type="submit" class="link" aria-label="Issue a new key for @c.Slug">issue key</button>
+                                </form>
+                                <form method="post" asp-page-handler="Archive" class="inline">
+                                    @Html.AntiForgeryToken()
+                                    <input type="hidden" name="slug" value="@c.Slug" />
+                                    <button type="submit" class="link-danger" aria-label="Archive @c.Slug">archive</button>
+                                </form>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</section>

@@ -1,0 +1,21 @@
+@page
+@model RSAClientLoginModel
+@{
+    ViewData["Title"] = "Client sign in";
+    Layout = "_AuthLayout";
+}
+<section class="card narrow">
+    <h1>Client sign in</h1>
+    <p>Paste your client access key to view your apps' dashboards. Operators sign in <a href="/Login">here</a> instead.</p>
+    @if (!string.IsNullOrEmpty(Model.Error))
+    {
+        <div class="error">@Model.Error</div>
+    }
+    <form method="post">
+        <div class="field">
+            <label for="key">Access key</label>
+            <input id="key" type="password" name="Key" autocomplete="current-password" autofocus required />
+        </div>
+        <button type="submit" class="primary">Sign in</button>
+    </form>
+</section>

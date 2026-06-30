@@ -33,6 +33,9 @@ public sealed record RSCAnalyticsTotals(
 
 /// <summary>One row of the daily rollup table.</summary>
 public sealed record RSCAnalyticsDailyRollup(
+    string AppId,
+    string Environment,
+    string ClientId,
     DateOnly Day,
     string Platform,
     long Events,
@@ -75,6 +78,9 @@ public sealed record RSCAnalyticsHealthSnapshot(
 /// Used by the aggregation worker and the admin event-detail page.
 /// </summary>
 public sealed record RSCAnalyticsStoredEvent(
+    string AppId,
+    string Environment,
+    string ClientId,
     string EventId,
     string Platform,
     string SessionId,
@@ -88,7 +94,10 @@ public sealed record RSCAnalyticsStoredEvent(
     long? DurationMs
 );
 
-/// <summary>Filter parameters for the admin event-search page.</summary>
+/// <summary>Filter parameters for the admin event-search page. The tenancy axes (<see cref="AppId"/>,
+/// <see cref="Environment"/>, <see cref="ClientId"/>) and <see cref="Platform"/> are each optional —
+/// a null value means "all" for that axis (kept at the end with defaults so pre-tenancy callers
+/// still compile).</summary>
 public sealed record RSCAnalyticsEventFilter(
     string? Platform,
     string? Type,
@@ -98,7 +107,10 @@ public sealed record RSCAnalyticsEventFilter(
     DateTimeOffset? From,
     DateTimeOffset? Until,
     int Limit,
-    int Offset
+    int Offset,
+    string? AppId = null,
+    string? Environment = null,
+    string? ClientId = null
 );
 
 /// <summary>One page of events for the admin /AnalyticsEvents page.</summary>
@@ -111,6 +123,9 @@ public sealed record RSCAnalyticsEventPage(
 
 /// <summary>One row from analytics_sessions for the admin /AnalyticsSessions page.</summary>
 public sealed record RSCAnalyticsSessionRow(
+    string AppId,
+    string Environment,
+    string ClientId,
     string Platform,
     string SessionId,
     string? AnonymousIdHash,

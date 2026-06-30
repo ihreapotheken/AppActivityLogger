@@ -7,8 +7,10 @@
     string Bucket(double r) => r >= 0.80 ? "ret-c4" : r >= 0.60 ? "ret-c3" : r >= 0.40 ? "ret-c2" : r >= 0.20 ? "ret-c1" : "ret-c0";
 }
 @await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Analytics retention", $"What fraction of each day's new users came back 1, 7, and 30 days later. Window: last {Model.WindowDays} days."))
+@await Html.PartialAsync("_AnalyticsNav")
+@await Html.PartialAsync("_TenantScope", Model.TenantScope)
 
-<hint-box docs-href="/Documentation#06-analytics--reading-retention">
+<hint-box docs-href="/Documentation#05-analytics--reading-retention">
     <p>
         Retention measures whether new users come back. Users are grouped by the day they first appeared
         (their <em>cohort</em>). <strong>D1</strong> is the share of a cohort that returned the next day;

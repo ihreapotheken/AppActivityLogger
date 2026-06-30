@@ -31,11 +31,18 @@ internal static class RSAAdminAnalyticsExportEndpoints
     {
         app.MapGet("/admin/api/analytics/events.ndjson", async (
             HttpContext ctx, RSCIAnalyticsStore store, ILoggerFactory loggerFactory,
+            string? app, string? env, string? client,
             string? platform, string? type, string? name, string? screen,
             string? session, DateTime? from, DateTime? until,
             int? limit,
             CancellationToken ct) =>
         {
+            if (!ReportService.RSCFeatureFlags.Analytics)
+            {
+                ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
+                await ctx.Response.WriteAsync(ReportService.RSCFeatureFlags.DisabledMessage, ct).ConfigureAwait(false);
+                return;
+            }
             var log = loggerFactory.CreateLogger("ReportService.Admin.AnalyticsExport");
             var filter = new RSCAnalyticsEventFilter(
                 Platform: platform,
@@ -46,7 +53,10 @@ internal static class RSAAdminAnalyticsExportEndpoints
                 From:  from  is { } f ? new DateTimeOffset(DateTime.SpecifyKind(f,  DateTimeKind.Utc)) : null,
                 Until: until is { } u ? new DateTimeOffset(DateTime.SpecifyKind(u, DateTimeKind.Utc)) : null,
                 Limit: Math.Clamp(limit ?? 5000, 1, MaxExportRows),
-                Offset: 0);
+                Offset: 0,
+                AppId: app,
+                Environment: env,
+                ClientId: client);
 
             // The query runs BEFORE any byte of the response is committed, so a failure here can
             // still surface as a clean problem+json with the right status code.
@@ -77,6 +87,9 @@ internal static class RSAAdminAnalyticsExportEndpoints
                 foreach (var row in page.Rows)
                 {
                     var payload = new RSAAnalyticsEventExportRow(
+                        row.AppId,
+                        row.Environment,
+                        row.ClientId,
                         row.EventId,
                         row.Platform,
                         row.SessionId,
@@ -109,16 +122,23 @@ internal static class RSAAdminAnalyticsExportEndpoints
 
         app.MapGet("/admin/api/analytics/sessions.ndjson", async (
             HttpContext ctx, RSCIAnalyticsStore store, ILoggerFactory loggerFactory,
-            string? platform, int? limit,
+            string? app, string? env, string? client, string? platform, int? limit,
             CancellationToken ct) =>
         {
+            if (!ReportService.RSCFeatureFlags.Analytics)
+            {
+                ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
+                await ctx.Response.WriteAsync(ReportService.RSCFeatureFlags.DisabledMessage, ct).ConfigureAwait(false);
+                return;
+            }
             var log = loggerFactory.CreateLogger("ReportService.Admin.AnalyticsExport");
             var capped = Math.Clamp(limit ?? 5000, 1, MaxExportRows);
+            var scope = RSCAnalyticsScope.All with { AppId = app, Environment = env, ClientId = client, Platform = platform };
 
             IReadOnlyList<RSCAnalyticsSessionRow> rows;
             try
             {
-                rows = await store.ListSessionsAsync(platform, capped, offset: 0, ct).ConfigureAwait(false);
+                rows = await store.ListSessionsAsync(scope, capped, offset: 0, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -142,6 +162,9 @@ internal static class RSAAdminAnalyticsExportEndpoints
                 foreach (var s in rows)
                 {
                     var payload = new RSAAnalyticsSessionExportRow(
+                        s.AppId,
+                        s.Environment,
+                        s.ClientId,
                         s.Platform,
                         s.SessionId,
                         s.AnonymousIdHash,
@@ -229,6 +252,9 @@ internal static class RSAAdminAnalyticsExportEndpoints
 /// and the serialized payload can never drift apart. <see cref="OccurredAt"/> is a pre-formatted
 /// ISO-8601 UTC string; identifiers are emitted only as the peppered <see cref="AnonymousIdHash"/>.</summary>
 public sealed record RSAAnalyticsEventExportRow(
+    string AppId,
+    string Environment,
+    string ClientId,
     string EventId,
     string Platform,
     string? SessionId,
@@ -245,6 +271,9 @@ public sealed record RSAAnalyticsEventExportRow(
 /// session row. <see cref="StartedAt"/>/<see cref="LastSeenAt"/> are pre-formatted ISO-8601 UTC
 /// strings; the user is identified only by the peppered <see cref="AnonymousIdHash"/>.</summary>
 public sealed record RSAAnalyticsSessionExportRow(
+    string AppId,
+    string Environment,
+    string ClientId,
     string Platform,
     string SessionId,
     string? AnonymousIdHash,

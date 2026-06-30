@@ -3,10 +3,13 @@
 @{
     ViewData["Title"] = $"{Model.Platform} · {Model.FileName}";
     var s = Model.Summary;
+    // "All reports" was retired; route the platform crumb to the listing that actually contains this
+    // report — crashes live in Errors, everything else in Problem reports.
+    var listingPage = string.Equals(s.Kind, "crash", StringComparison.OrdinalIgnoreCase) ? "/Errors" : "/ProblemReports";
 }
 <div class="crumbs">
     <a asp-page="/Index">Dashboard</a> /
-    <a asp-page="/Reports" asp-route-platform="@Model.Platform">@Model.Platform</a> /
+    <a asp-page="@listingPage" asp-route-platform="@Model.Platform">@Model.Platform</a> /
     <span class="mono">@Model.FileName</span>
 </div>
 

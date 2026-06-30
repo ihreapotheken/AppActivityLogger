@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Authorization;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.OpenApi.Models;
+using ReportService;
 using ReportService.Admin;
 using ReportService.Admin.Options;
 using ReportService.Admin.Services;
@@ -23,6 +24,7 @@ using ReportService.Options;
 using ReportService.Security;
 using ReportService.Storage;
 using ReportService.Storage.ApiKeys;
+using ReportService.Storage.Catalog;
 using ReportService.Storage.Retention;
 using ReportService.Validation;
 
@@ -53,11 +55,21 @@ var deepLinkOptions = builder.Configuration
     .GetSection(RSCDeepLinkOptions.SectionName)
     .Get<RSCDeepLinkOptions>() ?? new RSCDeepLinkOptions();
 
+var catalogOptions = builder.Configuration
+    .GetSection(RSCCatalogOptions.SectionName)
+    .Get<RSCCatalogOptions>() ?? new RSCCatalogOptions();
+
+var fanoutOptions = builder.Configuration
+    .GetSection(RSCAnalyticsFanoutOptions.SectionName)
+    .Get<RSCAnalyticsFanoutOptions>() ?? new RSCAnalyticsFanoutOptions();
+
 builder.Services.AddSingleton(reportOptions);
 builder.Services.AddSingleton(adminOptions);
 builder.Services.AddSingleton(proxyHeaders);
 builder.Services.AddSingleton(analyticsOptions);
 builder.Services.AddSingleton(deepLinkOptions);
+builder.Services.AddSingleton(catalogOptions);
+builder.Services.AddSingleton(fanoutOptions);
 
 // Share the same storage wiring as the ingestion service so both services read the same files and
 // (optionally) the same SQLite index.
@@ -65,6 +77,9 @@ builder.Services.AddSingleton<RSCReportValidator>();
 builder.Services.AddSingleton<RSCComponentHealth>();
 if (reportOptions.Storage == "SqliteIndex")
 {
+    // The legacy/global index types stay registered for any direct RSCIReportIndex consumer
+    // (maintenance/rebuild). The report STORE itself is per-app below (the per-app factory builds its
+    // own indexing stores), so these are no longer the active RSCIReportStore.
     builder.Services.AddSingleton<RSCFileSystemReportStore>();
     builder.Services.AddSingleton<RSCResilientReportIndex>(sp =>
         new RSCResilientReportIndex(
@@ -73,12 +88,12 @@ if (reportOptions.Storage == "SqliteIndex")
             sp.GetRequiredService<RSCComponentHealth>(),
             sp.GetRequiredService<ILogger<RSCResilientReportIndex>>()));
     builder.Services.AddSingleton<RSCIReportIndex>(sp => sp.GetRequiredService<RSCResilientReportIndex>());
-    builder.Services.AddSingleton<RSCIReportStore, RSCSqliteIndexingReportStore>();
 }
-else
-{
-    builder.Services.AddSingleton<RSCIReportStore, RSCFileSystemReportStore>();
-}
+// Database-per-app problem reports (both storage modes): each (client, app) owns its own
+// {platform}/problem-reports/ tree + reports.db under apps/{client}/{app}/. The fan-out store routes
+// writes per-app and merges/scopes reads across apps.
+builder.Services.AddSingleton<RSCIReportStoreFactory, RSCReportStoreFactory>();
+builder.Services.AddSingleton<RSCIReportStore, RSCFanOutReportStore>();
 builder.Services.AddSingleton<RSCIForcedReportStore, RSCSqliteForcedReportStore>();
 builder.Services.AddSingleton<RSCServiceTelemetry>();
 builder.Services.AddSingleton<RSCIAuditLog, RSCSqliteAuditLog>();
@@ -95,19 +110,31 @@ builder.Services.AddHostedService<RSCRetentionBackgroundService>();
 builder.Services.AddSingleton<RSReportIngestionService>();
 builder.Services.AddSingleton<RSAcceptHeaderFilter>();
 
+// Tenancy catalog (apps + environments + clients). The merged process both validates ingestion
+// against it and serves its admin CRUD pages, so the same singleton backs both.
+builder.Services.AddSingleton<RSCICatalog, RSCSqliteCatalog>();
+
 // v2 analytics pipeline. The merged process hosts both ingestion + admin views over the same
 // analytics SQLite store, so wiring is identical to the standalone ingestion's.
 builder.Services.AddSingleton<RSCAnalyticsIdentifierHasher>();
 builder.Services.AddSingleton<RSCAnalyticsValidator>();
-builder.Services.AddSingleton<RSCIAnalyticsStore, RSCSqliteAnalyticsStore>();
+// Database-per-app: ingestion + workers resolve a specific app's store via the factory; the
+// RSCIAnalyticsStore singleton is the fan-out facade the dashboards/exports read through (delegates
+// to one app when scoped, merges across apps when not).
+builder.Services.AddSingleton<RSCIAnalyticsStoreFactory, RSCSqliteAnalyticsStoreFactory>();
+builder.Services.AddSingleton<RSCIAnalyticsStore, RSCFanOutAnalyticsStore>();
 builder.Services.AddSingleton<RSAnalyticsIngestionService>();
 
 // Deferred deep linking. Owns its own SQLite DB (under ReportsRoot) so it works regardless of the
 // report Storage mode and under a read-only content root. The admin /DeepLinks page and the two
-// SDK/website routes (record click + match) both resolve this store.
+// SDK/website routes (record click + match) both resolve this store. The retention worker purges
+// the captured click stream (never the link definitions) on the configured schedule.
 builder.Services.AddSingleton<RSCIDeferredDeepLinkStore, RSCSqliteDeferredDeepLinkStore>();
+builder.Services.AddHostedService<RSCDeepLinkClickRetentionWorker>();
 
-if (analyticsOptions.Enabled)
+// The analytics workers run only when the feature is compiled in AND enabled at runtime. A
+// disabled build flag means the area is unavailable end-to-end, so there's nothing to aggregate.
+if (RSCFeatureFlags.Analytics && analyticsOptions.Enabled)
 {
     builder.Services.AddHostedService<RSCAnalyticsAggregationWorker>();
     builder.Services.AddHostedService<RSCAnalyticsRetentionWorker>();
@@ -138,6 +165,10 @@ else
 {
     builder.Services.AddSingleton<IRSAAnalyticsDashboardService, RSAReportStoreAnalyticsDashboardService>();
 }
+// Sales / revenue dashboard. Always store-backed (purchase events live in the analytics store
+// regardless of which engagement-dashboard backend is selected); renders an honest-zero page when
+// the store has no purchases yet.
+builder.Services.AddSingleton<IRSAAnalyticsSalesService, RSAAnalyticsSalesService>();
 builder.Services.AddSingleton<IRSAErrorDashboardService, RSAReportStoreErrorDashboardService>();
 builder.Services.AddSingleton<IRSAReportListingService, RSAReportListingService>();
 builder.Services.AddSingleton<IRSAReportDeletionService, RSAReportDeletionService>();
@@ -291,9 +322,13 @@ builder.Services.AddSwaggerGen(c =>
 builder.Services.AddRazorPages(options =>
 {
     options.Conventions.AllowAnonymousToPage("/Login");
+    options.Conventions.AllowAnonymousToPage("/ClientLogin");
     options.Conventions.AllowAnonymousToPage("/Error");
     options.Conventions.AuthorizeFolder("/");
-});
+})
+// Gate the optional "Submissions" feature areas (Analytics, Problem reports): a page belonging to
+// a build-flag-disabled feature is redirected to /FeatureUnavailable with a "not enabled" notice.
+.AddMvcOptions(mvc => mvc.Filters.Add<ReportService.Admin.Services.RSAFeatureGateFilter>());
 
 builder.Services.AddAntiforgery();
 
@@ -451,6 +486,68 @@ if (adminOptions.DevAutoSignIn)
 
 app.UseAuthorization();
 
+// Confine a client login (a cookie principal carrying a client_id claim) to its own dashboards and
+// pin the ?client= scope to its own client. Operators (no client claim) and the ingestion/export
+// APIs (their own auth + scope) are untouched. Placed after auth so ctx.User is populated.
+app.Use(async (ctx, next) =>
+{
+    var path = ctx.Request.Path.Value ?? "/";
+    var isApi = path.StartsWith("/api", StringComparison.OrdinalIgnoreCase)
+                || path.StartsWith("/partners", StringComparison.OrdinalIgnoreCase)
+                || path.StartsWith("/admin/api", StringComparison.OrdinalIgnoreCase);
+    if (!isApi
+        && ctx.User?.Identity?.IsAuthenticated == true
+        && ctx.User.FindFirst(ReportService.Security.RSCTenantClaims.ClientId)?.Value is { Length: > 0 } clientSlug)
+    {
+        if (!ReportService.Admin.Services.RSAClientLoginScope.IsAllowedPage(path))
+        {
+            ctx.Response.Redirect("/Analytics");
+            return;
+        }
+        ReportService.Admin.Services.RSAClientLoginScope.ForceClientScope(ctx, clientSlug);
+    }
+    await next();
+});
+
+// Persistent global scope: fill any missing ?client/?app/?env on a page request from the rsc_scope
+// cookie (set by the header switcher via /Scope), so a selected client/app sticks across pages. An
+// explicit query value always wins. The client axis is never filled for a client login — the pin
+// above owns it. Runs after the client-login block so that pin is already applied.
+app.Use(async (ctx, next) =>
+{
+    var path = ctx.Request.Path.Value ?? "/";
+    var isApi = path.StartsWith("/api", StringComparison.OrdinalIgnoreCase)
+                || path.StartsWith("/partners", StringComparison.OrdinalIgnoreCase)
+                || path.StartsWith("/admin/api", StringComparison.OrdinalIgnoreCase)
+                || path.StartsWith("/scope", StringComparison.OrdinalIgnoreCase);
+    if (!isApi && ctx.User?.Identity?.IsAuthenticated == true)
+    {
+        var cookie = ReportService.Admin.Services.RSAScopeCookie.Read(ctx.Request);
+        var hasClientClaim = ctx.User.FindFirst(ReportService.Security.RSCTenantClaims.ClientId) is not null;
+        var q = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(ctx.Request.QueryString.Value ?? string.Empty);
+        var changed = false;
+        void Fill(string key, string? val)
+        {
+            if (string.IsNullOrEmpty(val)) return;
+            if (q.TryGetValue(key, out var cur) && !Microsoft.Extensions.Primitives.StringValues.IsNullOrEmpty(cur)) return;
+            q[key] = val;
+            changed = true;
+        }
+        if (!hasClientClaim) Fill("client", cookie.Client); // client login's pin owns the client axis
+        Fill("app", cookie.App);
+        Fill("env", cookie.Env);
+        if (changed)
+        {
+            var qs = QueryString.Empty;
+            foreach (var kv in q)
+                foreach (var v in kv.Value)
+                    qs = qs.Add(kv.Key, v ?? string.Empty);
+            ctx.Request.QueryString = qs;
+        }
+    }
+    await next();
+});
+
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 
 // OpenAPI document + interactive UI, both anonymous (the spec is metadata, not data). The merged
@@ -498,12 +595,13 @@ app.MapGet("/api/health/ready", (RSCReportServiceOptions opts) =>
     .Produces(StatusCodes.Status503ServiceUnavailable);
 
 // SDK-facing ingestion routes. Mounted last so URL collisions with Razor pages would surface
-// before this point — there are none today (Razor pages live at `/`, `/Reports`, etc.; ingestion
+// before this point — there are none today (Razor pages live at `/`, `/ProblemReports`, etc.; ingestion
 // uses `/partners/api/v2/...`, `/api/v1/...`, and `/api/v2/analytics/...`).
 app.MapProblemReportEndpoints();
 app.MapAnalyticsEndpoints();
 app.MapDeepLinkEndpoints();
 app.MapApiKeyManagementEndpoints();
+app.MapAppManagementEndpoints();
 
 // Admin-only NDJSON exports. The global authorization fallback policy gates these the same as
 // the Razor pages — anonymous callers are bounced to /Login.
@@ -513,10 +611,15 @@ app.MapRazorPages();
 
 if (app.Environment.IsDevelopment())
 {
-    await ReportService.Admin.Services.RSAAnalyticsDevDataSeeder.SeedAsync(
-        app.Services, startupLogger, CancellationToken.None);
-    await ReportService.Admin.Services.RSAProblemReportDevDataSeeder.SeedAsync(
-        app.Services, startupLogger, CancellationToken.None);
+    // Force the catalog to construct (and self-seed default + configured apps/clients) BEFORE the
+    // analytics seeder writes events — those events are validated against the catalog.
+    _ = app.Services.GetRequiredService<RSCICatalog>();
+    if (RSCFeatureFlags.Analytics)
+        await ReportService.Admin.Services.RSAAnalyticsDevDataSeeder.SeedAsync(
+            app.Services, startupLogger, CancellationToken.None);
+    if (RSCFeatureFlags.ProblemReports)
+        await ReportService.Admin.Services.RSAProblemReportDevDataSeeder.SeedAsync(
+            app.Services, startupLogger, CancellationToken.None);
 }
 
 app.Run();

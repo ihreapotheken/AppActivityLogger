@@ -3,7 +3,8 @@
 # update.sh - rolling update of an installed report-service.
 #
 # Expects a fresh publish output at <script dir>/publish/ (produced via
-# `dotnet publish src/ReportService -c Release -o ops/publish`).
+# `dotnet publish src/ReportService.Admin -c Release -o ops/publish` — the
+# merged host that serves both the admin UI and the ingestion routes).
 #
 # Flow:
 #   1. snapshot the current /opt/report-service -> /opt/report-service.bak
@@ -37,7 +38,7 @@ BACKUP_DIR="/opt/report-service.bak"
 PUBLISH_DIR="${SCRIPT_DIR}/publish"
 HEALTH_URL="http://127.0.0.1:8080/api/health"
 HEALTH_TIMEOUT=30
-MAIN_DLL="ReportService.dll"
+MAIN_DLL="ReportService.Admin.dll"
 
 log()  { printf '[update] %s\n' "$*"; }
 fail() { printf '[update] ERROR: %s\n' "$*" >&2; exit 1; }

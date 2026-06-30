@@ -50,20 +50,29 @@ public sealed class RSCSqliteReportIndex : RSCIReportIndex, RSCIReportIndexMaint
 
     public string DbPath => _dbPath;
 
+    /// <summary>DI constructor: the legacy/global index, db path resolved from options.</summary>
     public RSCSqliteReportIndex(RSCReportServiceOptions options, ILogger<RSCSqliteReportIndex> logger)
+        // Resolve relative DB paths under ReportsRoot so a read-only content root (Docker,
+        // systemd) doesn't cause SQLITE_CANTOPEN. Absolute paths are honored verbatim.
+        : this(RSCStatePaths.Resolve(options.SqliteDbPath, options.ReportsRoot),
+               RSCStatePaths.Resolve(options.BackupRoot, options.ReportsRoot), options, logger)
+    {
+    }
+
+    /// <summary>Explicit-path constructor used by the per-app report store factory
+    /// (apps/{client}/{app}/reports.db + a sibling backups dir).</summary>
+    internal RSCSqliteReportIndex(string dbPath, string backupRoot, RSCReportServiceOptions options, ILogger<RSCSqliteReportIndex> logger)
     {
         _logger = logger;
         _commandTimeoutSeconds = Math.Max(1, options.SqliteCommandTimeoutSeconds);
 
-        // Resolve relative DB paths under ReportsRoot so a read-only content root (Docker,
-        // systemd) doesn't cause SQLITE_CANTOPEN. Absolute paths are honored verbatim.
-        _dbPath = RSCStatePaths.Resolve(options.SqliteDbPath, options.ReportsRoot);
+        _dbPath = dbPath;
         var parent = Path.GetDirectoryName(Path.GetFullPath(_dbPath));
         if (!string.IsNullOrEmpty(parent))
         {
             Directory.CreateDirectory(parent);
         }
-        _backupRoot = RSCStatePaths.Resolve(options.BackupRoot, options.ReportsRoot);
+        _backupRoot = backupRoot;
         Directory.CreateDirectory(_backupRoot);
 
         _connectionString = new SqliteConnectionStringBuilder

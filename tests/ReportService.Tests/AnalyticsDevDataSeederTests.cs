@@ -45,7 +45,7 @@ public class AnalyticsDevDataSeederTests : IDisposable
 
         var services = new ServiceCollection();
         services.AddSingleton<RSCIAnalyticsStore>(_store);
-        services.AddSingleton(new RSCAnalyticsValidator(analyticsOptions, reportOptions));
+        services.AddSingleton(new RSCAnalyticsValidator(analyticsOptions, reportOptions, RSATestCatalog.Permissive, new ReportService.Options.RSCCatalogOptions()));
         services.AddSingleton(new RSCAnalyticsIdentifierHasher(analyticsOptions));
         _sp = services.BuildServiceProvider();
     }

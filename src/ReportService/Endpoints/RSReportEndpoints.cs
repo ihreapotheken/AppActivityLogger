@@ -209,6 +209,9 @@ public static class RSReportEndpoints
     {
         app.Map(HttpVerb.Post, "/partners/api/v2/report-problem", async (HttpRequest req, RSReportIngestionService svc, CancellationToken ct) =>
             {
+                // Build-flag gate: ProblemReports can be compiled out (`-p:FeatureProblemReports=false`).
+                if (!RSCFeatureFlags.ProblemReports)
+                    return Results.Problem(RSCFeatureFlags.DisabledMessage, statusCode: RSCFeatureFlags.DisabledStatusCode);
                 var r = await svc.IngestAsync(req, ct);
                 return r.Success
                     ? Results.Created($"/api/problem-reports/{r.Stored!.Platform}/{r.Stored.FileName}", r.Stored)
@@ -230,13 +233,16 @@ public static class RSReportEndpoints
             .Produces(StatusCodes.Status413PayloadTooLarge)
             .Produces(StatusCodes.Status415UnsupportedMediaType)
             .Produces(StatusCodes.Status406NotAcceptable)
-            .Produces(StatusCodes.Status429TooManyRequests);
+            .Produces(StatusCodes.Status429TooManyRequests)
+            .Produces(StatusCodes.Status503ServiceUnavailable);
 
         // Single-JSON ingest path. Same auth, same concurrency limiter, same Accept filter as the
         // multipart endpoint — but accepts `application/json` directly. Useful for partners that
         // can't easily emit multipart bodies (server-to-server integrations, generic webhooks).
         app.Map(HttpVerb.Post, "/api/v1/reports", async (HttpRequest req, RSReportIngestionService svc, CancellationToken ct) =>
             {
+                if (!RSCFeatureFlags.ProblemReports)
+                    return Results.Problem(RSCFeatureFlags.DisabledMessage, statusCode: RSCFeatureFlags.DisabledStatusCode);
                 var r = await svc.IngestJsonAsync(req, ct);
                 return r.Success
                     ? Results.Created($"/api/problem-reports/{r.Stored!.Platform}/{r.Stored.FileName}", r.Stored)
@@ -258,10 +264,16 @@ public static class RSReportEndpoints
             .Produces(StatusCodes.Status413PayloadTooLarge)
             .Produces(StatusCodes.Status415UnsupportedMediaType)
             .Produces(StatusCodes.Status406NotAcceptable)
-            .Produces(StatusCodes.Status429TooManyRequests);
+            .Produces(StatusCodes.Status429TooManyRequests)
+            .Produces(StatusCodes.Status503ServiceUnavailable);
 
         var reports = app.MapGroup("/api/problem-reports")
             .Apply(EndpointModifier.RequireAuth, EndpointModifier.AcceptHeaderFilter);
+        // Build-flag gate for every read route in the group: 503 when ProblemReports is compiled out.
+        reports.AddEndpointFilter(async (ctx, next) =>
+            RSCFeatureFlags.ProblemReports
+                ? await next(ctx)
+                : Results.Problem(RSCFeatureFlags.DisabledMessage, statusCode: RSCFeatureFlags.DisabledStatusCode));
 
         reports.Map(HttpVerb.Get, "/{platform}", (string platform, RSCIReportStore store, RSCReportServiceOptions opts) =>
                 RSCPlatforms.TryCanonicalize(platform, opts) is { } p

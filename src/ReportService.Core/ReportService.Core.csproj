@@ -12,6 +12,16 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <!-- Direct pin of the native SQLite bundle to override the vulnerable transitive
+         SQLitePCLRaw.lib.e_sqlite3 that Microsoft.Data.Sqlite 8.0.10 drags in. Advisory
+         GHSA-2m69-gcr7-jv3q (High) covers the whole 2.1.x line (vulnerable range is "less than or
+         equal to 2.1.11"); the fix ships only in the 3.0.x release line, so the pin must cross the
+         major. A top-level reference wins over the transitive version, so every project that uses
+         SQLite through Core resolves the patched native lib (and the matching 3.0.x core/provider).
+         Microsoft.Data.Sqlite 8.x binds SQLitePCLRaw via the provider API, which is stable across
+         this major; the real-SQLite test suite is the runtime compat gate. Re-check with the
+         dotnet list package vulnerable+transitive scan. -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
   </ItemGroup>

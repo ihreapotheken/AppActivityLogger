@@ -3,9 +3,10 @@ using ReportService.Storage.ApiKeys;
 
 namespace ReportService.Security;
 
-/// <summary>Outcome of resolving a presented API key: who it is, its role, and its effective
-/// per-minute rate limit. Shared by the auth handler and the rate limiter so they never disagree.</summary>
-public sealed record RSCApiKeyResolution(string KeyId, string Role, int EffectiveRateLimitPerMinute);
+/// <summary>Outcome of resolving a presented API key: who it is, its role, its effective per-minute
+/// rate limit, and the catalog client it's bound to (<c>null</c> for the root/unbound operator keys).
+/// Shared by the auth handler and the rate limiter so they never disagree.</summary>
+public sealed record RSCApiKeyResolution(string KeyId, string Role, int EffectiveRateLimitPerMinute, string? ClientId = null);
 
 /// <summary>
 /// Single source of truth for turning a presented <c>apiKey</c> header into an identity + limit.
@@ -33,7 +34,7 @@ public static class RSCApiKeyResolver
         var limit = rec.Role == RSCApiKeyRoles.Admin
             ? AdminLimit(options, rec.RateLimitPerMinute)
             : UserLimit(options, rec.RateLimitPerMinute);
-        return new RSCApiKeyResolution(rec.Id, rec.Role, limit);
+        return new RSCApiKeyResolution(rec.Id, rec.Role, limit, rec.ClientId);
     }
 
     private static int AdminLimit(RSCReportServiceOptions o, int? perKeyOverride) =>

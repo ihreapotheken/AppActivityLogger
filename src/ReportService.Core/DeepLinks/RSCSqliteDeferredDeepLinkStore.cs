@@ -20,12 +20,23 @@ public sealed class RSCSqliteDeferredDeepLinkStore : RSCIDeferredDeepLinkStore
     private const int InitialBusyBackoffMs = 25;
     private const int BusyTimeoutMs = 5_000;
     private const string IsoFormat = "O";
+    private const string ClickRetentionKey = "click_retention_days";
+
+    // The enabled-link set is scanned in C# on every POST /clicks capture (longest page-pattern
+    // substring wins, which no SQL index can serve). Loading thousands of rows from SQLite on every
+    // capture would be wasteful, so the set is cached in memory and reused. Writes invalidate it
+    // immediately; a short TTL bounds staleness as a backstop (e.g. a second process editing links).
+    private const long EnabledCacheTtlMs = 30_000;
 
     private readonly string _connectionString;
     private readonly string _dbPath;
     private readonly int _commandTimeoutSeconds;
     private readonly ILogger<RSCSqliteDeferredDeepLinkStore> _logger;
     private int _schemaVersion;
+
+    private readonly object _cacheLock = new();
+    private List<RSCDeferredDeepLink>? _enabledCache;
+    private long _enabledCacheTick;
 
     public string DbPath => _dbPath;
     public int SchemaVersion => _schemaVersion;
@@ -65,7 +76,13 @@ public sealed class RSCSqliteDeferredDeepLinkStore : RSCIDeferredDeepLinkStore
             }
 
             var runner = new RSCSchemaRunner(
-                new RSCISchemaMigration[] { new RSCDM001_CreateDeepLinkTables() }, _logger);
+                new RSCISchemaMigration[]
+                {
+                    new RSCDM001_CreateDeepLinkTables(),
+                    new RSCDM002_AddClickQueryParams(),
+                    new RSCDM003_AddSettingsAndLinkIndex(),
+                    new RSCDM004_AddClickSignals(),
+                }, _logger);
             _schemaVersion = runner.Run(conn);
 
             _logger.LogInformation("Deep-link store ready at {Path} (schema v{Version})", _dbPath, _schemaVersion);
@@ -79,8 +96,11 @@ public sealed class RSCSqliteDeferredDeepLinkStore : RSCIDeferredDeepLinkStore
 
     // -------- Link definitions --------
 
-    public async Task<IReadOnlyList<RSCDeferredDeepLink>> ListLinksAsync(CancellationToken ct)
+    public async Task<IReadOnlyList<RSCDeferredDeepLink>> ListLinksAsync(string? search, int limit, int offset, CancellationToken ct)
     {
+        var like = BuildLikePattern(search);
+        var capped = Math.Clamp(limit, 1, 1000);
+        var skip = Math.Max(0, offset);
         return await ExecuteWithRetryAsync<IReadOnlyList<RSCDeferredDeepLink>>(async innerCt =>
         {
             using var conn = await OpenAsync(innerCt).ConfigureAwait(false);
@@ -89,7 +109,12 @@ public sealed class RSCSqliteDeferredDeepLinkStore : RSCIDeferredDeepLinkStore
             cmd.CommandText = @"
 SELECT id, slug, name, page_pattern, redirect_url, enabled, created_at, updated_at
 FROM deferred_deep_links
-ORDER BY updated_at DESC;";
+WHERE (@like IS NULL OR slug LIKE @like ESCAPE '\' OR name LIKE @like ESCAPE '\' OR page_pattern LIKE @like ESCAPE '\')
+ORDER BY updated_at DESC, id DESC
+LIMIT @limit OFFSET @offset;";
+            cmd.Parameters.AddWithValue("@like", (object?)like ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@limit", capped);
+            cmd.Parameters.AddWithValue("@offset", skip);
 
             var rows = new List<RSCDeferredDeepLink>();
             using var reader = await cmd.ExecuteReaderAsync(innerCt).ConfigureAwait(false);
@@ -97,6 +122,33 @@ ORDER BY updated_at DESC;";
                 rows.Add(ReadLink(reader));
             return rows;
         }, ct).ConfigureAwait(false);
+    }
+
+    public async Task<int> CountLinksAsync(string? search, CancellationToken ct)
+    {
+        var like = BuildLikePattern(search);
+        return await ExecuteWithRetryAsync(async innerCt =>
+        {
+            using var conn = await OpenAsync(innerCt).ConfigureAwait(false);
+            using var cmd = conn.CreateCommand();
+            cmd.CommandTimeout = _commandTimeoutSeconds;
+            cmd.CommandText = @"
+SELECT COUNT(*) FROM deferred_deep_links
+WHERE (@like IS NULL OR slug LIKE @like ESCAPE '\' OR name LIKE @like ESCAPE '\' OR page_pattern LIKE @like ESCAPE '\');";
+            cmd.Parameters.AddWithValue("@like", (object?)like ?? DBNull.Value);
+            return Convert.ToInt32(await cmd.ExecuteScalarAsync(innerCt).ConfigureAwait(false) ?? 0);
+        }, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Builds a case-insensitive <c>LIKE</c> pattern from a free-text search, escaping the
+    /// LIKE metacharacters so a literal <c>%</c>/<c>_</c> in the term doesn't widen the match.
+    /// Returns null for a blank search (the query then matches all rows).</summary>
+    private static string? BuildLikePattern(string? search)
+    {
+        var trimmed = search?.Trim();
+        if (string.IsNullOrEmpty(trimmed)) return null;
+        var escaped = trimmed.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
+        return "%" + escaped + "%";
     }
 
     public async Task<RSCDeferredDeepLink?> GetLinkBySlugAsync(string slug, CancellationToken ct)
@@ -153,6 +205,7 @@ ON CONFLICT(slug) DO UPDATE SET
             cmd.Parameters.AddWithValue("@enabled", enabled ? 1 : 0);
             cmd.Parameters.AddWithValue("@now", nowIso);
             await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false);
+            InvalidateEnabledCache();
             return !wasPresent;
         }, ct).ConfigureAwait(false);
     }
@@ -169,7 +222,9 @@ ON CONFLICT(slug) DO UPDATE SET
             cmd.Parameters.AddWithValue("@enabled", enabled ? 1 : 0);
             cmd.Parameters.AddWithValue("@now", nowIso);
             cmd.Parameters.AddWithValue("@slug", slug);
-            return (await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false)) > 0;
+            var n = await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false);
+            InvalidateEnabledCache();
+            return n > 0;
         }, ct).ConfigureAwait(false);
     }
 
@@ -182,16 +237,19 @@ ON CONFLICT(slug) DO UPDATE SET
             cmd.CommandTimeout = _commandTimeoutSeconds;
             cmd.CommandText = "DELETE FROM deferred_deep_links WHERE slug = @slug;";
             cmd.Parameters.AddWithValue("@slug", slug);
-            return (await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false)) > 0;
+            var n = await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false);
+            InvalidateEnabledCache();
+            return n > 0;
         }, ct).ConfigureAwait(false);
     }
 
     // -------- Click capture + matching --------
 
     public async Task<RSCDeferredDeepLinkClick> RecordClickAsync(
-        string ip, string pageUrl, string? userAgent, DateTimeOffset at, CancellationToken ct)
+        string ip, string pageUrl, string? userAgent,
+        IReadOnlyDictionary<string, string>? queryParams, IReadOnlyDictionary<string, string>? signals,
+        DateTimeOffset at, CancellationToken ct)
     {
-        var atIso = ToIso(at);
         return await ExecuteWithRetryAsync(async innerCt =>
         {
             using var conn = await OpenAsync(innerCt).ConfigureAwait(false);
@@ -201,31 +259,58 @@ ON CONFLICT(slug) DO UPDATE SET
             // links is small and operator-managed, so an in-process scan is simpler — and more
             // flexible — than encoding "longest substring match" in SQL.
             var matched = await ResolveLinkAsync(conn, pageUrl, innerCt).ConfigureAwait(false);
-
-            using var cmd = conn.CreateCommand();
-            cmd.CommandTimeout = _commandTimeoutSeconds;
-            cmd.CommandText = @"
-INSERT INTO deferred_deep_link_clicks(ip, page_url, user_agent, link_slug, redirect_url, created_at, matched_at)
-VALUES(@ip, @page_url, @user_agent, @link_slug, @redirect_url, @created_at, NULL);
-SELECT last_insert_rowid();";
-            cmd.Parameters.AddWithValue("@ip", ip);
-            cmd.Parameters.AddWithValue("@page_url", pageUrl);
-            cmd.Parameters.AddWithValue("@user_agent", (object?)userAgent ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("@link_slug", (object?)matched?.Slug ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("@redirect_url", (object?)matched?.RedirectUrl ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("@created_at", atIso);
-            var id = Convert.ToInt64(await cmd.ExecuteScalarAsync(innerCt).ConfigureAwait(false) ?? 0L);
-
-            return new RSCDeferredDeepLinkClick(
-                Id: id,
-                Ip: ip,
-                PageUrl: pageUrl,
-                UserAgent: userAgent,
-                LinkSlug: matched?.Slug,
-                RedirectUrl: matched?.RedirectUrl,
-                CreatedAt: at,
-                MatchedAt: null);
+            return await InsertClickAsync(conn, ip, pageUrl, userAgent, matched?.Slug, matched?.RedirectUrl, queryParams, signals, at, innerCt)
+                .ConfigureAwait(false);
         }, ct).ConfigureAwait(false);
+    }
+
+    public async Task<RSCDeferredDeepLinkClick> RecordClickForLinkAsync(
+        RSCDeferredDeepLink link, string ip, string pageUrl, string? userAgent,
+        IReadOnlyDictionary<string, string>? queryParams, IReadOnlyDictionary<string, string>? signals,
+        DateTimeOffset at, CancellationToken ct)
+    {
+        return await ExecuteWithRetryAsync(async innerCt =>
+        {
+            using var conn = await OpenAsync(innerCt).ConfigureAwait(false);
+            return await InsertClickAsync(conn, ip, pageUrl, userAgent, link.Slug, link.RedirectUrl, queryParams, signals, at, innerCt)
+                .ConfigureAwait(false);
+        }, ct).ConfigureAwait(false);
+    }
+
+    private async Task<RSCDeferredDeepLinkClick> InsertClickAsync(
+        SqliteConnection conn, string ip, string pageUrl, string? userAgent,
+        string? linkSlug, string? redirectUrl, IReadOnlyDictionary<string, string>? queryParams,
+        IReadOnlyDictionary<string, string>? signals, DateTimeOffset at, CancellationToken ct)
+    {
+        var paramsJson = RSCDeepLinkQuery.Serialize(queryParams);
+        var signalsJson = RSCDeepLinkQuery.Serialize(signals);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandTimeout = _commandTimeoutSeconds;
+        cmd.CommandText = @"
+INSERT INTO deferred_deep_link_clicks(ip, page_url, user_agent, link_slug, redirect_url, query_params, signals, created_at, matched_at)
+VALUES(@ip, @page_url, @user_agent, @link_slug, @redirect_url, @query_params, @signals, @created_at, NULL);
+SELECT last_insert_rowid();";
+        cmd.Parameters.AddWithValue("@ip", ip);
+        cmd.Parameters.AddWithValue("@page_url", pageUrl);
+        cmd.Parameters.AddWithValue("@user_agent", (object?)userAgent ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@link_slug", (object?)linkSlug ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@redirect_url", (object?)redirectUrl ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@query_params", (object?)paramsJson ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@signals", (object?)signalsJson ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@created_at", ToIso(at));
+        var id = Convert.ToInt64(await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false) ?? 0L);
+
+        return new RSCDeferredDeepLinkClick(
+            Id: id,
+            Ip: ip,
+            PageUrl: pageUrl,
+            UserAgent: userAgent,
+            LinkSlug: linkSlug,
+            RedirectUrl: redirectUrl,
+            CreatedAt: at,
+            MatchedAt: null,
+            QueryParams: queryParams is { Count: > 0 } ? queryParams : null,
+            Signals: signals is { Count: > 0 } ? signals : null);
     }
 
     public async Task<RSCDeferredDeepLinkMatch?> FindMatchForIpAsync(
@@ -246,7 +331,7 @@ SELECT last_insert_rowid();";
             {
                 cmd.CommandTimeout = _commandTimeoutSeconds;
                 cmd.CommandText = @"
-SELECT c.id, l.slug, l.name, l.redirect_url, c.page_url, c.created_at
+SELECT c.id, l.slug, l.name, l.redirect_url, c.page_url, c.created_at, c.query_params, c.signals
 FROM deferred_deep_link_clicks c
 JOIN deferred_deep_links l ON l.slug = c.link_slug AND l.enabled = 1
 WHERE c.ip = @ip AND c.matched_at IS NULL AND c.created_at >= @cutoff
@@ -263,7 +348,9 @@ LIMIT 1;";
                     Name: reader.GetString(2),
                     RedirectUrl: reader.GetString(3),
                     PageUrl: reader.GetString(4),
-                    ClickedAt: ParseIso(reader.GetString(5)));
+                    ClickedAt: ParseIso(reader.GetString(5)),
+                    QueryParams: reader.IsDBNull(6) ? null : RSCDeepLinkQuery.Deserialize(reader.GetString(6)),
+                    Signals: reader.IsDBNull(7) ? null : RSCDeepLinkQuery.Deserialize(reader.GetString(7)));
             }
 
             if (claim)
@@ -280,20 +367,49 @@ LIMIT 1;";
         }, ct).ConfigureAwait(false);
     }
 
-    public async Task<IReadOnlyList<RSCDeferredDeepLinkClick>> ListRecentClicksAsync(int limit, CancellationToken ct)
+    public Task<IReadOnlyList<RSCDeferredDeepLinkClick>> ListRecentClicksAsync(int limit, CancellationToken ct) =>
+        ListClicksAsync(new RSCDeepLinkClickFilter(), limit, ct);
+
+    public async Task<IReadOnlyList<RSCDeferredDeepLinkClick>> ListClicksAsync(
+        RSCDeepLinkClickFilter filter, int limit, CancellationToken ct)
     {
         var capped = Math.Clamp(limit, 1, 1000);
+
+        // Build the WHERE from the captured "header data". String filters are case-insensitive
+        // substring matches; the free-text Header filter spans the User-Agent + the signals JSON
+        // (the X-DeepLink-* / client-hint headers) so an operator can search by a header key or value.
+        var clauses = new List<string>();
+        var binders = new List<Action<SqliteCommand>>();
+        void Like(string sql, string param, string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return;
+            clauses.Add(sql);
+            var pattern = "%" + value.Trim() + "%";
+            binders.Add(c => c.Parameters.AddWithValue(param, pattern));
+        }
+        Like("ip LIKE @ip", "@ip", filter.Ip);
+        Like("user_agent LIKE @ua", "@ua", filter.UserAgent);
+        Like("(COALESCE(user_agent,'') LIKE @hdr OR COALESCE(signals,'') LIKE @hdr)", "@hdr", filter.Header);
+        // "Matched" = the visit resolved to a configured link (link_slug denormalised on capture),
+        // mirroring the admin "Matched link" column — NOT whether an app later claimed it (matched_at).
+        if (filter.Matched is { } m)
+            clauses.Add(m ? "link_slug IS NOT NULL" : "link_slug IS NULL");
+
+        var where = clauses.Count == 0 ? string.Empty : "WHERE " + string.Join(" AND ", clauses);
+
         return await ExecuteWithRetryAsync<IReadOnlyList<RSCDeferredDeepLinkClick>>(async innerCt =>
         {
             using var conn = await OpenAsync(innerCt).ConfigureAwait(false);
             using var cmd = conn.CreateCommand();
             cmd.CommandTimeout = _commandTimeoutSeconds;
-            cmd.CommandText = @"
-SELECT id, ip, page_url, user_agent, link_slug, redirect_url, created_at, matched_at
+            cmd.CommandText = $@"
+SELECT id, ip, page_url, user_agent, link_slug, redirect_url, created_at, matched_at, query_params, signals
 FROM deferred_deep_link_clicks
-ORDER BY created_at DESC
+{where}
+ORDER BY created_at DESC, id DESC
 LIMIT @limit;";
             cmd.Parameters.AddWithValue("@limit", capped);
+            foreach (var bind in binders) bind(cmd);
 
             var rows = new List<RSCDeferredDeepLinkClick>();
             using var reader = await cmd.ExecuteReaderAsync(innerCt).ConfigureAwait(false);
@@ -307,27 +423,25 @@ LIMIT @limit;";
                     LinkSlug: reader.IsDBNull(4) ? null : reader.GetString(4),
                     RedirectUrl: reader.IsDBNull(5) ? null : reader.GetString(5),
                     CreatedAt: ParseIso(reader.GetString(6)),
-                    MatchedAt: reader.IsDBNull(7) ? null : ParseIso(reader.GetString(7))));
+                    MatchedAt: reader.IsDBNull(7) ? null : ParseIso(reader.GetString(7)),
+                    QueryParams: reader.IsDBNull(8) ? null : RSCDeepLinkQuery.Deserialize(reader.GetString(8)),
+                    Signals: reader.IsDBNull(9) ? null : RSCDeepLinkQuery.Deserialize(reader.GetString(9))));
             }
             return rows;
         }, ct).ConfigureAwait(false);
     }
 
     /// <summary>Picks the enabled link whose <c>page_pattern</c> is the longest case-insensitive
-    /// substring of <paramref name="pageUrl"/>. Returns null when no enabled link matches.</summary>
+    /// substring of <paramref name="pageUrl"/>. Returns null when no enabled link matches. Scans an
+    /// in-memory cache of the enabled set so a high-volume capture stream doesn't reload thousands of
+    /// definitions from SQLite on every click.</summary>
     private async Task<RSCDeferredDeepLink?> ResolveLinkAsync(SqliteConnection conn, string pageUrl, CancellationToken ct)
     {
-        using var cmd = conn.CreateCommand();
-        cmd.CommandTimeout = _commandTimeoutSeconds;
-        cmd.CommandText = @"
-SELECT id, slug, name, page_pattern, redirect_url, enabled, created_at, updated_at
-FROM deferred_deep_links WHERE enabled = 1;";
+        var enabled = GetCachedEnabled() ?? await LoadAndCacheEnabledAsync(conn, ct).ConfigureAwait(false);
 
         RSCDeferredDeepLink? best = null;
-        using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        foreach (var link in enabled)
         {
-            var link = ReadLink(reader);
             if (string.IsNullOrEmpty(link.PagePattern)) continue;
             if (pageUrl.Contains(link.PagePattern, StringComparison.OrdinalIgnoreCase) &&
                 (best is null || link.PagePattern.Length > best.PagePattern.Length))
@@ -336,6 +450,90 @@ FROM deferred_deep_links WHERE enabled = 1;";
             }
         }
         return best;
+    }
+
+    private List<RSCDeferredDeepLink>? GetCachedEnabled()
+    {
+        lock (_cacheLock)
+        {
+            if (_enabledCache is not null && Environment.TickCount64 - _enabledCacheTick < EnabledCacheTtlMs)
+                return _enabledCache;
+            return null;
+        }
+    }
+
+    private async Task<List<RSCDeferredDeepLink>> LoadAndCacheEnabledAsync(SqliteConnection conn, CancellationToken ct)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandTimeout = _commandTimeoutSeconds;
+        cmd.CommandText = @"
+SELECT id, slug, name, page_pattern, redirect_url, enabled, created_at, updated_at
+FROM deferred_deep_links WHERE enabled = 1;";
+
+        var list = new List<RSCDeferredDeepLink>();
+        using (var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                list.Add(ReadLink(reader));
+        }
+        lock (_cacheLock)
+        {
+            _enabledCache = list;
+            _enabledCacheTick = Environment.TickCount64;
+        }
+        return list;
+    }
+
+    private void InvalidateEnabledCache()
+    {
+        lock (_cacheLock) { _enabledCache = null; }
+    }
+
+    // -------- Settings + retention --------
+
+    public async Task<int?> GetClickRetentionDaysAsync(CancellationToken ct)
+    {
+        return await ExecuteWithRetryAsync<int?>(async innerCt =>
+        {
+            using var conn = await OpenAsync(innerCt).ConfigureAwait(false);
+            using var cmd = conn.CreateCommand();
+            cmd.CommandTimeout = _commandTimeoutSeconds;
+            cmd.CommandText = "SELECT value FROM deferred_deep_link_settings WHERE key = @k LIMIT 1;";
+            cmd.Parameters.AddWithValue("@k", ClickRetentionKey);
+            var raw = await cmd.ExecuteScalarAsync(innerCt).ConfigureAwait(false) as string;
+            return int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var days) ? days : null;
+        }, ct).ConfigureAwait(false);
+    }
+
+    public async Task SetClickRetentionDaysAsync(int days, CancellationToken ct)
+    {
+        await ExecuteWithRetryAsync(async innerCt =>
+        {
+            using var conn = await OpenAsync(innerCt).ConfigureAwait(false);
+            using var cmd = conn.CreateCommand();
+            cmd.CommandTimeout = _commandTimeoutSeconds;
+            cmd.CommandText = @"
+INSERT INTO deferred_deep_link_settings(key, value) VALUES(@k, @v)
+ON CONFLICT(key) DO UPDATE SET value = excluded.value;";
+            cmd.Parameters.AddWithValue("@k", ClickRetentionKey);
+            cmd.Parameters.AddWithValue("@v", days.ToString(CultureInfo.InvariantCulture));
+            await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false);
+            return 0;
+        }, ct).ConfigureAwait(false);
+    }
+
+    public async Task<int> PurgeClicksOlderThanAsync(DateTimeOffset cutoff, CancellationToken ct)
+    {
+        var cutoffIso = ToIso(cutoff);
+        return await ExecuteWithRetryAsync(async innerCt =>
+        {
+            using var conn = await OpenAsync(innerCt).ConfigureAwait(false);
+            using var cmd = conn.CreateCommand();
+            cmd.CommandTimeout = _commandTimeoutSeconds;
+            cmd.CommandText = "DELETE FROM deferred_deep_link_clicks WHERE created_at < @cutoff;";
+            cmd.Parameters.AddWithValue("@cutoff", cutoffIso);
+            return await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false);
+        }, ct).ConfigureAwait(false);
     }
 
     private static RSCDeferredDeepLink ReadLink(SqliteDataReader reader) => new(

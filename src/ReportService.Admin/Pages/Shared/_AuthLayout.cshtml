@@ -1,0 +1,44 @@
+@inject ReportService.Options.RSCReportServiceOptions ServiceOptions
+@*
+    Chromeless layout for the sign-in pages (/Login, /ClientLogin). Deliberately NOT _Layout: those
+    pages must never show the operator left-nav, and on the dev/loopback stack DevAutoSignIn
+    force-authenticates every request as a dev-operator, which would make _Layout render the full
+    sidebar around the login card (the reported bug). This layout has no `authed` branch, so it shows
+    the same slim header + card whether or not the request was auto-authenticated. Mirrors _Layout's
+    anonymous (`else`) chrome — keep the <head> stylesheet/favicon set in sync with _Layout.cshtml.
+*@
+@{
+    var title = ViewData["Title"] as string ?? "Sign in";
+    var env = string.IsNullOrWhiteSpace(ServiceOptions.Environment) ? "production" : ServiceOptions.Environment;
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>@title · Reports</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23d43034'/%3E%3Cpath d='M4 4h6l2 2v6H4z' fill='none' stroke='white' stroke-width='1.3'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="~/css/tokens.css" asp-append-version="true" />
+    <link rel="stylesheet" href="~/css/layout.css" asp-append-version="true" />
+    <link rel="stylesheet" href="~/css/components.css" asp-append-version="true" />
+</head>
+<body class="shell-anon">
+    <a href="#main" class="visually-hidden">Skip to content</a>
+    <header class="app-header">
+        <div class="bar">
+            <a class="brand" href="/" aria-label="Ihre Apotheken — home">
+                @await Html.PartialAsync("_BrandLogo")
+            </a>
+            <span class="env-badge env-@env.ToLowerInvariant()" title="ReportService:Environment" aria-label="Environment">@env</span>
+        </div>
+    </header>
+    <main id="main">
+        @RenderBody()
+    </main>
+    <footer>
+        <small>Reports · operator console</small>
+    </footer>
+    @await RenderSectionAsync("Scripts", required: false)
+</body>
+</html>

@@ -1,0 +1,77 @@
+name: CI
+
+# Three gates that mirror the local pre-merge checklist (see CLAUDE.md):
+#   1. dotnet test          — full integration suite against real in-memory SQLite.
+#   2. feature-off build    — both optional "Submissions" areas compiled out must still build clean.
+#   3. vulnerable scan       — no known-vulnerable NuGet packages (incl. transitive) may merge.
+# Any gate failing blocks the merge.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel an in-flight run when a newer commit is pushed to the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
+
+jobs:
+  build-test:
+    name: Build, test, feature-off build & vuln scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      # Cache NuGet so the vuln scan + builds don't re-download every run.
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Restore
+        run: dotnet restore
+
+      # Gate 1 — full suite (features ON, the default). Build first so a compile error is distinct
+      # from a test failure.
+      - name: Build (Release, features on)
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test --configuration Release --no-build --verbosity normal
+
+      # Gate 2 — the optional features must still compile when switched off at build time. Warnings
+      # are treated as errors here so the feature-off path can't silently rot (it's not exercised by
+      # the default test build).
+      - name: Build with optional features compiled out
+        run: >-
+          dotnet build --configuration Release
+          -p:FeatureAnalytics=false
+          -p:FeatureProblemReports=false
+          -warnaserror
+
+      # Gate 3 — fail on any known-vulnerable package (top-level OR transitive). `dotnet list` exits 0
+      # even when it finds vulnerabilities, so we parse its output and fail explicitly.
+      - name: Scan for vulnerable NuGet packages
+        run: |
+          set -euo pipefail
+          output="$(dotnet list package --vulnerable --include-transitive 2>&1)"
+          echo "$output"
+          if echo "$output" | grep -Eq 'has the following vulnerable packages|advisories/GHSA'; then
+            echo "::error::Vulnerable NuGet packages detected — see the listing above."
+            exit 1
+          fi
+          echo "No vulnerable packages."

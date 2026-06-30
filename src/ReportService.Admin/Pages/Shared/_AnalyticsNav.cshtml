@@ -1,0 +1,17 @@
+@*
+    Secondary navigation for the Analytics section. "Overview" (/Analytics) is the section
+    landing page; Sales, Retention, and Funnels are its subpages. The sidebar carries only the
+    single "Analytics" entry, so this strip is how operators move between the subpages. The
+    active tab is derived from the current Razor page route.
+*@
+@{
+    var analyticsNavPage = (ViewContext.RouteData.Values["page"] as string) ?? string.Empty;
+    string AnalyticsNavActive(string pageRoute) =>
+        string.Equals(analyticsNavPage, pageRoute, StringComparison.OrdinalIgnoreCase) ? "active" : string.Empty;
+}
+<nav class="subnav" aria-label="Analytics sections">
+    <a asp-page="/Analytics" class="@AnalyticsNavActive("/Analytics")">Overview</a>
+    <a asp-page="/AnalyticsSales" class="@AnalyticsNavActive("/AnalyticsSales")">Sales</a>
+    <a asp-page="/AnalyticsRetention" class="@AnalyticsNavActive("/AnalyticsRetention")">Retention</a>
+    <a asp-page="/AnalyticsFunnels" class="@AnalyticsNavActive("/AnalyticsFunnels")">Funnels</a>
+</nav>

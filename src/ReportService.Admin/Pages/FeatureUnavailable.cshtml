@@ -1,0 +1,23 @@
+@page
+@model ReportService.Admin.Pages.RSAFeatureUnavailableModel
+@{
+    ViewData["Title"] = "Not enabled";
+}
+
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Not enabled"))
+
+<section class="card feature-disabled">
+    <svg class="feature-disabled-art" width="96" height="96" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"
+         role="img" aria-hidden="true">
+        <circle cx="12" cy="12" r="9"></circle>
+        <line x1="6" y1="6" x2="18" y2="18"></line>
+    </svg>
+    <h2>@Model.FeatureName is not enabled</h2>
+    <empty-state>This feature isn’t enabled in this deployment. Please contact your administrator.</empty-state>
+    <hint-box>
+        Optional feature areas (Analytics, Problem reports) are switched on or off at build time via the
+        <code>Feature*</code> build flags. To enable this area, the service must be rebuilt with the
+        corresponding flag on (for example <code>-p:FeatureAnalytics=true</code>) and redeployed.
+    </hint-box>
+</section>

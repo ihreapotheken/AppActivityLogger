@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ReportService.Options;
+using ReportService.Storage.Catalog;
 
 namespace ReportService.Analytics;
 
@@ -17,16 +18,19 @@ public sealed class RSCAnalyticsCohortWorker : BackgroundService
     /// cohort with up to 60 days of slack before its row stops getting updated.</summary>
     private const int CohortWindowDays = 90;
 
-    private readonly RSCIAnalyticsStore _store;
+    private readonly RSCIAnalyticsStoreFactory _factory;
+    private readonly RSCICatalog _catalog;
     private readonly RSCAnalyticsOptions _options;
     private readonly ILogger<RSCAnalyticsCohortWorker> _logger;
 
     public RSCAnalyticsCohortWorker(
-        RSCIAnalyticsStore store,
+        RSCIAnalyticsStoreFactory factory,
+        RSCICatalog catalog,
         RSCAnalyticsOptions options,
         ILogger<RSCAnalyticsCohortWorker> logger)
     {
-        _store = store;
+        _factory = factory;
+        _catalog = catalog;
         _options = options;
         _logger = logger;
     }
@@ -70,12 +74,39 @@ public sealed class RSCAnalyticsCohortWorker : BackgroundService
         }
     }
 
+    /// <summary>Fan-out tick: recompute cohorts for every registered app's database, one bad app
+    /// skipped (logged) so it can't starve the rest. Returns total cohort rows updated.</summary>
     internal async Task<int> TickAsync(CancellationToken ct)
     {
+        var apps = await _catalog.ListAllAppsAsync(includeArchived: false, ct).ConfigureAwait(false);
+        var total = 0;
+        foreach (var app in apps)
+        {
+            try
+            {
+                var store = _factory.Get(app.ClientSlug, app.Slug);
+                total += await TickStoreAsync(store, _options, _logger, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Retention cohort recompute failed for app {Client}/{App}; skipping", app.ClientSlug, app.Slug);
+            }
+        }
+        return total;
+    }
+
+    /// <summary>Recompute cohorts for one app's database. Isolated for direct testing + fan-out reuse.</summary>
+    internal static async Task<int> TickStoreAsync(
+        RSCIAnalyticsStore store, RSCAnalyticsOptions options, ILogger logger, CancellationToken ct)
+    {
         var windowStart = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-CohortWindowDays);
-        var count = await _store.RecomputeRetentionCohortsAsync(
-            windowStart, _options.IdentifierHashVersion, ct).ConfigureAwait(false);
-        _logger.LogInformation(
+        var count = await store.RecomputeRetentionCohortsAsync(
+            windowStart, options.IdentifierHashVersion, ct).ConfigureAwait(false);
+        logger.LogInformation(
             "Retention cohorts recomputed: {Count} (platform, install_day) rows updated, window from {From}",
             count, windowStart);
         return count;

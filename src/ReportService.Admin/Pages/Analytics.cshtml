@@ -13,8 +13,9 @@
     var rowDeleteUrl = $"/Analytics{Model.Filter.ToQueryString(1)}&handler=DeleteOne";
 }
 @await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Analytics", subtitle))
+@await Html.PartialAsync("_AnalyticsNav")
 
-<hint-box docs-href="/Documentation#06-analytics--reading-the-engagement-dashboard">
+<hint-box docs-href="/Documentation#05-analytics--reading-the-engagement-dashboard">
     <p>
         These tiles show how many people use the app and how heavily. <strong>Daily active users</strong>
         counts the distinct people seen in the last 24 hours; <strong>monthly active users</strong> uses a
@@ -26,6 +27,7 @@
 </hint-box>
 
 @await Html.PartialAsync("_ScopeTabs", new RSAScopeTabsVM("/Analytics", scope))
+@await Html.PartialAsync("_TenantScope", Model.TenantScope)
 
 <section class="tiles" aria-label="Engagement summary">
     <tile label="Daily active users">@Model.Dashboard.DailyActiveUsers.ToString("N0")</tile>
@@ -49,30 +51,44 @@
 }
 else
 {
-    <div class="charts-row charts-row--trend">
-        <section class="card chart-card">
+    @* One full-width chart at a time under pill tabs — the three series are too tall stacked and
+       too cramped side-by-side. Progressive enhancement (chart-tabs.js): without JS the tablist
+       stays hidden and all three panels render stacked. *@
+    <div class="chart-tabs-group" data-chart-tabs>
+        <div class="chart-tabs" role="tablist" aria-label="Activity over time series" hidden>
+            <button type="button" class="chart-tab is-active" role="tab" id="trend-tab-users"
+                    data-chart-tab="users" aria-controls="trend-panel-users" aria-selected="true">Active users</button>
+            <button type="button" class="chart-tab" role="tab" id="trend-tab-sessions"
+                    data-chart-tab="sessions" aria-controls="trend-panel-sessions" aria-selected="false" tabindex="-1">Sessions</button>
+            <button type="button" class="chart-tab" role="tab" id="trend-tab-events"
+                    data-chart-tab="events" aria-controls="trend-panel-events" aria-selected="false" tabindex="-1">Events</button>
+        </div>
+        <section class="card chart-card" role="tabpanel" id="trend-panel-users"
+                 data-chart-panel="users" aria-labelledby="trend-tab-users">
             <h3>Active users / day</h3>
             @await Html.PartialAsync("_LineChart", new RSALineChartVM(
                 usersPts, ValueNoun: "users", LabelStep: trendStep,
-                AriaLabel: "Distinct active users per day over the last 30 days", ViewHeight: 380))
+                AriaLabel: "Distinct active users per day over the last 30 days", ViewHeight: 260))
         </section>
-        <section class="card chart-card">
+        <section class="card chart-card" role="tabpanel" id="trend-panel-sessions"
+                 data-chart-panel="sessions" aria-labelledby="trend-tab-sessions">
             <h3>Sessions / day</h3>
             @await Html.PartialAsync("_LineChart", new RSALineChartVM(
                 sessionsPts, ValueNoun: "sessions", LabelStep: trendStep,
-                AriaLabel: "Sessions started per day over the last 30 days", ViewHeight: 380))
+                AriaLabel: "Sessions started per day over the last 30 days", ViewHeight: 260))
         </section>
-        <section class="card chart-card">
+        <section class="card chart-card" role="tabpanel" id="trend-panel-events"
+                 data-chart-panel="events" aria-labelledby="trend-tab-events">
             <h3>Events / day</h3>
             @await Html.PartialAsync("_LineChart", new RSALineChartVM(
                 eventsPts, ValueNoun: "events", LabelStep: trendStep,
-                AriaLabel: "Analytics events recorded per day over the last 30 days", ViewHeight: 380))
+                AriaLabel: "Analytics events recorded per day over the last 30 days", ViewHeight: 260))
         </section>
     </div>
     <p class="legend">Distinct users, sessions, and total events per UTC day@(scope is null ? " (iOS + Android)" : $" on {scope}") — hover a point for the exact count.</p>
 }
 
-<h2>Active users by platform</h2>
+<h2>Composition by platform</h2>
 <div class="charts-row">
     <section class="card chart-card">
         <h3>Daily active users</h3>
@@ -94,6 +110,16 @@ else
         @await Html.PartialAsync("_DonutChart", new RSADonutChartVM(
             mauSlices, CenterLabel: "MAU", AriaLabel: "Monthly active users by platform"))
     </section>
+    <section class="card chart-card">
+        <h3>Events · 30 days</h3>
+        @{
+            var eventSlices = Model.Dashboard.Platforms
+                .Select((p, i) => new RSADonutSlice(p.Name, p.EventsLast30Days, $"chart-c{(i % 6) + 1}"))
+                .ToList();
+        }
+        @await Html.PartialAsync("_DonutChart", new RSADonutChartVM(
+            eventSlices, CenterLabel: "EVENTS", AriaLabel: "Analytics events by platform over the last 30 days"))
+    </section>
 </div>
 
 <h2>Platforms</h2>
@@ -104,6 +130,7 @@ else
             <th scope="col" sort="num" tip="Daily active users: distinct anonymous IDs with at least one event in the last 24 hours.">DAU</th>
             <th scope="col" sort="num" tip="Monthly active users: distinct anonymous IDs active in the trailing 30-day rolling window.">MAU</th>
             <th scope="col" sort="num" tip="Number of sessions started on this platform so far today.">Sessions today</th>
+            <th scope="col" sort="num" tip="Total analytics events recorded on this platform over the trailing 30 days.">Events (30d)</th>
             <th scope="col" tip="Mean session length for this platform — time between session_start and session_end events.">Avg session</th>
             <th scope="col"></th>
         </tr>
@@ -116,6 +143,7 @@ else
             <td>@p.DailyActiveUsers.ToString("N0")</td>
             <td>@p.MonthlyActiveUsers.ToString("N0")</td>
             <td>@p.SessionsToday.ToString("N0")</td>
+            <td>@p.EventsLast30Days.ToString("N0")</td>
             <td>@FormatDuration(p.AverageSessionLength)</td>
             <td><a asp-page="/Errors" asp-route-platform="@p.Name">errors →</a></td>
         </tr>

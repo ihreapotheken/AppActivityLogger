@@ -21,6 +21,16 @@ public static class RSAnalyticsEndpoints
     private const string IngestAnalyticsBatchDescription = """
         The **mobile SDK** analytics path.
 
+        **Tenancy** — events are differentiated by `appId`, `environment`, and `clientId` (alongside
+        `platform`). Supply them as body fields or via the `X-Analytics-App` / `X-Analytics-Environment`
+        / `X-Analytics-Client` headers (header wins over body); omitted values resolve to the configured
+        defaults. They are validated against the admin catalog — an unregistered app/environment/client
+        rejects the whole batch (`app_unknown` / `environment_unknown` / `client_unknown`). `clientId` is
+        stored verbatim as the client/tenant key, so it must be a non-PII business key.
+
+        **Availability** — when the Analytics feature is compiled out (build flag `FeatureAnalytics=false`),
+        this route returns **503 Service Unavailable** with a "feature not enabled" message.
+
         JSON body shaped as `RSCAnalyticsBatch`. The server validates the batch, persists accepted
         events to `analytics_events` (idempotent on `platform + eventId`), and dead-letters rejected
         events with a documented reason. Returns `202 Accepted` with an `RSCAnalyticsBatchReceipt`.
@@ -122,6 +132,11 @@ public static class RSAnalyticsEndpoints
         app.Map(HttpVerb.Post, "/api/v2/analytics/events",
                 async (HttpRequest req, RSAnalyticsIngestionService svc, CancellationToken ct) =>
                 {
+                    // Build-flag gate: the Analytics feature can be compiled out (`-p:FeatureAnalytics=false`).
+                    // When off, the route stays mapped but returns 503 (deliberately not served by this
+                    // build — a service-availability condition, not an unexpected 500 error).
+                    if (!RSCFeatureFlags.Analytics)
+                        return Results.Problem(RSCFeatureFlags.DisabledMessage, statusCode: RSCFeatureFlags.DisabledStatusCode);
                     var r = await svc.IngestAsync(req, ct);
                     return r.Success
                         ? Results.Accepted(value: r.Receipt)
@@ -143,6 +158,7 @@ public static class RSAnalyticsEndpoints
             .Produces(StatusCodes.Status413PayloadTooLarge)
             .Produces(StatusCodes.Status415UnsupportedMediaType)
             .Produces(StatusCodes.Status429TooManyRequests)
+            .Produces(StatusCodes.Status500InternalServerError)
             .Produces(StatusCodes.Status503ServiceUnavailable);
 
         // First-party / server-to-server reporting. Same auth, rate-limiter, and pipeline as the
@@ -152,6 +168,8 @@ public static class RSAnalyticsEndpoints
         app.Map(HttpVerb.Post, "/api/v2/analytics/server-events",
                 async (HttpRequest req, RSAnalyticsIngestionService svc, CancellationToken ct) =>
                 {
+                    if (!RSCFeatureFlags.Analytics)
+                        return Results.Problem(RSCFeatureFlags.DisabledMessage, statusCode: RSCFeatureFlags.DisabledStatusCode);
                     var r = await svc.IngestServerAsync(req, ct);
                     return r.Success
                         ? Results.Accepted(value: r.Receipt)
@@ -173,6 +191,7 @@ public static class RSAnalyticsEndpoints
             .Produces(StatusCodes.Status413PayloadTooLarge)
             .Produces(StatusCodes.Status415UnsupportedMediaType)
             .Produces(StatusCodes.Status429TooManyRequests)
+            .Produces(StatusCodes.Status500InternalServerError)
             .Produces(StatusCodes.Status503ServiceUnavailable);
 
         return app;

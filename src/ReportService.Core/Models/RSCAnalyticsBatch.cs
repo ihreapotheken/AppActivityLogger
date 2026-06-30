@@ -16,8 +16,12 @@ namespace ReportService.Models;
 ///         a retry of the same batch is deduped on this ID alone.</item>
 ///   <item><see cref="AnonymousId"/>: stable per-install identifier. Hashed server-side with the
 ///         configured pepper before any row reaches the rollup tables. Never stored verbatim.</item>
-///   <item><see cref="ClientId"/>: optional identifier the SDK can supply if the host app has its
-///         own concept of "client" (e.g. pharmacy id). Also hashed.</item>
+///   <item><see cref="ClientId"/>: the client/tenant the events belong to (e.g. a pharmacy id).
+///         A tenancy differentiator stored <b>verbatim</b> (validated against the catalog), <b>not</b>
+///         hashed — it is a business key, not user PII. Omitted ⇒ the configured default client.</item>
+///   <item><see cref="AppId"/> / <see cref="Environment"/>: the app slug + environment the batch
+///         belongs to. May also be supplied via the <c>X-Analytics-App</c> / <c>X-Analytics-Environment</c>
+///         request headers; omitted ⇒ the configured defaults. Validated against the catalog.</item>
 /// </list>
 /// </remarks>
 public sealed record RSCAnalyticsBatch(
@@ -29,5 +33,7 @@ public sealed record RSCAnalyticsBatch(
     string? AnonymousId,
     string? ClientId,
     string GeneratedAt,
-    IReadOnlyList<RSCAnalyticsEvent> Events
+    IReadOnlyList<RSCAnalyticsEvent> Events,
+    string? AppId = null,
+    string? Environment = null
 );

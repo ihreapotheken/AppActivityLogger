@@ -9,7 +9,7 @@
 | [`ReportService.Admin`](../../src/ReportService.Admin/) | The **merged host** the compose stack runs: it mounts the ingestion routes *and* the Razor Pages operator console in one process, wired with multi-scheme auth. |
 
 The previous two-container split (public ingestion + loopback admin) is gone. Today a single
-process binds one port; cookie auth + auto-sign-in gate the Razor pages (`/`, `/Reports`,
+process binds one port; cookie auth + auto-sign-in gate the Razor pages (`/`, `/ProblemReports`,
 `/Analytics`, …), `apiKey` gates the ingestion routes (`/partners/api/v2/report-problem`,
 `/api/v1/reports`, `/api/v2/analytics/events`, …), and the network binding (host loopback only)
 bounds exposure.

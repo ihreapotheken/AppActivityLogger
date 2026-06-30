@@ -24,6 +24,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- The integration test project constructs internal services (e.g. RSAReportListingService)
+         directly against a real SQLite index, mirroring ReportService.Core. -->
+    <InternalsVisibleTo Include="ReportService.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\ReportService.Core\ReportService.Core.csproj" />
     <!-- The admin process now hosts the ingestion endpoints as well (single-process merge), so it
          needs the route maps + Minimal API helpers from the ReportService project. The standalone

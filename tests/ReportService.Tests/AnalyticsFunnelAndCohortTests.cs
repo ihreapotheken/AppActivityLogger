@@ -37,7 +37,7 @@ public class AnalyticsFunnelAndCohortTests : IDisposable
             MaxClockSkewSeconds = int.MaxValue / 2,
         };
         _store = new RSCSqliteAnalyticsStore(_reportOptions, _analyticsOptions, NullLogger<RSCSqliteAnalyticsStore>.Instance);
-        _validator = new RSCAnalyticsValidator(_analyticsOptions, _reportOptions);
+        _validator = new RSCAnalyticsValidator(_analyticsOptions, _reportOptions, RSATestCatalog.Permissive, new ReportService.Options.RSCCatalogOptions());
         _hasher = new RSCAnalyticsIdentifierHasher(_analyticsOptions);
     }
 
@@ -46,9 +46,6 @@ public class AnalyticsFunnelAndCohortTests : IDisposable
     {
         // Hand-craft analytics_user_days rows via the worker path: write events with chosen
         // occurredAt timestamps and let the aggregation worker fold them into user-days.
-        var aggWorker = new RSCAnalyticsAggregationWorker(_store, _analyticsOptions,
-            NullLogger<RSCAnalyticsAggregationWorker>.Instance);
-
         var installDay = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(-31);
 
         // User A: active on install_day, day+1, day+7, day+30. Should be counted in all three windows.
@@ -65,14 +62,14 @@ public class AnalyticsFunnelAndCohortTests : IDisposable
         // User C: install only. None of D1/D7/D30.
         await WriteEvent("user-C", installDay, "evt-c-0");
 
-        await aggWorker.TickAsync(default);
+        await RSCAnalyticsAggregationWorker.TickStoreAsync(_store, _analyticsOptions,
+            NullLogger<RSCAnalyticsAggregationWorker>.Instance, default);
 
-        var worker = new RSCAnalyticsCohortWorker(_store, _analyticsOptions,
-            NullLogger<RSCAnalyticsCohortWorker>.Instance);
-        var cohortsTouched = await worker.TickAsync(default);
+        var cohortsTouched = await RSCAnalyticsCohortWorker.TickStoreAsync(_store, _analyticsOptions,
+            NullLogger<RSCAnalyticsCohortWorker>.Instance, default);
         Assert.True(cohortsTouched > 0);
 
-        var rows = await _store.ListRetentionCohortsAsync("android", days: 60, default);
+        var rows = await _store.ListRetentionCohortsAsync(RSCAnalyticsScope.ForPlatform("android"), days: 60, default);
         var cohort = rows.Single(r => r.InstallDay == installDay);
         Assert.Equal(3, cohort.CohortSize);
         Assert.Equal(2, cohort.Day1Retained);
@@ -116,13 +113,12 @@ public class AnalyticsFunnelAndCohortTests : IDisposable
         await WriteNamedEvent("session-4", "evt-4a", "ecommerce", "purchase",             now.AddSeconds(-60));
         await WriteNamedEvent("session-4", "evt-4b", "action",    "otc_search_submitted", now.AddSeconds(-50));
 
-        var worker = new RSCAnalyticsFunnelWorker(_store, _analyticsOptions,
-            NullLogger<RSCAnalyticsFunnelWorker>.Instance);
-        var observed = await worker.TickAsync(default);
+        var observed = await RSCAnalyticsFunnelWorker.TickStoreAsync(_store, _analyticsOptions,
+            NullLogger<RSCAnalyticsFunnelWorker>.Instance, default);
         Assert.True(observed > 0);
 
         var summary = await _store.GetFunnelSummaryAsync("test_funnel",
-            now.AddDays(-1), now.AddDays(1), platform: null, default);
+            now.AddDays(-1), now.AddDays(1), RSCAnalyticsScope.All, default);
         var byStep = summary.ToDictionary(s => s.StepIndex, s => s.SessionsReached);
 
         Assert.Equal(4, byStep[0]); // every session reached step 0

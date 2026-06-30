@@ -1,6 +1,6 @@
 @*
     Renders one Top-N table for the Stats page with built-in pagination. Each row links into
-    /Reports filtered by the bucket's column so the operator can drill from "top N pharmacies"
+    /ProblemReports filtered by the bucket's column so the operator can drill from "top N pharmacies"
     straight to the matching report list. The parent page supplies prev/next URLs so it can
     preserve every other bucket's page state in the query string.
 *@
@@ -46,7 +46,7 @@
                         <td>
                             @if (b.Key != "(unset)" && !string.IsNullOrEmpty(Model.FilterParam))
                             {
-                                <a asp-page="/Reports" asp-route-@Model.FilterParam="@b.Key">filter</a>
+                                <a asp-page="/ProblemReports" asp-route-@Model.FilterParam="@b.Key">filter</a>
                             }
                         </td>
                     </tr>

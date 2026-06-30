@@ -50,7 +50,8 @@ else
                 <li>
                     <span class="donut-key @s.ColorClass" aria-hidden="true"></span>
                     <span class="donut-key-label">@s.Label</span>
-                    <span class="donut-key-val">@s.Value.ToString("N0") <span class="muted">@Pct(s.Value)</span></span>
+                    <span class="donut-key-val">@s.Value.ToString("N0")</span>
+                    <span class="donut-key-pct">@Pct(s.Value)</span>
                 </li>
             }
         </ul>

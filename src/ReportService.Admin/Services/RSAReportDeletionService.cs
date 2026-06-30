@@ -101,6 +101,7 @@ public sealed class RSAReportDeletionService : IRSAReportDeletionService
         Add("phone", f.Phone);
         Add("appVersion", f.AppVersion);
         Add("channel", f.Channel);
+        Add("kind", f.Kind);
         Add("topFrame", f.TopFrame);
         if (f.HasAttachment is { } ha) Add("hasAttachment", ha ? "true" : "false");
         if (f.From is { } from) Add("from", from.ToString("yyyy-MM-ddTHH:mm"));

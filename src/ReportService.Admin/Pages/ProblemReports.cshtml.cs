@@ -19,8 +19,16 @@ namespace ReportService.Admin.Pages;
 public sealed class RSAProblemReportsModel : PageModel
 {
     private const int PageSize = 30;
-    private static readonly RSAReportListingScope Scope = new(
-        KindNotIn: new[] { "crash", "analytics" });
+
+    // Tenancy scope from the global client/app selection (filled from the rsc_scope cookie by the
+    // scope-fill middleware, or an explicit ?client/?app). Null = all apps (operator-wide view).
+    [BindProperty(SupportsGet = true, Name = "client")] public string? Client { get; set; }
+    [BindProperty(SupportsGet = true, Name = "app")] public string? App { get; set; }
+
+    private RSAReportListingScope Scope => new(
+        KindNotIn: new[] { "crash", "analytics" },
+        ClientId: string.IsNullOrWhiteSpace(Client) ? null : Client.Trim().ToLowerInvariant(),
+        AppId: string.IsNullOrWhiteSpace(App) ? null : App.Trim().ToLowerInvariant());
 
     private readonly IRSAReportListingService _listing;
     private readonly RSCReportServiceOptions _options;

@@ -2,6 +2,11 @@
 #
 # systemd unit for the ReportService ASP.NET Core 8 application.
 #
+# This runs the MERGED host (ReportService.Admin.dll): one process that serves
+# both the Razor Pages admin UI and the SDK-facing ingestion routes. The old
+# standalone ingestion entrypoint (ReportService.dll) is no longer deployed this
+# way — publish src/ReportService.Admin (install.sh does).
+#
 # PLACEHOLDER PATHS: the install prefix (/opt/report-service), reports root
 # (/srv/reports), log directory (/var/log/report-service) and environment
 # file (/etc/report-service/report-service.env) are defaults. If your
@@ -30,7 +35,7 @@ Type=simple
 User=report-service
 Group=report-service
 WorkingDirectory=/opt/report-service
-ExecStart=/usr/bin/dotnet /opt/report-service/ReportService.dll
+ExecStart=/usr/bin/dotnet /opt/report-service/ReportService.Admin.dll
 EnvironmentFile=-/etc/report-service/report-service.env
 # Restart= recovers a process that EXITS (crash, OOM-kill, unhandled exception).
 # It cannot detect a hung-but-alive process — that gap is closed by

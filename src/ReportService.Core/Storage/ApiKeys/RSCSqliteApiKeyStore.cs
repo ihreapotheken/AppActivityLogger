@@ -76,7 +76,8 @@ public sealed class RSCSqliteApiKeyStore : RSCIApiKeyStore
                 pragma.ExecuteNonQuery();
             }
 
-            var runner = new RSCSchemaRunner(new RSCISchemaMigration[] { new RSCMK001_CreateApiKeys() }, _logger);
+            var runner = new RSCSchemaRunner(
+                new RSCISchemaMigration[] { new RSCMK001_CreateApiKeys(), new RSCMK002_AddClientBinding() }, _logger);
             var version = runner.Run(conn);
 
             _ready = true;
@@ -110,7 +111,8 @@ public sealed class RSCSqliteApiKeyStore : RSCIApiKeyStore
         DateTimeOffset? expiresAt,
         int? rateLimitPerMinute,
         string createdBy,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? clientId = null)
     {
         if (!RSCApiKeyRoles.IsValid(role))
             throw new ArgumentException($"role must be '{RSCApiKeyRoles.Admin}' or '{RSCApiKeyRoles.User}'", nameof(role));
@@ -120,6 +122,7 @@ public sealed class RSCSqliteApiKeyStore : RSCIApiKeyStore
             throw new ArgumentException("expiresAt must be in the future", nameof(expiresAt));
         EnsureReady();
 
+        var normalizedClient = string.IsNullOrWhiteSpace(clientId) ? null : clientId.Trim().ToLowerInvariant();
         var gen = RSCApiKeyGenerator.Create();
         var createdAt = DateTimeOffset.UtcNow;
 
@@ -129,8 +132,8 @@ public sealed class RSCSqliteApiKeyStore : RSCIApiKeyStore
             using var cmd = conn.CreateCommand();
             cmd.CommandTimeout = _commandTimeoutSeconds;
             cmd.CommandText = @"
-INSERT INTO api_keys(id, key_hash, role, label, created_at, created_by, expires_at, revoked_at, rate_limit_per_minute, last_used_at)
-VALUES(@id, @hash, @role, @label, @created_at, @created_by, @expires_at, NULL, @rate, NULL);";
+INSERT INTO api_keys(id, key_hash, role, label, created_at, created_by, expires_at, revoked_at, rate_limit_per_minute, last_used_at, client_id)
+VALUES(@id, @hash, @role, @label, @created_at, @created_by, @expires_at, NULL, @rate, NULL, @client_id);";
             cmd.Parameters.AddWithValue("@id", gen.Id);
             cmd.Parameters.AddWithValue("@hash", gen.Hash);
             cmd.Parameters.AddWithValue("@role", role);
@@ -139,6 +142,7 @@ VALUES(@id, @hash, @role, @label, @created_at, @created_by, @expires_at, NULL, @
             cmd.Parameters.AddWithValue("@created_by", (object?)createdBy ?? DBNull.Value);
             cmd.Parameters.AddWithValue("@expires_at", expiresAt is { } exp ? Format(exp) : (object)DBNull.Value);
             cmd.Parameters.AddWithValue("@rate", (object?)rateLimitPerMinute ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@client_id", (object?)normalizedClient ?? DBNull.Value);
             await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false);
             return 0;
         }, ct).ConfigureAwait(false);
@@ -147,7 +151,8 @@ VALUES(@id, @hash, @role, @label, @created_at, @created_by, @expires_at, NULL, @
 
         var meta = new RSCApiKeyMetadata(
             Id: gen.Id, Role: role, Label: label, CreatedAt: createdAt, CreatedBy: createdBy,
-            ExpiresAt: expiresAt, RevokedAt: null, RateLimitPerMinute: rateLimitPerMinute, LastUsedAt: null);
+            ExpiresAt: expiresAt, RevokedAt: null, RateLimitPerMinute: rateLimitPerMinute, LastUsedAt: null,
+            ClientId: normalizedClient);
         return new RSCApiKeyCreated(meta, gen.PlaintextKey);
     }
 
@@ -161,7 +166,7 @@ VALUES(@id, @hash, @role, @label, @created_at, @created_by, @expires_at, NULL, @
             using var cmd = conn.CreateCommand();
             cmd.CommandTimeout = _commandTimeoutSeconds;
             cmd.CommandText = @"
-SELECT id, role, label, created_at, created_by, expires_at, revoked_at, rate_limit_per_minute, last_used_at
+SELECT id, role, label, created_at, created_by, expires_at, revoked_at, rate_limit_per_minute, last_used_at, client_id
 FROM api_keys ORDER BY created_at DESC;";
 
             var rows = new List<RSCApiKeyMetadata>();
@@ -177,7 +182,8 @@ FROM api_keys ORDER BY created_at DESC;";
                     ExpiresAt: reader.IsDBNull(5) ? null : ParseTs(reader.GetString(5)),
                     RevokedAt: reader.IsDBNull(6) ? null : ParseTs(reader.GetString(6)),
                     RateLimitPerMinute: reader.IsDBNull(7) ? null : (int)reader.GetInt64(7),
-                    LastUsedAt: reader.IsDBNull(8) ? null : ParseTs(reader.GetString(8))));
+                    LastUsedAt: reader.IsDBNull(8) ? null : ParseTs(reader.GetString(8)),
+                    ClientId: reader.IsDBNull(9) ? null : reader.GetString(9)));
             }
             return rows;
         }, ct).ConfigureAwait(false);
@@ -248,7 +254,7 @@ FROM api_keys ORDER BY created_at DESC;";
     private void RebuildCache(SqliteConnection conn)
     {
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT key_hash, id, role, rate_limit_per_minute, expires_at, revoked_at FROM api_keys WHERE revoked_at IS NULL;";
+        cmd.CommandText = "SELECT key_hash, id, role, rate_limit_per_minute, expires_at, revoked_at, client_id FROM api_keys WHERE revoked_at IS NULL;";
 
         var next = new Dictionary<string, RSCApiKeyRecord>(StringComparer.Ordinal);
         using var reader = cmd.ExecuteReader();
@@ -260,7 +266,8 @@ FROM api_keys ORDER BY created_at DESC;";
                 Role: reader.GetString(2),
                 RateLimitPerMinute: reader.IsDBNull(3) ? null : (int)reader.GetInt64(3),
                 ExpiresAt: reader.IsDBNull(4) ? null : ParseTs(reader.GetString(4)),
-                RevokedAt: null);
+                RevokedAt: null,
+                ClientId: reader.IsDBNull(6) ? null : reader.GetString(6));
         }
         _cache = next;
     }

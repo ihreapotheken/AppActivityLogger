@@ -6,9 +6,11 @@
 #   sudo ./install.sh [--help]
 #
 # Prerequisites:
-#   1. Publish the app first, from the repository root:
-#        dotnet publish src/ReportService -c Release -o ops/publish
-#      This script expects the resulting directory at:
+#   1. Publish the MERGED host first, from the repository root:
+#        dotnet publish src/ReportService.Admin -c Release -o ops/publish
+#      (This is the one process that serves both the admin UI and the SDK
+#      ingestion routes; it produces ReportService.Admin.dll, which the unit
+#      file's ExecStart runs.) This script expects the resulting directory at:
 #        <script dir>/publish/
 #   2. The .NET 8 runtime (or the self-contained publish output) must be
 #      installed at /usr/bin/dotnet. Adjust ExecStart in the unit file if
@@ -61,7 +63,7 @@ EXTRA_UNITS=(report-service-watchdog.service report-service-watchdog.timer repor
 log()  { printf '[install] %s\n' "$*"; }
 fail() { printf '[install] ERROR: %s\n' "$*" >&2; exit 1; }
 
-[[ -d "$PUBLISH_DIR" ]] || fail "publish dir not found at ${PUBLISH_DIR}. Run 'dotnet publish src/ReportService -c Release -o ops/publish' first."
+[[ -d "$PUBLISH_DIR" ]] || fail "publish dir not found at ${PUBLISH_DIR}. Run 'dotnet publish src/ReportService.Admin -c Release -o ops/publish' first."
 [[ -f "$UNIT_SRC" ]]    || fail "unit file not found at ${UNIT_SRC}."
 command -v rsync      >/dev/null 2>&1 || fail "rsync is required."
 command -v systemctl  >/dev/null 2>&1 || fail "systemctl is required."
@@ -124,16 +126,36 @@ if [[ ! -f "$ENV_FILE" ]]; then
 ASPNETCORE_URLS=http://127.0.0.1:8080
 ASPNETCORE_ENVIRONMENT=Production
 DOTNET_PRINT_TELEMETRY_MESSAGE=false
+# Merged host runs the admin UI publicly-ish: keep the dev login bypass OFF in Production so
+# operators authenticate for real against Admin__AdminKey (the app also gates the bypass to
+# loopback, but do not rely on that alone).
+ADMIN_DEV_AUTO_SIGN_IN=false
 
 # Report service configuration. Values here override appsettings.json.
-# ReportService__ApiKey: REQUIRED. Replace with a strong random secret.
-ReportService__ApiKey=CHANGE_ME_TO_A_STRONG_SECRET
+# ReportService__ApiKey: REQUIRED — the SDK-facing root key. Generate: openssl rand -hex 32
+ReportService__ApiKey=CHANGE_ME_RUN_openssl_rand_hex_32
 ReportService__ReportsRoot=/srv/reports
-# Anchor writable SQLite state under ReportsRoot so ProtectSystem=strict doesn't block it.
+# Anchor every writable SQLite DB under ReportsRoot so ProtectSystem=strict + ReadWritePaths
+# (=/srv/reports) don't block them. These all default to relative paths (resolved from the working
+# dir) which would land outside the one writable path, so set them explicitly here.
 ReportService__SqliteDbPath=/srv/reports/reports.db
 ReportService__AuthAbuseDbPath=/srv/reports/auth-abuse.db
+ReportService__ApiKeysDbPath=/srv/reports/api-keys.db
 # ReportService__MaxUploadBytes=10485760
 # ReportService__RateLimitPermitsPerMinute=60
+
+# ---- Admin UI (merged host) ----
+# Operator sign-in secret typed on /Login. DIFFERENT from the SDK ApiKey above.
+# REQUIRED in Production. Generate: openssl rand -hex 32
+Admin__AdminKey=CHANGE_ME_RUN_openssl_rand_hex_32
+
+# ---- Analytics ----
+# Pepper mixed into the SHA-256 of every anonymousId before storage. Production REFUSES TO BOOT the
+# analytics pipeline if this is empty/placeholder. Generate: openssl rand -hex 32
+Analytics__IdentifierHashPepper=CHANGE_ME_RUN_openssl_rand_hex_32
+# Analytics + tenancy-catalog DBs (anchored under ReportsRoot like the others).
+Analytics__SqliteDbPath=/srv/reports/analytics.db
+Catalog__SqliteDbPath=/srv/reports/catalog.db
 EOF
     chown root:"$SERVICE_GROUP" "$ENV_FILE"
     chmod 0600 "$ENV_FILE"
@@ -178,7 +200,9 @@ cat <<EOF
 report-service installed.
 
 Next steps:
-  1. Edit ${ENV_FILE} and replace the ApiKey placeholder.
+  1. Edit ${ENV_FILE} and replace EVERY CHANGE_ME placeholder — at minimum
+     ReportService__ApiKey, Admin__AdminKey and Analytics__IdentifierHashPepper
+     (Production refuses to boot with placeholder/empty secrets).
   2. Start the service:
        sudo systemctl start report-service
   3. Check status / logs:

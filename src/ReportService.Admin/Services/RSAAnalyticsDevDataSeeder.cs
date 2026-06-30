@@ -45,6 +45,20 @@ internal static class RSAAnalyticsDevDataSeeder
     private static readonly string[] OpenReasons = ["push", "direct", "widget", "deep_link", "notification"];
     private static readonly string[] FormIds     = ["rx_upload_form", "address_form", "contact_form"];
 
+    // Payment method stamped on seeded purchase events. Grounded in the SDKs' OrderPayment funding
+    // sources (paypal, card) plus the rails a German pharmacy checkout offers (SEPA, invoice); the
+    // mobile wallet correlates with the OS so the breakdown differs by platform. The contract lists
+    // payment_method under the `purchase` event (docs/analytics-contract/event-catalog.json).
+    private static string PickPaymentMethod(string platform, int s) =>
+        (s % 5) switch
+        {
+            0 => "paypal",
+            1 => "credit_card",
+            2 => "sepa_debit",
+            3 => "invoice",
+            _ => platform == "ios" ? "apple_pay" : "google_pay",
+        };
+
     // ── Cohort generation ──────────────────────────────────────────────────
     // returnOffsets: days after install the user returns (0 = install day itself)
     private record CohortSpec(string Label, int Idx, int InstallDaysBack, int[] ReturnOffsets, int SessionsPerDay);
@@ -302,7 +316,7 @@ internal static class RSAAnalyticsDevDataSeeder
     private static Ctx BuildSession(
         string sessionId, DateTimeOffset start, string platform, int flowKey, bool coldStart, int seed, Random rng)
     {
-        var ctx = new Ctx(sessionId, start, rng);
+        var ctx = new Ctx(sessionId, start, platform, rng);
 
         if (coldStart)
             ctx.E("lifecycle", "sdk_initialized", props: new()
@@ -398,6 +412,7 @@ internal static class RSAAnalyticsDevDataSeeder
                 ["total"]           = total.ToString("F2"),
                 ["currency"]        = "EUR",
                 ["shipping_method"] = s % 2 == 0 ? "standard" : "express",
+                ["payment_method"]  = PickPaymentMethod(c.Platform, s),
             },
             items: multiItem
                 ? [new(p1.Pzn, p1.Name, p1.Cat, p1.Price, qty, "EUR"), new(p2.Pzn, p2.Name, p2.Cat, p2.Price, 1, "EUR")]
@@ -453,6 +468,7 @@ internal static class RSAAnalyticsDevDataSeeder
                 ["total"]           = p.Price.ToString("F2"),
                 ["currency"]        = "EUR",
                 ["shipping_method"] = "standard",
+                ["payment_method"]  = PickPaymentMethod(c.Platform, s),
             },
             items: [new(p.Pzn, p.Name, p.Cat, p.Price, 1, "EUR")]);
     }
@@ -665,14 +681,15 @@ internal static class RSAAnalyticsDevDataSeeder
     }
 
     // ── Event context ──────────────────────────────────────────────────────
-    private sealed class Ctx(string sessionId, DateTimeOffset start, Random rng)
+    private sealed class Ctx(string sessionId, DateTimeOffset start, string platform, Random rng)
     {
         private readonly DateTimeOffset _start = start;
         private readonly Random         _rng   = rng;
         private DateTimeOffset _ts  = start;
         private int            _seq;
 
-        public string             Id     => sessionId;
+        public string             Id       => sessionId;
+        public string             Platform => platform;
         public List<RSCAnalyticsEvent> Events { get; } = [];
         public long ElapsedMs => (long)(_ts - _start).TotalMilliseconds;
 

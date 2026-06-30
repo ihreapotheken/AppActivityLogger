@@ -21,7 +21,6 @@ public class AnalyticsAggregationReplayTests : IDisposable
     private readonly RSCSqliteAnalyticsStore _store;
     private readonly RSCAnalyticsValidator _validator;
     private readonly RSCAnalyticsIdentifierHasher _hasher;
-    private readonly RSCAnalyticsAggregationWorker _worker;
 
     public AnalyticsAggregationReplayTests()
     {
@@ -39,9 +38,8 @@ public class AnalyticsAggregationReplayTests : IDisposable
             IdentifierHashPepper = "pepper-test"
         };
         _store = new RSCSqliteAnalyticsStore(_reportOptions, _analyticsOptions, NullLogger<RSCSqliteAnalyticsStore>.Instance);
-        _validator = new RSCAnalyticsValidator(_analyticsOptions, _reportOptions);
+        _validator = new RSCAnalyticsValidator(_analyticsOptions, _reportOptions, RSATestCatalog.Permissive, new ReportService.Options.RSCCatalogOptions());
         _hasher = new RSCAnalyticsIdentifierHasher(_analyticsOptions);
-        _worker = new RSCAnalyticsAggregationWorker(_store, _analyticsOptions, NullLogger<RSCAnalyticsAggregationWorker>.Instance);
     }
 
     private RSCAnalyticsBatch MakeBatch(string platform, params RSCAnalyticsEvent[] events) =>
@@ -67,13 +65,13 @@ public class AnalyticsAggregationReplayTests : IDisposable
         await _store.WriteBatchAsync(batch, _hasher.Hash("anon-1"), null,
             _validator.Validate(batch, now), now, default);
 
-        var firstProcessed = await _worker.TickAsync(default);
+        var firstProcessed = await RSCAnalyticsAggregationWorker.TickStoreAsync(_store, _analyticsOptions, NullLogger<RSCAnalyticsAggregationWorker>.Instance, default);
         Assert.Equal(3, firstProcessed);
 
         // A second tick over the same input must process nothing — events are marked aggregated
         // in the same transaction as the upserts, so they leave the unaggregated pool the moment
         // the rollups are written. No double-count exposure.
-        var secondProcessed = await _worker.TickAsync(default);
+        var secondProcessed = await RSCAnalyticsAggregationWorker.TickStoreAsync(_store, _analyticsOptions, NullLogger<RSCAnalyticsAggregationWorker>.Instance, default);
         Assert.Equal(0, secondProcessed);
 
         var (eventCount, screenCount) = await ReadSessionCountersAsync("android", "session-A");
@@ -115,6 +113,7 @@ public class AnalyticsAggregationReplayTests : IDisposable
             Sessions: new[]
             {
                 new RSCAggregationSessionDelta(
+                    AppId: "default", Environment: "production", ClientId: "default",
                     Platform: "android", SessionId: "session-A",
                     AnonymousIdHash: _hasher.Hash("anon-1"),
                     StartedAt: now, LastSeenAt: now,
@@ -123,6 +122,7 @@ public class AnalyticsAggregationReplayTests : IDisposable
             UserDays: new[]
             {
                 new RSCAggregationUserDayDelta(
+                    AppId: "default", Environment: "production", ClientId: "default",
                     Platform: "android",
                     Day: DateOnly.FromDateTime(now.UtcDateTime),
                     AnonymousIdHash: _hasher.Hash("anon-1")!,
@@ -133,24 +133,25 @@ public class AnalyticsAggregationReplayTests : IDisposable
                 // platform = null trips a NOT NULL constraint inside the same transaction —
                 // sessions/user-day upserts above are rolled back atomically.
                 new RSCAggregationDailyRollupDelta(
+                    AppId: "default", Environment: "production", ClientId: "default",
                     Day: DateOnly.FromDateTime(now.UtcDateTime),
                     Platform: null!,
                     Events: 2, Sessions: 1, DistinctUsers: 1)
             },
             Events: new[]
             {
-                new RSCAggregationEventRef("android", "evt-A"),
-                new RSCAggregationEventRef("android", "evt-B")
+                new RSCAggregationEventRef("default", "production", "default", "android", "evt-A"),
+                new RSCAggregationEventRef("default", "production", "default", "android", "evt-B")
             });
 
         await Assert.ThrowsAnyAsync<Exception>(() => _store.WriteAggregationTickAsync(badTick, default));
 
         // Nothing visible: the transaction rolled back.
-        var sessions = await _store.ListSessionsAsync("android", 100, 0, default);
+        var sessions = await _store.ListSessionsAsync(RSCAnalyticsScope.ForPlatform("android"), 100, 0, default);
         Assert.Empty(sessions);
 
         var rollups = await _store.GetDailyRollupsAsync(
-            now.AddDays(-1), now.AddDays(1), "android", default);
+            now.AddDays(-1), now.AddDays(1), RSCAnalyticsScope.ForPlatform("android"), default);
         Assert.Empty(rollups);
 
         // The events are still unaggregated — ready for the next tick to retry.
@@ -167,7 +168,7 @@ public class AnalyticsAggregationReplayTests : IDisposable
             MakeEvent("evt-2", "session-A", "screen", now));
         await _store.WriteBatchAsync(b1, _hasher.Hash("anon-1"), null,
             _validator.Validate(b1, now), now, default);
-        await _worker.TickAsync(default);
+        await RSCAnalyticsAggregationWorker.TickStoreAsync(_store, _analyticsOptions, NullLogger<RSCAnalyticsAggregationWorker>.Instance, default);
 
         var b2 = MakeBatch("android",
             MakeEvent("evt-3", "session-A", "action", now),
@@ -175,7 +176,7 @@ public class AnalyticsAggregationReplayTests : IDisposable
             MakeEvent("evt-5", "session-A", "screen", now));
         await _store.WriteBatchAsync(b2, _hasher.Hash("anon-1"), null,
             _validator.Validate(b2, now), now, default);
-        await _worker.TickAsync(default);
+        await RSCAnalyticsAggregationWorker.TickStoreAsync(_store, _analyticsOptions, NullLogger<RSCAnalyticsAggregationWorker>.Instance, default);
 
         var (eventCount, screenCount) = await ReadSessionCountersAsync("android", "session-A");
         Assert.Equal(5, eventCount);

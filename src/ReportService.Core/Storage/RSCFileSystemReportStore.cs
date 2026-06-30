@@ -22,16 +22,28 @@ public sealed class RSCFileSystemReportStore : RSCIReportStore
 
     private readonly RSCReportServiceOptions _options;
     private readonly ILogger<RSCFileSystemReportStore> _logger;
+    // The directory this store roots its {platform}/problem-reports/ tree under. Equals
+    // options.ReportsRoot for the legacy/global store; a per-app dir (apps/{client}/{app}) when built
+    // by RSCReportStoreFactory for the database-per-app layout.
+    private readonly string _root;
 
+    /// <summary>DI constructor: the legacy/global store rooted at <c>options.ReportsRoot</c>.</summary>
     public RSCFileSystemReportStore(RSCReportServiceOptions options, ILogger<RSCFileSystemReportStore> logger)
+        : this(options.ReportsRoot, options, logger)
+    {
+    }
+
+    /// <summary>Explicit-root constructor used by the per-app factory.</summary>
+    internal RSCFileSystemReportStore(string root, RSCReportServiceOptions options, ILogger<RSCFileSystemReportStore> logger)
     {
         _options = options;
         _logger = logger;
+        _root = root;
 
-        Directory.CreateDirectory(_options.ReportsRoot);
+        Directory.CreateDirectory(_root);
         foreach (var p in _options.AllowedPlatforms)
         {
-            Directory.CreateDirectory(Path.Combine(_options.ReportsRoot, p, ProblemReportsFolder));
+            Directory.CreateDirectory(Path.Combine(_root, p, ProblemReportsFolder));
         }
     }
 
@@ -149,7 +161,7 @@ public sealed class RSCFileSystemReportStore : RSCIReportStore
     {
         if (RSCPlatforms.TryCanonicalize(platform, _options) is not { } p) return Array.Empty<RSCStoredReport>();
 
-        var folder = Path.Combine(_options.ReportsRoot, p, ProblemReportsFolder);
+        var folder = Path.Combine(_root, p, ProblemReportsFolder);
         if (!Directory.Exists(folder)) return Array.Empty<RSCStoredReport>();
 
         var results = new List<RSCStoredReport>();
@@ -192,7 +204,7 @@ public sealed class RSCFileSystemReportStore : RSCIReportStore
     {
         if (RSCPlatforms.TryCanonicalize(platform, _options) is not { } p) return null;
 
-        var folder = Path.Combine(_options.ReportsRoot, p, ProblemReportsFolder);
+        var folder = Path.Combine(_root, p, ProblemReportsFolder);
         Directory.CreateDirectory(folder);
 
         if (!RSCSafePath.TryCombine(folder, fileName, out var fullPath)) return null;
@@ -207,7 +219,7 @@ public sealed class RSCFileSystemReportStore : RSCIReportStore
     {
         if (RSCPlatforms.TryCanonicalize(platform, _options) is not { } p) return false;
 
-        var folder = Path.Combine(_options.ReportsRoot, p, ProblemReportsFolder);
+        var folder = Path.Combine(_root, p, ProblemReportsFolder);
         if (!RSCSafePath.TryCombine(folder, fileName, out var jsonFullPath)) return false;
         if (!File.Exists(jsonFullPath)) return false;
 
@@ -240,7 +252,7 @@ public sealed class RSCFileSystemReportStore : RSCIReportStore
 
     private string ResolvePlatformFolder(string platformLower)
     {
-        var folder = Path.Combine(_options.ReportsRoot, platformLower, ProblemReportsFolder);
+        var folder = Path.Combine(_root, platformLower, ProblemReportsFolder);
         Directory.CreateDirectory(folder);
         return folder;
     }
