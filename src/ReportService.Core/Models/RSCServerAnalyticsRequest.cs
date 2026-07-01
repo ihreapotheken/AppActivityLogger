@@ -37,12 +37,14 @@ public static class RSCAnalyticsPlatforms
 /// <list type="bullet">
 ///   <item>Empty/absent <c>events</c> array is a <c>400 Bad Request</c> (a structurally-invalid
 ///         request), and an event missing the required <see cref="RSCServerAnalyticsEvent.Name"/> is
-///         likewise a <c>400</c>. By contrast, per-event/per-batch validation failures (unknown
-///         platform, clock skew, schema mismatch, forbidden PII property) come back as
-///         <c>202 Accepted</c> with non-zero rejected/batch-rejected counts on the receipt — the
-///         caller must inspect the receipt. (The SDK <c>/events</c> route differs: an empty batch is
-///         dead-lettered as <c>empty_batch</c> and still returns <c>202</c>, per its historical
-///         "always 202, inspect the receipt" contract.)</item>
+///         likewise a <c>400</c>. A batch that reaches the store but is <b>fully rejected</b> (unknown
+///         platform/app/client, schema mismatch, or every event dead-lettered so nothing is accepted)
+///         is also a <c>400</c> — the receipt is still returned as the response body so the caller can
+///         read the reject reason. A <b>partial</b> accept (at least one event stored) or an idempotent
+///         all-duplicates replay stays <c>202 Accepted</c>; inspect the receipt for per-event outcomes.
+///         Both the SDK <c>/events</c> route and this <c>/server-events</c> route share this single
+///         rule (<c>RSAnalyticsIngestionResult.FromReceipt</c>) so the status can't drift between
+///         them.</item>
 ///   <item><b>Never put PII in the envelope ids.</b> <see cref="RSCServerAnalyticsEvent.EventId"/> and
 ///         <see cref="RSCServerAnalyticsEvent.SessionId"/> are stored <i>verbatim</i> (unlike
 ///         <see cref="SubjectId"/>/<see cref="ClientId"/>, which are hashed) and are surfaced on the
@@ -92,8 +94,9 @@ public sealed record RSCServerAnalyticsRequest(
 /// Optional ISO-8601 timestamp; defaults to the server's receive time when omitted (which always
 /// passes the clock-skew check). NOTE: a supplied timestamp that differs from server time by more
 /// than <see cref="Options.RSCAnalyticsOptions.MaxClockSkewSeconds"/> (default 86400s = 24h, applied
-/// symmetrically) is dead-lettered as <c>clock_skew</c> and the receipt reports it as rejected while
-/// still returning <c>202</c>. This matters for backfill/replay of historically-dated events: either
+/// symmetrically) is dead-lettered as <c>clock_skew</c> and the receipt reports it as rejected — the
+/// request is <c>202</c> if other events in the batch were accepted, or <c>400</c> if this leaves the
+/// batch fully rejected. This matters for backfill/replay of historically-dated events: either
 /// omit OccurredAt so it defaults to now, or have the operator widen <c>MaxClockSkewSeconds</c> to
 /// cover the expected backfill horizon.
 /// </param>

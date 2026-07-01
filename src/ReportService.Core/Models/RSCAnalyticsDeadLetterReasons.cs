@@ -17,7 +17,6 @@ public static class RSCAnalyticsDeadLetterReasons
     public const string TypeUnknown = "type_unknown";
     public const string PlatformUnknown = "platform_unknown";
     public const string AppUnknown = "app_unknown";
-    public const string EnvironmentUnknown = "environment_unknown";
     public const string ClientUnknown = "client_unknown";
     public const string PiiKeyForbidden = "pii_key_forbidden";
     public const string DuplicateEventId = "duplicate_event_id";

@@ -25,7 +25,7 @@ public sealed class DeepLinkStoreTests : IDisposable
         NullLogger<RSCSqliteDeferredDeepLinkStore>.Instance);
 
     private static Task Seed(RSCSqliteDeferredDeepLinkStore s, string slug, string pattern) =>
-        s.UpsertLinkAsync(slug, slug, pattern, $"myapp://{slug}", enabled: true, CancellationToken.None);
+        s.UpsertLinkAsync(slug, slug, pattern, $"myapp://{slug}", null, null, enabled: true, CancellationToken.None);
 
     [Fact]
     public async Task Links_list_paginates_and_searches()
@@ -62,10 +62,10 @@ public sealed class DeepLinkStoreTests : IDisposable
 
         // A: iPhone/Safari, German, on /promo → resolves to the seeded link (matched-eligible).
         await s.RecordClickAsync("203.0.113.5", "https://x.test/promo", "Mozilla/5.0 (iPhone) Safari",
-            null, new Dictionary<string, string> { ["language"] = "de-DE", ["browser"] = "Safari" }, now, CancellationToken.None);
+            null, new Dictionary<string, string> { ["language"] = "de-DE", ["browser"] = "Safari" }, null, now, CancellationToken.None);
         // B: Android/Chrome, English, on /other → no link resolves (unmatched).
         await s.RecordClickAsync("198.51.100.9", "https://x.test/other", "Mozilla/5.0 (Android) Chrome",
-            null, new Dictionary<string, string> { ["language"] = "en-US", ["browser"] = "Chrome" }, now, CancellationToken.None);
+            null, new Dictionary<string, string> { ["language"] = "en-US", ["browser"] = "Chrome" }, null, now, CancellationToken.None);
 
         // No filter → both.
         Assert.Equal(2, (await s.ListClicksAsync(new RSCDeepLinkClickFilter(), 50, CancellationToken.None)).Count);
@@ -98,13 +98,56 @@ public sealed class DeepLinkStoreTests : IDisposable
         var s = NewStore();
         await Seed(s, "a", "/a");
 
-        var first = await s.RecordClickAsync("203.0.113.1", "https://x/a/page", null, null, null, DateTimeOffset.UtcNow, CancellationToken.None);
+        var first = await s.RecordClickAsync("203.0.113.1", "https://x/a/page", null, null, null, null, DateTimeOffset.UtcNow, CancellationToken.None);
         Assert.Equal("a", first.LinkSlug);
 
         // Adding a more specific link must invalidate the cache so the next capture resolves it.
         await Seed(s, "ab", "/a/b");
-        var second = await s.RecordClickAsync("203.0.113.2", "https://x/a/b/page", null, null, null, DateTimeOffset.UtcNow, CancellationToken.None);
+        var second = await s.RecordClickAsync("203.0.113.2", "https://x/a/b/page", null, null, null, null, DateTimeOffset.UtcNow, CancellationToken.None);
         Assert.Equal("ab", second.LinkSlug); // longest pattern wins, and it's visible immediately
+    }
+
+    [Fact]
+    public async Task Match_resolves_redirect_per_platform_with_fallback()
+    {
+        var s = NewStore();
+        // A link with a default plus an Android override only (no iOS override).
+        await s.UpsertLinkAsync("promo", "promo", "/promo",
+            "myapp://promo", "https://play.google.com/store/apps/details?id=app", null,
+            enabled: true, CancellationToken.None);
+
+        async Task<string?> MatchPlatform(string ip, string? platform)
+        {
+            await s.RecordClickAsync(ip, "https://x.test/promo", null, null, null, null, DateTimeOffset.UtcNow, CancellationToken.None);
+            var m = await s.FindMatchForIpAsync(ip, TimeSpan.FromHours(24), claim: true, DateTimeOffset.UtcNow, platform, CancellationToken.None);
+            return m?.RedirectUrl;
+        }
+
+        // Android → the Android override.
+        Assert.Equal("https://play.google.com/store/apps/details?id=app", await MatchPlatform("203.0.113.1", "android"));
+        // iOS → no override, so the default.
+        Assert.Equal("myapp://promo", await MatchPlatform("203.0.113.2", "ios"));
+        // No / unknown platform → the default.
+        Assert.Equal("myapp://promo", await MatchPlatform("203.0.113.3", null));
+        Assert.Equal("myapp://promo", await MatchPlatform("203.0.113.4", "windows"));
+    }
+
+    [Fact]
+    public async Task Match_falls_back_to_captured_platform_signal_when_unspecified()
+    {
+        var s = NewStore();
+        await s.UpsertLinkAsync("promo", "promo", "/promo",
+            "myapp://promo", null, "https://apps.apple.com/app/id123",
+            enabled: true, CancellationToken.None);
+
+        // The click captured an iOS platform signal (e.g. Sec-CH-UA-Platform, arriving quoted).
+        const string ip = "203.0.113.9";
+        await s.RecordClickAsync(ip, "https://x.test/promo", null, null,
+            new Dictionary<string, string> { ["platform"] = "\"iOS\"" }, null, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        // The match supplies no explicit platform → the captured signal selects the iOS override.
+        var m = await s.FindMatchForIpAsync(ip, TimeSpan.FromHours(24), claim: true, DateTimeOffset.UtcNow, null, CancellationToken.None);
+        Assert.Equal("https://apps.apple.com/app/id123", m!.RedirectUrl);
     }
 
     [Fact]
@@ -123,8 +166,8 @@ public sealed class DeepLinkStoreTests : IDisposable
     {
         var s = NewStore();
         var now = DateTimeOffset.UtcNow;
-        await s.RecordClickAsync("203.0.113.1", "https://x/old", null, null, null, now.AddDays(-10), CancellationToken.None);
-        await s.RecordClickAsync("203.0.113.2", "https://x/new", null, null, null, now, CancellationToken.None);
+        await s.RecordClickAsync("203.0.113.1", "https://x/old", null, null, null, null, now.AddDays(-10), CancellationToken.None);
+        await s.RecordClickAsync("203.0.113.2", "https://x/new", null, null, null, null, now, CancellationToken.None);
 
         var deleted = await s.PurgeClicksOlderThanAsync(now.AddDays(-5), CancellationToken.None);
         Assert.Equal(1, deleted);
@@ -138,7 +181,7 @@ public sealed class DeepLinkStoreTests : IDisposable
     {
         var s = NewStore();
         await s.SetClickRetentionDaysAsync(1, CancellationToken.None);
-        await s.RecordClickAsync("203.0.113.1", "https://x/old", null, null, null, DateTimeOffset.UtcNow.AddDays(-2), CancellationToken.None);
+        await s.RecordClickAsync("203.0.113.1", "https://x/old", null, null, null, null, DateTimeOffset.UtcNow.AddDays(-2), CancellationToken.None);
 
         var worker = new RSCDeepLinkClickRetentionWorker(
             s, new RSCDeepLinkOptions(), NullLogger<RSCDeepLinkClickRetentionWorker>.Instance);

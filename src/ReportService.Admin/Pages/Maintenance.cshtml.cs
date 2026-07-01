@@ -33,7 +33,6 @@ public sealed class RSAMaintenanceModel : PageModel
     private readonly RSAAnalyticsLegacyImporter _analyticsImporter;
     private readonly RSCIAnalyticsStore _analyticsStore;
     private readonly RSCAnalyticsOptions _analyticsOptions;
-    private readonly RSCIApiKeyStore _apiKeys;
     private readonly ILogger<RSAMaintenanceModel> _logger;
 
     public RSAMaintenanceModel(
@@ -45,7 +44,6 @@ public sealed class RSAMaintenanceModel : PageModel
         RSAAnalyticsLegacyImporter analyticsImporter,
         RSCIAnalyticsStore analyticsStore,
         RSCAnalyticsOptions analyticsOptions,
-        RSCIApiKeyStore apiKeys,
         ILogger<RSAMaintenanceModel> logger)
     {
         _store = store;
@@ -56,7 +54,6 @@ public sealed class RSAMaintenanceModel : PageModel
         _analyticsImporter = analyticsImporter;
         _analyticsStore = analyticsStore;
         _analyticsOptions = analyticsOptions;
-        _apiKeys = apiKeys;
         _logger = logger;
     }
 
@@ -67,18 +64,30 @@ public sealed class RSAMaintenanceModel : PageModel
     public IReadOnlyList<FileInfo> ExistingBackups { get; private set; } = Array.Empty<FileInfo>();
     public RSCRetentionStats Retention { get; private set; } = default!;
 
-    // API-key management (moved here from the former standalone /ApiKeys page).
-    public IReadOnlyList<RSCApiKeyMetadata> ApiKeys { get; private set; } = Array.Empty<RSCApiKeyMetadata>();
-    public DateTimeOffset Now { get; private set; } = DateTimeOffset.UtcNow;
-    // Surfaced once after a successful create (TempData survives the redirect, then is cleared).
-    [TempData] public string? NewKeyPlaintext { get; set; }
-    [TempData] public string? NewKeyId { get; set; }
+    // Global tenant scope from the top-left switcher (rsc_scope cookie → ?client/?app, filled by the
+    // scope-fill middleware). The data actions (Wipe, Export) honour it: a selected app affects only
+    // that app; "All clients" affects everything. The index/retention/pepper ops enforce service-wide
+    // infrastructure/policy, so they stay global regardless of the selection.
+    [BindProperty(SupportsGet = true, Name = "client")] public string? Client { get; set; }
+    [BindProperty(SupportsGet = true, Name = "app")] public string? App { get; set; }
 
-    public async Task OnGetAsync(CancellationToken ct)
+    private string? ScopeClient => string.IsNullOrWhiteSpace(Client) ? null : Client.Trim().ToLowerInvariant();
+    private string? ScopeApp => string.IsNullOrWhiteSpace(App) ? null : App.Trim().ToLowerInvariant();
+    public bool ScopeIsAll => ScopeClient is null && ScopeApp is null;
+
+    /// <summary>Human-readable blast radius for the danger-zone banner + flashes.</summary>
+    public string ScopeLabel => ScopeIsAll
+        ? "All clients (every app)"
+        : ScopeApp is not null ? $"{ScopeClient ?? "?"} · {ScopeApp}" : $"{ScopeClient} (all its apps)";
+
+    /// <summary>True when a stored report belongs to the current scope (all when unscoped).</summary>
+    private bool InScope(RSCStoredReport r) =>
+        (ScopeClient is null || string.Equals(r.ClientId, ScopeClient, StringComparison.OrdinalIgnoreCase))
+        && (ScopeApp is null || string.Equals(r.AppId, ScopeApp, StringComparison.OrdinalIgnoreCase));
+
+    public void OnGet()
     {
         Retention = _retention.GetStats();
-        Now = DateTimeOffset.UtcNow;
-        ApiKeys = await _apiKeys.ListAsync(ct).ConfigureAwait(false);
         try
         {
             var dir = BackupRoot;
@@ -201,10 +210,11 @@ public sealed class RSAMaintenanceModel : PageModel
         var all = new List<RSCStoredReport>();
         foreach (var p in _options.AllowedPlatforms)
         {
-            all.AddRange(_store.List(p));
+            // Scope the export to the selected (client, app) — all apps when unscoped.
+            all.AddRange(_store.List(p).Where(InScope));
         }
 
-        await _audit.RecordAsync(HttpContext, "reports.export", success: true, details: $"format={format} rows={all.Count}");
+        await _audit.RecordAsync(HttpContext, "reports.export", success: true, details: $"scope=\"{ScopeLabel}\" format={format} rows={all.Count}");
 
         if (format == "json")
         {
@@ -254,10 +264,12 @@ public sealed class RSAMaintenanceModel : PageModel
     }
 
     /// <summary>
-    /// Operator-triggered total wipe — deletes every stored problem report (JSON + gzip
-    /// attachment) on every platform, plus every row in the forced-report allow-list. The audit
-    /// log is intentionally preserved so the wipe itself stays traceable. Guarded by a confirmation
-    /// token: the form must include `confirm=WIPE` or the handler refuses.
+    /// Operator-triggered total wipe — deletes every client/app's data: every stored problem report
+    /// (JSON + gzip attachment) on every platform via the per-app fan-out store, the forced-report
+    /// allow-list, AND all analytics data across every app's database (via
+    /// <see cref="RSCIAnalyticsStore.WipeAllDataAsync"/>). Operator config is preserved — the tenancy
+    /// catalog, funnel definitions, API keys, and the audit log (so the wipe stays traceable). Guarded
+    /// by a confirmation token: the form must include `confirm=WIPE` or the handler refuses.
     /// </summary>
     public async Task<IActionResult> OnPostWipeAllAsync([FromForm] string? confirm, CancellationToken ct)
     {
@@ -275,8 +287,9 @@ public sealed class RSAMaintenanceModel : PageModel
             foreach (var platform in _options.AllowedPlatforms)
             {
                 // Snapshot the listing BEFORE deleting; deleting through the store mutates the
-                // backing list, and an in-place enumeration would skip every other entry.
-                var snapshot = _store.List(platform).ToList();
+                // backing list, and an in-place enumeration would skip every other entry. Scope the
+                // snapshot to the selected (client, app) — InScope is "all" when unscoped.
+                var snapshot = _store.List(platform).Where(InScope).ToList();
                 foreach (var stored in snapshot)
                 {
                     if (_store.Delete(platform, stored.FileName))
@@ -287,12 +300,10 @@ public sealed class RSAMaintenanceModel : PageModel
                 }
             }
 
-            // Forced-report allow-list lives in the same SQLite file but isn't covered by the
-            // file-store delete loop above; clear it explicitly. The schema migration recreates
-            // the table on next startup if it ever gets dropped, so a TRUNCATE-equivalent is fine.
-            var forcedStore = HttpContext.RequestServices.GetService<RSCIForcedReportStore>();
+            // Forced-report allow-list is a global control-plane list (not per-app), so it's only
+            // cleared on an unscoped "All clients" wipe — a scoped per-app wipe leaves it intact.
             var forcedRemoved = 0;
-            if (forcedStore is not null)
+            if (ScopeIsAll && HttpContext.RequestServices.GetService<RSCIForcedReportStore>() is { } forcedStore)
             {
                 var entries = await forcedStore.ListAsync(ct).ConfigureAwait(false);
                 foreach (var e in entries)
@@ -301,9 +312,15 @@ public sealed class RSAMaintenanceModel : PageModel
                 }
             }
 
+            // Database-per-app: also wipe analytics data (events, sessions, rollups, cohorts, funnel
+            // observations, batches, dead letters) for the SAME scope — only the selected app's DB
+            // when scoped, every app's when "All clients". Funnel definitions (config) are kept.
+            var analyticsRows = await _analyticsStore
+                .WipeAllDataAsync(new RSCAnalyticsScope(ScopeApp, null, ScopeClient, null), ct).ConfigureAwait(false);
+
             await _audit.RecordAsync(HttpContext, "store.wipe-all", success: true,
-                details: $"reports={deletedReports} bytes={deletedBytes} forced_rows={forcedRemoved}");
-            TempData["Flash"] = $"Wiped {deletedReports} reports ({RSAByteFormatter.Format(deletedBytes)}) and {forcedRemoved} forced-report rows.";
+                details: $"scope=\"{ScopeLabel}\" reports={deletedReports} bytes={deletedBytes} forced_rows={forcedRemoved} analytics_rows={analyticsRows}");
+            TempData["Flash"] = $"Wiped {deletedReports} reports ({RSAByteFormatter.Format(deletedBytes)}), {forcedRemoved} forced-report rows, and {analyticsRows:N0} analytics rows — scope: {ScopeLabel}.";
         }
         catch (Exception ex)
         {
@@ -491,61 +508,7 @@ public sealed class RSAMaintenanceModel : PageModel
         return RedirectToPage();
     }
 
-    /// <summary>
-    /// Mint a managed API key (user/admin, optional expiry + per-key rate limit). The plaintext is
-    /// surfaced exactly once via TempData across the post-redirect and can never be retrieved again.
-    /// Moved here from the former standalone /ApiKeys page; the operator's cookie session is
-    /// implicitly admin, so no extra role check is needed beyond the page's cookie + antiforgery gate.
-    /// </summary>
-    public async Task<IActionResult> OnPostCreateApiKeyAsync(string? role, string? label, int? expiresInDays, int? rateLimitPerMinute, CancellationToken ct)
-    {
-        var normalizedRole = string.IsNullOrWhiteSpace(role) ? RSCApiKeyRoles.User : role.Trim().ToLowerInvariant();
-        if (!RSCApiKeyRoles.IsValid(normalizedRole))
-        {
-            TempData["Flash"] = $"Invalid role '{role}'.";
-            return RedirectToPage();
-        }
-
-        DateTimeOffset? expiresAt = expiresInDays is { } d && d > 0 ? DateTimeOffset.UtcNow.AddDays(d) : null;
-        int? limit = rateLimitPerMinute is { } r && r > 0 ? r : null;
-        var cleanLabel = string.IsNullOrWhiteSpace(label) ? null : label.Trim();
-        var actor = User.Identity?.Name is { Length: > 0 } name ? name : "operator";
-
-        try
-        {
-            var created = await _apiKeys.CreateAsync(normalizedRole, cleanLabel, expiresAt, limit, actor, ct).ConfigureAwait(false);
-            NewKeyPlaintext = created.PlaintextKey;
-            NewKeyId = created.Metadata.Id;
-            await _audit.RecordAsync(HttpContext, "apikey.create", success: true, target: created.Metadata.Id,
-                details: $"role={normalizedRole} expires={expiresAt?.ToString("O") ?? "never"} rate={limit?.ToString() ?? "default"}");
-            TempData["Flash"] = $"Created {normalizedRole} key {created.Metadata.Id} — copy the secret now; it won't be shown again.";
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "API key creation failed");
-            await _audit.RecordAsync(HttpContext, "apikey.create", success: false, details: ex.Message);
-            TempData["Flash"] = "Key creation failed — see logs.";
-        }
-        return RedirectToPage();
-    }
-
-    /// <summary>Revoke a managed API key — clients using it get 401 immediately. Audited.</summary>
-    public async Task<IActionResult> OnPostRevokeApiKeyAsync(string id, CancellationToken ct)
-    {
-        try
-        {
-            var revoked = await _apiKeys.RevokeAsync(id, User.Identity?.Name ?? "operator", ct).ConfigureAwait(false);
-            await _audit.RecordAsync(HttpContext, "apikey.revoke", success: revoked, target: id);
-            TempData["Flash"] = revoked ? $"Revoked key {id}." : $"No active key {id} to revoke.";
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "API key revocation failed for {Id}", id);
-            await _audit.RecordAsync(HttpContext, "apikey.revoke", success: false, target: id, details: ex.Message);
-            TempData["Flash"] = "Revocation failed — see logs.";
-        }
-        return RedirectToPage();
-    }
+    // API-key minting / revocation moved to the merged /Clients ("Clients & apps") screen.
 
     private RSCIReportIndexMaintenance? RequireMaintenance() => _indexAccessor.Maintenance;
 

@@ -33,9 +33,11 @@ public static class RSAnalyticsEndpoints
 
         JSON body shaped as `RSCAnalyticsBatch`. The server validates the batch, persists accepted
         events to `analytics_events` (idempotent on `platform + eventId`), and dead-letters rejected
-        events with a documented reason. Returns `202 Accepted` with an `RSCAnalyticsBatchReceipt`.
-        Clients should retry the same `batchId` on `5xx`/`429`. See the **Analytics pipeline** guide
-        chapter for the batch shape and validation rules.
+        events with a documented reason. Returns `202 Accepted` with an `RSCAnalyticsBatchReceipt`
+        when at least one event is accepted (or every event was a duplicate replay); a **fully-rejected**
+        batch returns `400 Bad Request` and still carries the receipt as the body so you can read
+        `batchRejectReason`. Clients should retry the same `batchId` on `5xx`/`429`. See the
+        **Analytics pipeline** guide chapter for the batch shape and validation rules.
 
         Receipt body (`batchId` is echoed so a retry can be reconciled; counts let the SDK confirm the
         server saw what it sent):
@@ -52,9 +54,9 @@ public static class RSAnalyticsEndpoints
         ```
 
         `acceptedCount` + `rejectedCount` + `duplicateCount` equals the number of events submitted.
-        When the whole batch is refused (e.g. an unsupported schema version) the response is still
-        `202 Accepted`, but `batchRejected` is `true`, `batchRejectReason` names the cause, and every
-        count is `0`:
+        When the whole batch is refused (e.g. an unsupported schema version, or an unregistered
+        app/client) the response is `400 Bad Request` with `batchRejected` `true`, `batchRejectReason`
+        naming the cause, and every count `0` — the receipt below is still returned as the response body:
 
         ```json
         {
@@ -116,10 +118,11 @@ public static class RSAnalyticsEndpoints
         }
         ```
 
-        Returns `202 Accepted` with an `RSCAnalyticsBatchReceipt` (same shape as the SDK route). On the
-        example request, a first delivery returns `acceptedCount: 1`; a retry with the same `eventId`
-        returns `acceptedCount: 0, duplicateCount: 1`. An unknown `platform` rejects the whole batch with
-        `batchRejected: true, batchRejectReason: "platform_unknown"`.
+        Returns `202 Accepted` with an `RSCAnalyticsBatchReceipt` (same shape as the SDK route) when at
+        least one event lands. On the example request, a first delivery returns `acceptedCount: 1`; a
+        retry with the same `eventId` returns `acceptedCount: 0, duplicateCount: 1` (still `202`). A
+        **fully-rejected** batch — e.g. an unknown `platform`, or every event dead-lettered — returns
+        `400 Bad Request` with `batchRejected: true` and the reason on the receipt body.
 
         Same auth (`apiKey`), rate limiter, and body cap (`MaxJsonBytes`) as the SDK route. `400` when the
         body carries no events. The set of accepted server platforms is `Analytics:ServerPlatforms`
@@ -138,9 +141,7 @@ public static class RSAnalyticsEndpoints
                     if (!RSCFeatureFlags.Analytics)
                         return Results.Problem(RSCFeatureFlags.DisabledMessage, statusCode: RSCFeatureFlags.DisabledStatusCode);
                     var r = await svc.IngestAsync(req, ct);
-                    return r.Success
-                        ? Results.Accepted(value: r.Receipt)
-                        : Results.Problem(r.Error, statusCode: r.HttpStatus);
+                    return ToHttpResult(r);
                 })
             .Apply(
                 EndpointModifier.RequireAuth,
@@ -171,9 +172,7 @@ public static class RSAnalyticsEndpoints
                     if (!RSCFeatureFlags.Analytics)
                         return Results.Problem(RSCFeatureFlags.DisabledMessage, statusCode: RSCFeatureFlags.DisabledStatusCode);
                     var r = await svc.IngestServerAsync(req, ct);
-                    return r.Success
-                        ? Results.Accepted(value: r.Receipt)
-                        : Results.Problem(r.Error, statusCode: r.HttpStatus);
+                    return ToHttpResult(r);
                 })
             .Apply(
                 EndpointModifier.RequireAuth,
@@ -196,4 +195,15 @@ public static class RSAnalyticsEndpoints
 
         return app;
     }
+
+    /// <summary>
+    /// The one place an analytics ingestion outcome becomes an HTTP result, shared by both routes so
+    /// the success/rejection status can never diverge between them. A fully-rejected batch carries a
+    /// receipt and returns it with the 4xx (so the caller still sees per-event detail); a pre-store
+    /// rejection (bad content-type, oversize, malformed JSON) has no receipt and returns a Problem.
+    /// </summary>
+    private static IResult ToHttpResult(RSAnalyticsIngestionResult r) =>
+        r.Success ? Results.Accepted(value: r.Receipt)
+        : r.Receipt is not null ? Results.Json(r.Receipt, statusCode: r.HttpStatus)
+        : Results.Problem(r.Error, statusCode: r.HttpStatus);
 }

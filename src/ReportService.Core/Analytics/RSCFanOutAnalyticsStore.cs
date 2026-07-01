@@ -419,4 +419,13 @@ public sealed class RSCFanOutAnalyticsStore : RSCIAnalyticsStore
         var counts = await MapAsync(stores, s => s.PurgeUserDaysBelowHashVersionAsync(minVersion, ct), ct).ConfigureAwait(false);
         return counts.Sum();
     }
+
+    public async Task<int> WipeAllDataAsync(RSCAnalyticsScope scope, CancellationToken ct)
+    {
+        // Honour the global switcher scope: a selected (client, app) wipes only that app's DB; an
+        // all-null scope fans out across every app. Platform axis is irrelevant to a total wipe.
+        var stores = await ResolveStoresAsync(scope.ClientId, scope.AppId, ct).ConfigureAwait(false);
+        var counts = await MapAsync(stores, s => s.WipeAllDataAsync(scope, ct), ct).ConfigureAwait(false);
+        return counts.Sum();
+    }
 }

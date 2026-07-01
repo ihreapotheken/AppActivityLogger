@@ -53,11 +53,12 @@ public sealed class RSReportIngestionService
     /// <summary>
     /// Resolves + validates the report's tenancy (database-per-app). The <b>client</b> comes from the
     /// authenticated API key's <c>rsc:client_id</c> claim (the key IS the client); an unbound/root key
-    /// falls back to the <c>X-Report-Client</c> header → body → default. <b>app</b>/<b>environment</b>
-    /// resolve header (<c>X-Report-App</c> / <c>X-Report-Environment</c>) → body → default. The resolved
-    /// triple is validated against the catalog (app must belong to the client) when
-    /// <c>Catalog:Enabled</c>; an unknown value rejects the whole submission. Returns the
-    /// attribution-stamped report, or a rejection result.
+    /// falls back to the <c>X-Report-Client</c> header → body → default. <b>app</b> resolves header
+    /// (<c>X-Report-App</c>) → body → default. Environment is folded into the app slug (a client creates
+    /// a separate app entry per environment, e.g. app-a-qa / app-a-prod) — there is no separate
+    /// environment axis. The resolved (client, app) pair is validated against the catalog (app must
+    /// belong to the client) when <c>Catalog:Enabled</c>; an unknown value rejects the whole submission.
+    /// Returns the attribution-stamped report, or a rejection result.
     /// </summary>
     private (RSCProblemReport Report, RSIngestionResult? Rejection) ResolveAttribution(HttpRequest request, RSCProblemReport report)
     {
@@ -73,9 +74,8 @@ public sealed class RSReportIngestionService
         var keyClient = request.HttpContext.User?.FindFirst(RSCTenantClaims.ClientId)?.Value;
         var client = !string.IsNullOrWhiteSpace(keyClient)
             ? keyClient.Trim().ToLowerInvariant()
-            : Pick("X-Report-Client", report.ClientId, _catalogOptions.DefaultClientSlug);
-        var app = Pick("X-Report-App", report.AppId, _catalogOptions.DefaultAppSlug);
-        var env = Pick("X-Report-Environment", report.Environment, _catalogOptions.DefaultEnvironment);
+            : Pick(RSCTenantHeaders.ReportClient, report.ClientId, _catalogOptions.DefaultClientSlug);
+        var app = Pick(RSCTenantHeaders.ReportApp, report.AppId, _catalogOptions.DefaultAppSlug);
 
         if (_catalogOptions.Enabled)
         {
@@ -83,11 +83,9 @@ public sealed class RSReportIngestionService
                 return (report, RSIngestionResult.BadRequest($"client '{client}' is not registered"));
             if (!_catalog.IsValidApp(client, app))
                 return (report, RSIngestionResult.BadRequest($"app '{app}' is not registered for client '{client}'"));
-            if (!_catalog.IsValidEnvironment(client, app, env))
-                return (report, RSIngestionResult.BadRequest($"environment '{env}' is not declared for app '{app}' (client '{client}')"));
         }
 
-        return (report with { ClientId = client, AppId = app, Environment = env }, null);
+        return (report with { ClientId = client, AppId = app }, null);
     }
 
     /// <summary>Parses + validates the multipart submission, then persists via <see cref="RSCIReportStore"/>. Returns the matching <see cref="RSIngestionResult"/> status code.</summary>

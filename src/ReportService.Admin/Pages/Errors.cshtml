@@ -191,6 +191,7 @@
     <script src="~/js/auto-submit.js" asp-append-version="true"></script>
 }
 
+<span id="list" class="list-anchor"></span>
 <p class="muted">
     @Model.Listing.TotalMatched matching @kindNoun@(Model.Listing.TotalMatched == 1 ? "" : "s") · page @Model.Listing.PageNumber of @Model.Listing.TotalPages
     · source: <span class="mono">@(Model.Listing.UsedIndex ? "sqlite index" : "filesystem scan")</span>
@@ -210,6 +211,7 @@ else
             <tr>
                 <th scope="col" tip="When the crash report was submitted, shown in your local time.">Submitted</th>
                 <th scope="col" tip="Platform the crash report came from (iOS or Android).">Platform</th>
+                <th scope="col" tip="Client (tenant) and app this report is attributed to">Client / App</th>
                 <th scope="col" tip="Ingestion channel: multipart (SDK) or json (API).">Channel</th>
                 <th scope="col" tip="Stored crash report file name; links to the full report.">File</th>
                 <th scope="col" tip="Topmost stack frame extracted at ingest, or — if none.">Top frame</th>
@@ -223,6 +225,7 @@ else
                 <tr>
                     <td class="mono">@r.SubmittedAt.AsLocalTime()</td>
                     <td class="mono">@r.Platform</td>
+                    <td class="mono">@(r.ClientId ?? "—") / @(r.AppId ?? "—")</td>
                     <td>@await Html.PartialAsync("_ChannelBadge", r)</td>
                     <td class="mono"><a asp-page="/Report" asp-route-platform="@r.Platform" asp-route-fileName="@r.FileName">@r.FileName</a></td>
                     <td class="mono">@(r.TopFrame ?? "—")</td>

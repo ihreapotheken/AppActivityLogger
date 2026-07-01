@@ -48,7 +48,7 @@ Body shape (`RSCAnalyticsBatch`):
 }
 ```
 
-Response is `202 Accepted` with `RSCAnalyticsBatchReceipt`:
+Response is `202 Accepted` with `RSCAnalyticsBatchReceipt` when at least one event is stored:
 
 ```json
 {
@@ -63,11 +63,14 @@ Response is `202 Accepted` with `RSCAnalyticsBatchReceipt`:
 
 ### Status codes the SDK must handle
 
-- `202 Accepted` — server has persisted everything it could. Check the receipt for per-event
-  outcomes; a `batchRejected: true` receipt means the validator wouldn't accept *any* event in
-  the batch (typically `schema_version_unsupported`, `batch_too_large`, `platform_unknown`).
-- `400 Bad Request` — malformed JSON, missing `batchId`, or unknown fields at the envelope/event
-  level. Do not retry the same payload as-is.
+- `202 Accepted` — the server persisted at least one event (or every event was an idempotent
+  duplicate replay). Check the receipt for per-event outcomes.
+- `400 Bad Request` — the request was rejected. Either a structural error (malformed JSON, missing
+  `batchId`, unknown fields at the envelope/event level), or a **fully-rejected** batch where the
+  validator wouldn't accept *any* event (`batchRejected: true` with a reason such as
+  `schema_version_unsupported`, `batch_too_large`, `platform_unknown`, `app_unknown`,
+  `client_unknown` — or every event dead-lettered). On a full rejection the `RSCAnalyticsBatchReceipt`
+  is still returned as the body. Do not retry the same payload as-is.
 - `401 Unauthorized` — wrong/missing apiKey. The SDK should not retry without operator action.
 - `413 Payload Too Large` — body exceeded `MaxJsonBytes`. Split the batch and retry.
 - `415 Unsupported Media Type` — non-`application/json` content type.

@@ -43,7 +43,7 @@ public static class RSEndpointConventions
 
     /// <summary>
     /// Authorization policy for the key-management endpoints: requires the API-key scheme AND the
-    /// <c>admin</c> role claim. User-role keys authenticate but are rejected with 403.
+    /// <c>admin</c> role claim. Non-admin (<c>client</c>) keys authenticate but are rejected with 403.
     /// </summary>
     public const string ApiKeyAdminPolicy = "ApiKeyAdmin";
 

@@ -13,18 +13,15 @@ public sealed class RSAAnalyticsEventsModel : PageModel
 
     private readonly RSCIAnalyticsStore _store;
     private readonly RSCReportServiceOptions _options;
-    private readonly RSCICatalog _catalog;
 
-    public RSAAnalyticsEventsModel(RSCIAnalyticsStore store, RSCReportServiceOptions options, RSCICatalog catalog)
+    public RSAAnalyticsEventsModel(RSCIAnalyticsStore store, RSCReportServiceOptions options)
     {
         _store = store;
         _options = options;
-        _catalog = catalog;
     }
 
     [BindProperty(SupportsGet = true)] public string? Platform { get; set; }
     [BindProperty(SupportsGet = true, Name = "app")] public string? App { get; set; }
-    [BindProperty(SupportsGet = true, Name = "env")] public string? Env { get; set; }
     [BindProperty(SupportsGet = true, Name = "client")] public string? Client { get; set; }
     [BindProperty(SupportsGet = true)] public string? Type { get; set; }
     [BindProperty(SupportsGet = true)] public string? Name { get; set; }
@@ -36,13 +33,11 @@ public sealed class RSAAnalyticsEventsModel : PageModel
 
     public RSCAnalyticsEventPage Result { get; private set; } = default!;
     public IReadOnlyList<string> AvailablePlatforms => _options.AllowedPlatforms;
-    public RSATenantScopeVM TenantScope { get; private set; } = default!;
 
     public int TotalPages => Math.Max(1, (int)Math.Ceiling((double)Result.Total / PageSize));
 
     public async Task OnGetAsync(CancellationToken ct)
     {
-        TenantScope = await RSATenantScopes.BuildVmAsync(_catalog, "/AnalyticsEvents", App, Env, Client, Platform, ct).ConfigureAwait(false);
         var offset = Math.Max(0, (Math.Max(1, PageNumber) - 1) * PageSize);
         var filter = new RSCAnalyticsEventFilter(
             Platform: Platform,
@@ -55,7 +50,7 @@ public sealed class RSAAnalyticsEventsModel : PageModel
             Limit: PageSize,
             Offset: offset,
             AppId: RSATenantScopes.Norm(App),
-            Environment: RSATenantScopes.Norm(Env),
+            Environment: null,
             ClientId: RSATenantScopes.Norm(Client));
         Result = await _store.SearchEventsAsync(filter, ct).ConfigureAwait(false);
     }
@@ -68,7 +63,6 @@ public sealed class RSAAnalyticsEventsModel : PageModel
             if (!string.IsNullOrEmpty(value)) parts.Add($"{key}={Uri.EscapeDataString(value)}");
         }
         Add("app", App);
-        Add("env", Env);
         Add("client", Client);
         Add("platform", Platform);
         Add("type", Type);

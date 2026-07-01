@@ -5,7 +5,6 @@
     ViewData["Title"] = "Analytics sessions";
 }
 @await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Analytics sessions", "Most recently active sessions. Click into a session for the full event timeline."))
-@await Html.PartialAsync("_TenantScope", Model.TenantScope)
 
 <p>
     One row per logical user session as identified by the SDK's <code>sessionId</code> field.
@@ -28,6 +27,7 @@
     <button type="submit" class="primary">Apply</button>
 </form>
 
+<span id="list" class="list-anchor"></span>
 @if (Model.Rows.Count == 0)
 {
     <empty-state>No sessions recorded yet. The aggregation worker upserts sessions as events flow in.</empty-state>

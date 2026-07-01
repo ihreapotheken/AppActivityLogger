@@ -89,14 +89,16 @@ public class AnalyticsEndpointTests
     }
 
     [Fact]
-    public async Task Unsupported_schema_version_dlqs_with_202_and_batch_rejected_receipt()
+    public async Task Unsupported_schema_version_returns_400_with_batch_rejected_receipt()
     {
         await using var app = new IngestionAppFactory();
         var client = app.CreateClient();
         client.DefaultRequestHeaders.Add("apiKey", IngestionAppFactory.ApiKey);
 
+        // A fully-rejected batch is a 400 (not a 202 that would mask the total failure); the receipt
+        // is still returned as the body so the caller sees the batch-reject reason.
         var res = await client.PostAsync(Url, Body(MakeBatch(schemaVersion: 99, events: MakeEvent())));
-        Assert.Equal(HttpStatusCode.Accepted, res.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
 
         var receipt = await res.Content.ReadFromJsonAsync<RSCAnalyticsBatchReceipt>();
         Assert.NotNull(receipt);
@@ -164,7 +166,7 @@ public class AnalyticsEndpointTests
         };
 
         var res = await client.PostAsync(Url, Body(batch));
-        Assert.Equal(HttpStatusCode.Accepted, res.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
 
         var receipt = await res.Content.ReadFromJsonAsync<RSCAnalyticsBatchReceipt>();
         Assert.True(receipt!.BatchRejected);

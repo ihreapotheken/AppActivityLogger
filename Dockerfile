@@ -25,6 +25,9 @@ COPY src/ src/
 # resolving to /src/README.md and /src/docs/guide/*.md here.
 COPY README.md ./README.md
 COPY docs/guide/ docs/guide/
+# The Postman collection + environment are bundled into the admin image for the /ApiConsole
+# in-dashboard request runner (admin csproj declares them as <Content> resolving to /src/postman/*).
+COPY postman/ postman/
 RUN dotnet publish src/ReportService       -c Release -o /app/ingestion --no-restore /p:UseAppHost=false
 RUN dotnet publish src/ReportService.Admin -c Release -o /app/admin     --no-restore /p:UseAppHost=false
 

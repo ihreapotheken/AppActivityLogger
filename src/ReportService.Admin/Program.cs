@@ -43,6 +43,9 @@ var adminOptions = builder.Configuration
     .GetSection(RSAAdminOptions.SectionName)
     .Get<RSAAdminOptions>() ?? new RSAAdminOptions();
 
+// Mirror the iframe-embedding decision into the scope cookie writer (static, process-wide).
+ReportService.Admin.Services.RSAScopeCookie.CrossSiteEmbed = adminOptions.EmbeddingEnabled;
+
 var proxyHeaders = builder.Configuration
     .GetSection(RSCProxyHeadersOptions.SectionName)
     .Get<RSCProxyHeadersOptions>() ?? new RSCProxyHeadersOptions();
@@ -125,6 +128,10 @@ builder.Services.AddSingleton<RSCIAnalyticsStoreFactory, RSCSqliteAnalyticsStore
 builder.Services.AddSingleton<RSCIAnalyticsStore, RSCFanOutAnalyticsStore>();
 builder.Services.AddSingleton<RSAnalyticsIngestionService>();
 
+// Hard-delete data purger: evicts the per-app store caches + deletes the on-disk apps/{client}[/{app}]
+// trees (analytics + report DBs) when a client/app is permanently deleted. Needs both store factories.
+builder.Services.AddSingleton<RSCIClientDataPurger, RSCClientDataPurger>();
+
 // Deferred deep linking. Owns its own SQLite DB (under ReportsRoot) so it works regardless of the
 // report Storage mode and under a read-only content root. The admin /DeepLinks page and the two
 // SDK/website routes (record click + match) both resolve this store. The retention worker purges
@@ -174,6 +181,7 @@ builder.Services.AddSingleton<IRSAReportListingService, RSAReportListingService>
 builder.Services.AddSingleton<IRSAReportDeletionService, RSAReportDeletionService>();
 builder.Services.AddSingleton<IRSAStatsService, RSAStatsService>();
 builder.Services.AddSingleton<IRSADocsService, RSADocsService>();
+builder.Services.AddSingleton<IRSAApiConsoleService, RSAApiConsoleService>();
 builder.Services.AddSingleton<RSCIAuthAbuseTracker>(sp => new RSCResilientAuthAbuseTracker(
     () => new RSCSqliteAuthAbuseTracker(sp.GetRequiredService<RSCReportServiceOptions>(),
                                       sp.GetRequiredService<ILogger<RSCSqliteAuthAbuseTracker>>()),
@@ -194,8 +202,21 @@ builder.Services
         options.AccessDeniedPath = "/Login";
         options.Cookie.Name = "report-admin";
         options.Cookie.HttpOnly = true;
-        options.Cookie.SameSite = SameSiteMode.Strict;
-        options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+        // Cross-site iframe embedding (e.g. a Confluence page framing the cloudflared URL) makes this
+        // a third-party cookie: SameSite=Strict/Lax is never sent, so the framed page would loop back
+        // to /Login. SameSite=None + Secure + Partitioned (CHIPS) lets the session ride in the frame
+        // while staying double-keyed to the embedding site. Default stays Strict when not embedding.
+        if (adminOptions.EmbeddingEnabled)
+        {
+            options.Cookie.SameSite = SameSiteMode.None;
+            options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+            options.Cookie.Extensions.Add("Partitioned");
+        }
+        else
+        {
+            options.Cookie.SameSite = SameSiteMode.Strict;
+            options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+        }
         options.ExpireTimeSpan = TimeSpan.FromMinutes(Math.Max(5, adminOptions.SessionMinutes));
         options.SlidingExpiration = true;
     })
@@ -397,6 +418,13 @@ app.Use(async (ctx, next) =>
     // <script> + <style> blocks, so /docs/* and /swagger/* need 'unsafe-inline' or the page is
     // a blank screen. Ingestion JSON / health endpoints serve no HTML; the header is harmless
     // there. Path-prefix branching keeps the strict admin CSP unchanged.
+    // When Admin:EmbedAllowedAncestors names origins (e.g. a Confluence site framing the cloudflared
+    // URL), append them to frame-ancestors and drop the baseline X-Frame-Options: DENY — XFO has no
+    // allow-list form Chrome honours, so leaving DENY in place would block the frame regardless of CSP.
+    var extraAncestors = adminOptions.EmbeddingEnabled ? " " + adminOptions.EmbedAllowedAncestors.Trim() : string.Empty;
+    if (adminOptions.EmbeddingEnabled)
+        ctx.Response.Headers.Remove("X-Frame-Options");
+
     var path = ctx.Request.Path.Value ?? string.Empty;
     if (path.StartsWith("/docs", StringComparison.OrdinalIgnoreCase) ||
         path.StartsWith("/swagger", StringComparison.OrdinalIgnoreCase))
@@ -406,13 +434,14 @@ app.Use(async (ctx, next) =>
         // render the framed content).
         ctx.Response.Headers["Content-Security-Policy"] =
             "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; " +
-            "script-src 'self' 'unsafe-inline'; form-action 'self'; frame-ancestors 'self'; base-uri 'none'";
+            "script-src 'self' 'unsafe-inline'; form-action 'self'; frame-ancestors 'self'" + extraAncestors + "; base-uri 'none'";
     }
     else
     {
+        var frameAncestors = adminOptions.EmbeddingEnabled ? "'self'" + extraAncestors : "'none'";
         ctx.Response.Headers["Content-Security-Policy"] =
             "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; " +
-            "form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
+            "form-action 'self'; frame-ancestors " + frameAncestors + "; base-uri 'none'";
     }
     await next().ConfigureAwait(false);
 });
@@ -472,7 +501,7 @@ if (adminOptions.DevAutoSignIn)
         if (localOperator && ctx.User?.Identity?.IsAuthenticated != true)
         {
             var identity = new ClaimsIdentity(
-                new[] { new Claim(ClaimTypes.Name, "dev-operator") },
+                new[] { new Claim(ClaimTypes.Name, RSAAdminOptions.DevOperatorName) },
                 CookieAuthenticationDefaults.AuthenticationScheme);
             // Set the principal for THIS request only. We deliberately do not call SignInAsync:
             // emitting a Set-Cookie on every request needlessly re-serializes the ticket for any
@@ -492,7 +521,7 @@ app.UseAuthorization();
 app.Use(async (ctx, next) =>
 {
     var path = ctx.Request.Path.Value ?? "/";
-    var isApi = path.StartsWith("/api", StringComparison.OrdinalIgnoreCase)
+    var isApi = path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase)
                 || path.StartsWith("/partners", StringComparison.OrdinalIgnoreCase)
                 || path.StartsWith("/admin/api", StringComparison.OrdinalIgnoreCase);
     if (!isApi
@@ -516,7 +545,7 @@ app.Use(async (ctx, next) =>
 app.Use(async (ctx, next) =>
 {
     var path = ctx.Request.Path.Value ?? "/";
-    var isApi = path.StartsWith("/api", StringComparison.OrdinalIgnoreCase)
+    var isApi = path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase)
                 || path.StartsWith("/partners", StringComparison.OrdinalIgnoreCase)
                 || path.StartsWith("/admin/api", StringComparison.OrdinalIgnoreCase)
                 || path.StartsWith("/scope", StringComparison.OrdinalIgnoreCase);

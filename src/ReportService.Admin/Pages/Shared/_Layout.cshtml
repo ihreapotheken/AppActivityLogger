@@ -3,11 +3,19 @@
     var title = ViewData["Title"] as string ?? "Reports";
     var user = User?.Identity?.Name;
     var authed = User?.Identity?.IsAuthenticated == true;
-    // Loopback connections are auto-signed-in by Program.cs; signing out is meaningless because
-    // the next request would re-authenticate. Hide the button so localhost operators don't see
-    // a control that does nothing.
-    var remote = Context.Connection.RemoteIpAddress;
-    var isLoopback = remote != null && System.Net.IPAddress.IsLoopback(remote);
+    // "Admin" (operator) vs "client login": an operator cookie (the /Login admin key, or the localhost
+    // dev-operator) carries no rsc:client_id claim; a /ClientLogin session does. The OPERATIONS section
+    // — tenant administration (clients/apps/keys), Maintenance, Audit — is admin-only, so it is hidden
+    // from client logins (which are already confined server-side to their own analytics dashboards by
+    // RSAClientLoginScope; this just removes the dead nav links from their view).
+    var isClientLogin = User?.FindFirst(ReportService.Security.RSCTenantClaims.ClientId)?.Value is { Length: > 0 };
+    var isAdmin = authed && !isClientLogin;
+    // Loopback (localhost) requests are auto-signed-in by Program.cs as the synthetic dev-operator;
+    // signing out is meaningless because the next request re-authenticates and no cookie was ever set.
+    // Detect that principal by its identity name — the RemoteIpAddress is NOT reliably loopback in the
+    // docker-compose dev stack (Kestrel sees the bridge gateway), whereas the name is exact. Hide the
+    // sign-out button for it so localhost operators don't see a control that does nothing.
+    var isDevOperator = string.Equals(user, ReportService.Admin.Options.RSAAdminOptions.DevOperatorName, StringComparison.Ordinal);
     var env = string.IsNullOrWhiteSpace(ServiceOptions.Environment) ? "production" : ServiceOptions.Environment;
     var envIsProd = string.Equals(env, "production", StringComparison.OrdinalIgnoreCase);
 
@@ -31,7 +39,9 @@
         "/Errors" => "Error reports",
         "/Report" => "Report details",
         "/DeepLinks" => "Deep links",
+        "/Clients" => "Clients & apps",
         "/Maintenance" => "Maintenance",
+        "/ApiConsole" => "API console",
         "/Audit" => "Audit log",
         "/Status" => "Status",
         "/ApiDocs" => "API docs",
@@ -93,12 +103,23 @@
                     <a class="@Active("/DeepLinks")"          asp-page="/DeepLinks">Deep links</a>
                 </div>
 
-                <div class="side-section">
-                    <h2 class="side-heading">Operations</h2>
-                    @* Forced reports hidden from nav for now (page still reachable at /ForcedReports). *@
-                    <a class="@Active("/Maintenance")"   asp-page="/Maintenance">Maintenance</a>
-                    <a class="@Active("/Audit")"         asp-page="/Audit">Audit log</a>
-                </div>
+                @* OPERATIONS is admin-only: tenant administration + ops tooling. Hidden entirely from
+                   client logins (they have no business managing clients/apps/keys, and are confined
+                   server-side anyway). The dev-operator and real operator logins both see it. *@
+                @if (isAdmin)
+                {
+                    <div class="side-section">
+                        <h2 class="side-heading">Operations</h2>
+                        @* Client/app/API-key administration — one merged screen: register clients +
+                           mint/issue their keys, manage each client's apps, and mint/revoke managed API keys. *@
+                        <a class="@Active("/Clients")"       asp-page="/Clients">Clients &amp; apps</a>
+                        @* Forced reports hidden from nav for now (page still reachable at /ForcedReports). *@
+                        <a class="@Active("/Maintenance")"   asp-page="/Maintenance">Maintenance</a>
+                        @* In-dashboard API request runner (Hoppscotch-style) over the bundled collection. *@
+                        <a class="@Active("/ApiConsole")"    asp-page="/ApiConsole">API console</a>
+                        <a class="@Active("/Audit")"         asp-page="/Audit">Audit log</a>
+                    </div>
+                }
 
                 <div class="side-section">
                     <h2 class="side-heading">System</h2>
@@ -110,7 +131,7 @@
 
             <div class="side-footer">
                 <span class="user" aria-label="Signed in as">@user</span>
-                @if (!isLoopback)
+                @if (!isDevOperator)
                 {
                     <form method="post" action="/Logout" class="inline">
                         @Html.AntiForgeryToken()

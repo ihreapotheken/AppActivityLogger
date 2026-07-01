@@ -534,6 +534,136 @@
           }
         }
       ]
+    },
+    {
+      "name": "Mock data — randomized inserts",
+      "description": "Click **Send** repeatedly to pour fresh, randomized data into the store — every send re-rolls the ids, timestamps, names, devices, products etc. via Postman dynamic variables.\n\n`{{$guid}}` / `{{$randomInt}}` / `{{$randomEmail}}` / `{{$randomProductName}}` (and friends) are standard Postman faker variables, so these import and randomize in real Postman/Hoppscotch too. `{{$sessionId}}` / `{{$anonymousId}}` / `{{$userId}}` are *sticky* in the dashboard's API console — they resolve once per Send so a batch's events share one session/user (in raw Postman, set those with a pre-request script).\n\nGreat for populating the Analytics + Problem-report dashboards with believable demo traffic.",
+      "item": [
+        {
+          "name": "Random analytics session — full funnel (6 events)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "const j = pm.response.json();",
+                  "pm.test('not batch-rejected', () => pm.expect(j.batchRejected).to.be.false);",
+                  "pm.test('no events rejected', () => pm.expect(j.rejectedCount).to.equal(0));",
+                  "pm.test('all 6 events accounted for', () => pm.expect(j.acceptedCount + j.duplicateCount).to.equal(6));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"schemaVersion\":1,\"batchId\":\"rand-{{$guid}}\",\"platform\":\"{{platform}}\",\"sdkVersion\":\"2.0.0\",\"hostAppVersion\":\"{{appVersion}}\",\"anonymousId\":\"{{$anonymousId}}\",\"clientId\":null,\"generatedAt\":\"{{$isoTimestamp}}\",\"events\":[{\"eventId\":\"{{$guid}}\",\"sessionId\":\"{{$sessionId}}\",\"sequence\":1,\"occurredAt\":\"{{$isoTimestamp}}\",\"type\":\"lifecycle\",\"name\":\"session_start\",\"properties\":{\"cold_start\":\"{{$randomBoolean}}\",\"host_app_state\":\"foreground\"}},{\"eventId\":\"{{$guid}}\",\"sessionId\":\"{{$sessionId}}\",\"sequence\":2,\"occurredAt\":\"{{$isoTimestamp}}\",\"type\":\"screen\",\"name\":\"screen_view\",\"screen\":\"{{$randomWord}}\",\"properties\":{\"device_model\":\"{{$randomDeviceModel}}\",\"os_version\":\"{{$randomInt}}\"}},{\"eventId\":\"{{$guid}}\",\"sessionId\":\"{{$sessionId}}\",\"sequence\":3,\"occurredAt\":\"{{$isoTimestamp}}\",\"type\":\"action\",\"name\":\"add_to_cart\",\"feature\":\"cart\",\"properties\":{\"product\":\"{{$randomProductName}}\",\"quantity\":\"{{$randomInt}}\"}},{\"eventId\":\"{{$guid}}\",\"sessionId\":\"{{$sessionId}}\",\"sequence\":4,\"occurredAt\":\"{{$isoTimestamp}}\",\"type\":\"ecommerce\",\"name\":\"purchase\",\"properties\":{\"currency\":\"EUR\",\"value\":\"{{$randomInt}}\"},\"items\":[{\"itemId\":\"sku-{{$randomInt}}\",\"name\":\"{{$randomProductName}}\",\"quantity\":1}]},{\"eventId\":\"{{$guid}}\",\"sessionId\":\"{{$sessionId}}\",\"sequence\":5,\"occurredAt\":\"{{$isoTimestamp}}\",\"type\":\"engagement\",\"name\":\"screen_engagement\",\"screen\":\"{{$randomWord}}\",\"properties\":{\"engaged_ms\":\"{{$randomInt}}\"}},{\"eventId\":\"{{$guid}}\",\"sessionId\":\"{{$sessionId}}\",\"sequence\":6,\"occurredAt\":\"{{$isoTimestamp}}\",\"type\":\"lifecycle\",\"name\":\"session_end\",\"properties\":{\"duration_ms\":\"{{$randomInt}}\"}}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v2/analytics/events",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v2","analytics","events"]
+            }
+          }
+        },
+        {
+          "name": "Random SDK error event",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "const j = pm.response.json();",
+                  "pm.test('not batch-rejected', () => pm.expect(j.batchRejected).to.be.false);",
+                  "pm.test('event accepted', () => pm.expect(j.acceptedCount + j.duplicateCount).to.equal(1));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"schemaVersion\":1,\"batchId\":\"rand-err-{{$guid}}\",\"platform\":\"{{platform}}\",\"sdkVersion\":\"2.0.0\",\"hostAppVersion\":\"{{appVersion}}\",\"anonymousId\":\"{{$anonymousId}}\",\"generatedAt\":\"{{$isoTimestamp}}\",\"events\":[{\"eventId\":\"{{$guid}}\",\"sessionId\":\"{{$sessionId}}\",\"sequence\":1,\"occurredAt\":\"{{$isoTimestamp}}\",\"type\":\"error\",\"name\":\"sdk_batch_http_error\",\"feature\":\"sdk\",\"properties\":{\"status_code\":\"{{$randomInt}}\",\"events_count\":\"{{$randomInt}}\",\"retryable\":\"{{$randomBoolean}}\"}}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v2/analytics/events",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v2","analytics","events"]
+            }
+          }
+        },
+        {
+          "name": "Random crash report",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const j = pm.response.json();",
+                  "pm.test('persisted file name returned', () => pm.expect(j.fileName).to.match(/^problem-report_/));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"platform\":\"{{platform}}\",\"kind\":\"crash\",\"title\":\"java.lang.IllegalStateException\",\"message\":\"Randomised fixture crash on the {{$randomWord}} screen\",\"deviceModel\":\"{{$randomDeviceModel}}\",\"appVersion\":\"{{appVersion}}\",\"source\":\"SDK\",\"pharmacyId\":\"{{$randomInt}}\",\"userId\":\"{{$userId}}\",\"labels\":[\"SDKV2\",\"fixture\",\"random\"],\"stackTrace\":\"java.lang.IllegalStateException: Randomised fixture crash at de.example.{{$randomWord}}.Screen.render(Screen.kt:{{$randomInt}})\",\"occurredAt\":\"{{$isoTimestamp}}\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/reports",
+              "host": ["{{baseUrl}}"],
+              "path": ["api","v1","reports"]
+            }
+          }
+        },
+        {
+          "name": "Random Report-a-Problem (multipart)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('accepted (2xx)', () => pm.expect(pm.response.code).to.be.oneOf([200, 201, 202]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "json",
+                  "value": "{\"platform\":\"{{platform}}\",\"title\":\"Feedback about the {{$randomWord}} screen\",\"message\":\"{{$randomWords}} — reported from {{$randomCity}} by {{$randomFullName}}\",\"deviceModel\":\"{{$randomDeviceModel}}\",\"appVersion\":\"{{appVersion}}\",\"source\":\"SDK\",\"pharmacyId\":\"{{$randomInt}}\",\"userId\":\"{{$userId}}\",\"email\":\"{{$randomEmail}}\",\"phone\":\"{{$randomPhoneNumber}}\",\"labels\":[\"SDKV2\",\"RaP\",\"random\"]}",
+                  "type": "text",
+                  "contentType": "application/json"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/partners/api/v2/report-problem",
+              "host": ["{{baseUrl}}"],
+              "path": ["partners","api","v2","report-problem"]
+            }
+          }
+        }
+      ]
     }
   ],
   "variable": [

@@ -1,12 +1,13 @@
 @page
 @model RSAClientsModel
 @using ReportService.Admin.ViewModels
+@using ReportService.Storage.ApiKeys
 @{
-    ViewData["Title"] = "Clients";
+    ViewData["Title"] = "Clients & apps";
 }
 @await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM(
-    "Clients",
-    "The top-level tenant, identified by an API access key. A client owns its apps (each its own dashboard) and uses its key to ingest analytics and self-manage apps via /api/v2/apps."))
+    "Clients & apps",
+    "Tenancy administration in one place: clients (each identified by an API access key), the apps each client owns (each its own dashboard + database), and the managed API keys for the ingestion API."))
 
 @if (!string.IsNullOrEmpty(Model.Flash))
 {
@@ -15,20 +16,33 @@
 
 @if (!string.IsNullOrEmpty(Model.NewKey))
 {
-    <section class="card" style="border:2px solid var(--accent, #2d7);">
-        <h2>Access key for <span class="mono">@Model.NewKeyClient</span></h2>
-        <p><strong>Copy this now — it is shown only once.</strong> Only its hash is stored; it can't be retrieved again.
-           Hand it to the client; their SDK sends it as the <code>apiKey</code> header and it identifies them as this client.</p>
-        <pre class="mono" style="user-select:all; padding:.6rem; background:var(--code-bg,#111); overflow-x:auto;">@Model.NewKey</pre>
+    <section class="card danger-zone">
+        <h2>Client access key for <span class="mono">@Model.NewKeyClient</span> — copy it now</h2>
+        <p><strong>Shown only once.</strong> Only its hash is stored; it can't be retrieved again. Hand it to the client;
+           their SDK sends it as the <code>apiKey</code> header and it identifies them as this client.</p>
+        <pre class="mono">@Model.NewKey</pre>
     </section>
 }
 
-<hint-box>
+@if (!string.IsNullOrEmpty(Model.NewManagedKey))
+{
+    <section class="card danger-zone">
+        <h2>New API key @Model.NewManagedKeyId — copy it now</h2>
+        <p class="muted">This is the only time the secret is shown. The server keeps only a hash and can never display it again.</p>
+        <pre class="mono">@Model.NewManagedKey</pre>
+    </section>
+}
+
+@* ─────────────────────────────  CLIENTS  ───────────────────────────── *@
+<hint-box docs-href="/Documentation#08-admin-console--clients-apps">
     A client is identified by its <strong>access key</strong>, not a body field — every batch sent with that key is
     attributed to this client, and the same key authorizes the client to manage its own apps over
-    <code>/api/v2/apps</code>. Registering a client mints its first key (shown once below); use <em>issue key</em> to
-    mint more (e.g. to rotate). The slug is a non-PII business key (e.g. a pharmacy id), stored verbatim. Batches sent
-    with an unbound/root key fall back to the <code>default</code> client.
+    <code>/api/v2/apps</code>. Registering a client mints its first key (shown once); use <em>issue key</em> to mint
+    more (e.g. to rotate). The slug is a non-PII business key (e.g. a pharmacy id), stored verbatim. Batches sent with an
+    unbound/root key fall back to the <code>default</code> client.
+    <br /><strong>Archive</strong> suspends a client (ingestion rejected, its apps + data hidden from the dashboards — but
+    everything is <em>kept</em> and can be restored). <strong>Delete</strong> is permanent: it revokes the client's keys
+    and wipes every app's analytics + problem-report data from disk. The <code>default</code> client can't be archived or deleted.
 </hint-box>
 
 <section class="card">
@@ -81,8 +95,8 @@
                         </td>
                         <td class="mono" data-sort-value="@keyCount">@keyCount</td>
                         <td class="mono" data-sort-value="@c.CreatedAt.UtcDateTime.ToString("o")">@c.CreatedAt.AsLocalTime()</td>
-                        <td>
-                            <a class="link" asp-page="/Apps" asp-route-client="@c.Slug">apps</a>
+                        <td class="row-actions">
+                            <a class="link @(Model.SelectedClient == c.Slug ? "is-active" : null)" href="?client=@c.Slug#apps">manage apps</a>
                             @if (!c.IsArchived)
                             {
                                 <form method="post" asp-page-handler="IssueKey" class="inline">
@@ -90,10 +104,237 @@
                                     <input type="hidden" name="slug" value="@c.Slug" />
                                     <button type="submit" class="link" aria-label="Issue a new key for @c.Slug">issue key</button>
                                 </form>
-                                <form method="post" asp-page-handler="Archive" class="inline">
+                                @if (c.Slug != Model.DefaultClient)
+                                {
+                                    <form method="post" asp-page-handler="Archive" class="inline">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="slug" value="@c.Slug" />
+                                        <button type="submit" class="link-danger" aria-label="Archive @c.Slug">archive</button>
+                                    </form>
+                                }
+                            }
+                            else
+                            {
+                                <form method="post" asp-page-handler="Unarchive" class="inline">
                                     @Html.AntiForgeryToken()
                                     <input type="hidden" name="slug" value="@c.Slug" />
-                                    <button type="submit" class="link-danger" aria-label="Archive @c.Slug">archive</button>
+                                    <button type="submit" class="link" aria-label="Restore @c.Slug">restore</button>
+                                </form>
+                            }
+                            @if (c.Slug != Model.DefaultClient)
+                            {
+                                <form method="post" asp-page-handler="Delete" class="inline"
+                                      data-confirm="Permanently delete client '@c.Slug' and ALL its data — every app's analytics and problem reports, wiped from disk — and revoke its access keys. This cannot be undone. (To suspend without deleting, use archive.)"
+                                      data-confirm-title="Delete client + all data" data-confirm-label="Delete everything">
+                                    @Html.AntiForgeryToken()
+                                    <input type="hidden" name="slug" value="@c.Slug" />
+                                    <button type="submit" class="link-danger" aria-label="Delete @c.Slug and all its data">delete</button>
+                                </form>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</section>
+
+@* ─────────────────────────────  APPS  ───────────────────────────── *@
+<section class="card" id="apps">
+    <h2>Apps</h2>
+    <p class="muted">
+        Apps are nested under a <strong>client</strong>; a slug (the <code>appId</code> the SDK sends) is unique only
+        within its client. Fold any environment distinction into the slug (e.g. <code>app-a-qa</code> /
+        <code>app-a-prod</code>). Pick a client to manage its apps, or leave it on “All clients” to review every client's.
+    </p>
+    <form method="get" class="filter-form" data-auto-submit>
+        <label>
+            <span>Manage apps for</span>
+            <select name="client" aria-label="Client">
+                <option value="">All clients (overview)</option>
+                @foreach (var c in Model.Clients)
+                {
+                    <option value="@c.Slug" selected="@(Model.SelectedClient == c.Slug)">@c.DisplayName (@c.Slug)</option>
+                }
+            </select>
+        </label>
+        <noscript><button type="submit" class="primary">Go</button></noscript>
+    </form>
+</section>
+
+@if (Model.SelectedClient is not null)
+{
+    <section class="card">
+        <h3>Create app for <span class="mono">@Model.SelectedClient</span></h3>
+        <form method="post" asp-page-handler="CreateApp" class="filter-form">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="client" value="@Model.SelectedClient" />
+            <label>
+                <span>Display name</span>
+                <input name="displayName" required maxlength="128" placeholder="e.g. App A (prod)" />
+            </label>
+            <label>
+                <span>Slug</span>
+                <input name="slug" required maxlength="64" placeholder="e.g. app-a-prod" pattern="[a-z0-9][a-z0-9\-]*" />
+            </label>
+            <button type="submit" class="primary">Create</button>
+        </form>
+    </section>
+}
+
+<section>
+    <h3>@(Model.SelectedClient is null ? "All apps" : $"Apps for {Model.SelectedClient}") (@Model.Apps.Count)</h3>
+    @if (Model.Apps.Count == 0)
+    {
+        <empty-state>
+            @if (Model.SelectedClient is null)
+            {
+                <text>No apps registered yet. Pick a client above to add one; the <code>default</code> client's <code>default</code> app is seeded automatically.</text>
+            }
+            else
+            {
+                <text>No apps for this client yet. Create one above.</text>
+            }
+        </empty-state>
+    }
+    else
+    {
+        <table>
+            <thead>
+                <tr>
+                    <th scope="col" sort="text" tip="Owning client.">Client</th>
+                    <th scope="col" sort="text" tip="Immutable key the SDK sends as appId (unique within the client).">Slug</th>
+                    <th scope="col" sort="text" tip="Editable human-readable name.">Display name</th>
+                    <th scope="col" sort="date" tip="When the app was registered.">Created (UTC)</th>
+                    <th scope="col"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var app in Model.Apps)
+                {
+                    <tr class="@(app.IsArchived ? "muted" : null)">
+                        <td class="mono">@app.ClientSlug</td>
+                        <td class="mono">@app.Slug @(app.IsArchived ? "(archived)" : null)</td>
+                        <td>
+                            <form method="post" asp-page-handler="RenameApp" class="inline">
+                                @Html.AntiForgeryToken()
+                                <input type="hidden" name="client" value="@app.ClientSlug" />
+                                <input type="hidden" name="slug" value="@app.Slug" />
+                                <input name="displayName" value="@app.DisplayName" maxlength="128" aria-label="Rename @app.Slug" />
+                                <button type="submit" class="link">save</button>
+                            </form>
+                        </td>
+                        <td class="mono" data-sort-value="@app.CreatedAt.UtcDateTime.ToString("o")">@app.CreatedAt.AsLocalTime()</td>
+                        <td class="row-actions">
+                            @if (Model.IsDefaultApp(app.ClientSlug, app.Slug))
+                            {
+                                <span class="muted">default</span>
+                            }
+                            else
+                            {
+                                @if (!app.IsArchived)
+                                {
+                                    <form method="post" asp-page-handler="ArchiveApp" class="inline">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="client" value="@app.ClientSlug" />
+                                        <input type="hidden" name="slug" value="@app.Slug" />
+                                        <button type="submit" class="link-danger" aria-label="Archive @app.Slug">archive</button>
+                                    </form>
+                                }
+                                else
+                                {
+                                    <form method="post" asp-page-handler="UnarchiveApp" class="inline">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="client" value="@app.ClientSlug" />
+                                        <input type="hidden" name="slug" value="@app.Slug" />
+                                        <button type="submit" class="link" aria-label="Restore @app.Slug">restore</button>
+                                    </form>
+                                }
+                                <form method="post" asp-page-handler="DeleteApp" class="inline"
+                                      data-confirm="Permanently delete app '@app.ClientSlug/@app.Slug' and ALL its data — its analytics and problem reports, wiped from disk. This cannot be undone. (To suspend without deleting, use archive.)"
+                                      data-confirm-title="Delete app + all data" data-confirm-label="Delete everything">
+                                    @Html.AntiForgeryToken()
+                                    <input type="hidden" name="client" value="@app.ClientSlug" />
+                                    <input type="hidden" name="slug" value="@app.Slug" />
+                                    <button type="submit" class="link-danger" aria-label="Delete @app.Slug and all its data">delete</button>
+                                </form>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</section>
+
+@* ─────────────────────────────  API KEYS  ───────────────────────────── *@
+<section class="card" id="apikeys">
+    <h2>API keys</h2>
+    <p class="muted">
+        Mint and revoke <strong>admin</strong> operator keys for the ingestion API — unbound keys that
+        read + write across <em>all</em> clients and can manage keys. A <strong>client</strong> key
+        (bound, scoped to a single client's own data) is minted from a client's <code>issue key</code>
+        button above and is labelled <code>client:&lt;slug&gt;</code>. The static configured key is the
+        permanent root-admin and isn't listed.
+    </p>
+    <form method="post" asp-page-handler="CreateApiKey" class="filter-form">
+        @Html.AntiForgeryToken()
+        <input type="hidden" name="role" value="admin" />
+        <label><span>Label</span><input type="text" name="label" placeholder="e.g. ops-oncall" maxlength="200" /></label>
+        <label><span>Expires in (days)</span><input type="number" name="expiresInDays" min="1" placeholder="blank = never" /></label>
+        <label><span>Rate limit / min</span><input type="number" name="rateLimitPerMinute" min="1" placeholder="blank = role default" /></label>
+        <button type="submit" class="primary">Create key</button>
+    </form>
+
+    <h3>Keys (@Model.ApiKeys.Count)</h3>
+    @if (Model.ApiKeys.Count == 0)
+    {
+        <empty-state>No managed keys yet. The static configured key (root-admin) still works and is not listed here.</empty-state>
+    }
+    else
+    {
+        <table>
+            <thead>
+                <tr>
+                    <th scope="col" sort="text">ID</th><th scope="col" sort="text">Role</th><th scope="col" sort="text">Label</th>
+                    <th scope="col" sort="text">Client</th><th scope="col" sort="date">Created</th><th scope="col">Expires</th>
+                    <th scope="col">Rate/min</th><th scope="col">Status</th><th scope="col"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var k in Model.ApiKeys)
+                {
+                    <tr class="@(k.IsActive(Model.Now) ? null : "muted")">
+                        <td class="mono">@k.Id</td>
+                        <td class="mono">@k.Role</td>
+                        <td>@(string.IsNullOrEmpty(k.Label) ? "—" : k.Label)</td>
+                        <td class="mono">@(k.ClientId ?? "—")</td>
+                        <td class="mono" data-sort-value="@k.CreatedAt.UtcDateTime.ToString("o")">@k.CreatedAt.AsLocalTime()</td>
+                        <td class="mono">@(k.ExpiresAt is { } e ? e.AsLocalTime() : "never")</td>
+                        <td class="mono">@(k.RateLimitPerMinute?.ToString() ?? "default")</td>
+                        <td>
+                            @if (k.IsRevoked)
+                            {
+                                <span class="badge badge-bad">revoked</span>
+                            }
+                            else if (k.IsExpired(Model.Now))
+                            {
+                                <span class="badge badge-bad">expired</span>
+                            }
+                            else
+                            {
+                                <span class="badge badge-ok">active</span>
+                            }
+                        </td>
+                        <td>
+                            @if (!k.IsRevoked)
+                            {
+                                <form method="post" asp-page-handler="RevokeApiKey" class="inline"
+                                      data-confirm="Revoke key @k.Id? Any client using it will get 401 immediately."
+                                      data-confirm-title="Revoke API key" data-confirm-label="Revoke">
+                                    @Html.AntiForgeryToken()
+                                    <input type="hidden" name="id" value="@k.Id" />
+                                    <button type="submit" class="link-danger">revoke</button>
                                 </form>
                             }
                         </td>

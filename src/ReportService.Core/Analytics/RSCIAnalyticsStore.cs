@@ -133,6 +133,16 @@ public interface RSCIAnalyticsStore
     Task<int> PurgeOlderThanAsync(DateTimeOffset eventsCutoff, DateTimeOffset deadLetterCutoff, CancellationToken ct);
 
     /// <summary>
+    /// Operator total wipe — deletes <b>all analytics data</b> (events, sessions, user-days, daily
+    /// rollups, funnel observations, retention cohorts, batches, dead letters) but keeps the funnel
+    /// <em>definitions</em> (operator config, like the tenancy catalog survives a report wipe).
+    /// Returns the number of rows removed. <paramref name="scope"/> selects which apps' databases are
+    /// wiped: a scoped (client/app) wipe hits only that app; an all-null scope fans out across every
+    /// app (sum of rows). The platform axis of the scope is ignored — a wipe is total per app.
+    /// </summary>
+    Task<int> WipeAllDataAsync(RSCAnalyticsScope scope, CancellationToken ct);
+
+    /// <summary>
     /// After a pepper rotation, purges <c>analytics_user_days</c> rows whose <c>hash_version</c>
     /// is below <paramref name="minVersion"/>. The orphaned rows can't be reconciled with the new
     /// hashes (raw IDs were never stored), so they're discarded. Daily rollups already include

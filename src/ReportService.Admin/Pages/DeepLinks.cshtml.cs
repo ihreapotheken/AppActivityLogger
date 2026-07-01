@@ -99,12 +99,15 @@ public sealed partial class RSADeepLinksModel : PageModel
 
     public async Task<IActionResult> OnPostSaveAsync(
         [FromForm] string? slug, [FromForm] string? name, [FromForm] string? pagePattern,
-        [FromForm] string? redirectUrl, [FromForm] bool enabled, CancellationToken ct)
+        [FromForm] string? redirectUrl, [FromForm] string? redirectUrlAndroid, [FromForm] string? redirectUrlIos,
+        [FromForm] bool enabled, CancellationToken ct)
     {
         slug = (slug ?? string.Empty).Trim().ToLowerInvariant();
         name = (name ?? string.Empty).Trim();
         pagePattern = (pagePattern ?? string.Empty).Trim();
         redirectUrl = (redirectUrl ?? string.Empty).Trim();
+        redirectUrlAndroid = (redirectUrlAndroid ?? string.Empty).Trim();
+        redirectUrlIos = (redirectUrlIos ?? string.Empty).Trim();
 
         if (!SlugPattern().IsMatch(slug))
             return Err("Slug must be 1–128 chars: lowercase letters, digits, hyphens (starting with a letter or digit).");
@@ -114,10 +117,22 @@ public sealed partial class RSADeepLinksModel : PageModel
             return Err("Page pattern is required (max 2048 chars).");
         if (redirectUrl.Length is 0 or > 2048 || !Uri.TryCreate(redirectUrl, UriKind.Absolute, out _))
             return Err("Redirect address must be an absolute URL (e.g. https://… or myapp://…).");
+        if (!IsValidOverride(redirectUrlAndroid))
+            return Err("Android redirect address must be an absolute URL (max 2048 chars), or left blank.");
+        if (!IsValidOverride(redirectUrlIos))
+            return Err("iOS redirect address must be an absolute URL (max 2048 chars), or left blank.");
 
-        var inserted = await _store.UpsertLinkAsync(slug, name, pagePattern, redirectUrl, enabled, ct)
+        var inserted = await _store.UpsertLinkAsync(
+                slug, name, pagePattern, redirectUrl,
+                redirectUrlAndroid.Length == 0 ? null : redirectUrlAndroid,
+                redirectUrlIos.Length == 0 ? null : redirectUrlIos,
+                enabled, ct)
             .ConfigureAwait(false);
         return Redirect($"{(inserted ? "created" : "updated")}: {slug}", "ok");
+
+        // A platform override is optional; when present it must be a valid absolute URL, like the default.
+        static bool IsValidOverride(string value) =>
+            value.Length == 0 || (value.Length <= 2048 && Uri.TryCreate(value, UriKind.Absolute, out _));
     }
 
     public async Task<IActionResult> OnPostToggleAsync([FromForm] string slug, [FromForm] bool enabled, CancellationToken ct)

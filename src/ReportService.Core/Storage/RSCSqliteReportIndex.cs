@@ -85,6 +85,15 @@ public sealed class RSCSqliteReportIndex : RSCIReportIndex, RSCIReportIndexMaint
         Bootstrap();
     }
 
+    /// <summary>Close the pooled connections held for this index's DB so the underlying file can be
+    /// deleted (used when the owning app/client is purged). Pooling is keyed by connection string, so
+    /// this clears exactly this DB's pool.</summary>
+    internal void EvictPooledConnections()
+    {
+        using var conn = new SqliteConnection(_connectionString);
+        SqliteConnection.ClearPool(conn);
+    }
+
     /// <inheritdoc />
     public async Task UpsertAsync(RSCReportMetadata metadata, CancellationToken ct)
     {

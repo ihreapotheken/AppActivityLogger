@@ -26,7 +26,10 @@ public sealed record RSCCatalogOptions
     /// <summary>App slug stamped on a batch that arrives without one (older SDK builds). Seeded at boot.</summary>
     public string DefaultAppSlug { get; init; } = "default";
 
-    /// <summary>Environment stamped on a batch that arrives without one. Seeded under the default app.</summary>
+    /// <summary>Environment value stamped on the (vestigial) <c>environment</c> column of analytics
+    /// rows that arrive without one. Environment is no longer a tenancy axis — it is folded into the
+    /// app slug (a client creates a separate app per environment, e.g. <c>app-a-qa</c>) — so this is
+    /// just the default fill for an unfiltered legacy column, not a validated value.</summary>
     public string DefaultEnvironment { get; init; } = "production";
 
     /// <summary>Client slug stamped on a batch that arrives without one. Seeded at boot.</summary>
@@ -43,14 +46,14 @@ public sealed record RSCCatalogOptions
     public RSCCatalogClientSeed[] SeedClients { get; init; } = Array.Empty<RSCCatalogClientSeed>();
 }
 
-/// <summary>Plain config DTO for a seed app + its initial environments. <see cref="ClientSlug"/> is
-/// the owning client; blank or unregistered falls back to the default client.</summary>
+/// <summary>Plain config DTO for a seed app. <see cref="ClientSlug"/> is the owning client; blank or
+/// unregistered falls back to the default client. Environment is folded into the slug (seed a separate
+/// app per environment, e.g. <c>app-a-qa</c> / <c>app-a-prod</c>).</summary>
 public sealed class RSCCatalogAppSeed
 {
     public string ClientSlug { get; init; } = string.Empty;
     public string Slug { get; init; } = string.Empty;
     public string DisplayName { get; init; } = string.Empty;
-    public string[] Environments { get; init; } = Array.Empty<string>();
 }
 
 /// <summary>Plain config DTO for a seed client.</summary>

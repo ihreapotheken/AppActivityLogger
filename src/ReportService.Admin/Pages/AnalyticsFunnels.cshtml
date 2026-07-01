@@ -8,7 +8,6 @@
 }
 @await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM("Analytics funnels", $"How many sessions reach each step of a flow, and where they drop off. Window: last {Model.Window} days."))
 @await Html.PartialAsync("_AnalyticsNav")
-@await Html.PartialAsync("_TenantScope", Model.TenantScope)
 
 <hint-box docs-href="/Documentation#05-analytics--reading-funnels">
     <p>

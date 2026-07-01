@@ -68,4 +68,24 @@
     </Content>
   </ItemGroup>
 
+  <!-- Bundle the tracked Postman v2.1 collection + local environment into the admin's output so the
+       /ApiConsole page (an in-dashboard, Hoppscotch-style request runner) can load the curated
+       request library without depending on the source tree at runtime. RSAApiConsoleService reads
+       these from the api-fixtures/ output folder; the browser does the variable substitution + the
+       (same-origin) fetch. -->
+  <ItemGroup>
+    <Content Include="..\..\postman\report-service.postman_collection.json">
+      <Link>api-fixtures\collection.json</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <Visible>false</Visible>
+    </Content>
+    <Content Include="..\..\postman\report-service.postman_environment.json">
+      <Link>api-fixtures\environment.json</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <Visible>false</Visible>
+    </Content>
+  </ItemGroup>
+
 </Project>

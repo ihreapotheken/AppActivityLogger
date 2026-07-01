@@ -28,11 +28,11 @@ public sealed class RSAnalyticsIngestionService
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
 
-    // Optional request-header overrides for tenancy attribution. Let an operator/gateway pin
-    // app / environment / client without the SDK changing its JSON body. Header wins over the body.
-    private const string AppHeader = "X-Analytics-App";
-    private const string EnvHeader = "X-Analytics-Environment";
-    private const string ClientHeader = "X-Analytics-Client";
+    // Optional request-header overrides for tenancy attribution (canonical names centralised in
+    // RSCTenantHeaders so analytics + reports can't drift). Header wins over the body.
+    private const string AppHeader = RSCTenantHeaders.AnalyticsApp;
+    private const string EnvHeader = RSCTenantHeaders.AnalyticsEnvironment;
+    private const string ClientHeader = RSCTenantHeaders.AnalyticsClient;
 
     private readonly RSCIAnalyticsStoreFactory _storeFactory;
     private readonly RSCAnalyticsValidator _validator;
@@ -202,18 +202,19 @@ public sealed class RSAnalyticsIngestionService
             return RSAnalyticsIngestionResult.BadRequest("invalid JSON payload");
         }
 
-        // Contract: a request carrying zero events is a client bug worth a hard 400 here (the
-        // structural input is wrong), whereas per-event/per-batch validation failures (unknown
-        // platform, clock skew, etc.) come back as 202 with rejected/batch-rejected counts so the
-        // caller inspects the receipt. The SDK path deliberately differs — an empty events array is
-        // dead-lettered as EmptyBatch and returns 202 — because that endpoint's historical contract
-        // is "always 202, inspect the receipt". See RSCServerAnalyticsRequest XML docs.
+        // A request carrying zero events is a structural client bug — a hard 400 here, up front,
+        // before the store is even touched (so there's no receipt to inspect). This is consistent
+        // with the standardised outcome rule (see RSAnalyticsIngestionResult.FromReceipt): a batch
+        // from which nothing usable lands is a 400, never a 202. Batches that DO reach the store and
+        // are then fully rejected (unknown platform, every event dead-lettered) also 400 — but carry
+        // the receipt so the caller can read the per-event detail.
         if (req is null || req.Events is null || req.Events.Count == 0)
             return RSAnalyticsIngestionResult.BadRequest("at least one event is required");
 
         // Name is the one field RSCServerAnalyticsEvent documents as required. Validate it up front
-        // and 400 so a caller that omits it gets a clear, actionable error rather than a deceptive
-        // 202 with the event silently dead-lettered as missing_required_field downstream.
+        // and 400 with a specific message so a caller that omits it gets a clear, actionable error
+        // rather than the generic full-rejection 400 with the event dead-lettered as
+        // missing_required_field downstream.
         if (req.Events.Any(e => string.IsNullOrWhiteSpace(e.Name)))
             return RSAnalyticsIngestionResult.BadRequest("each event requires a name");
 
@@ -256,18 +257,17 @@ public sealed class RSAnalyticsIngestionService
             .ConfigureAwait(false);
 
         // A wholesale rejection (bad platform/schema/oversize, or every event dead-lettered) is a
-        // silently-discarded batch: the caller still gets a 202 + receipt, so the only operator
-        // signal is this log line. Surface it at Warning so it is distinguishable from clean
-        // accepts and an integration that's having everything dropped can be alerted on.
-        var fullyRejected = receipt.BatchRejected ||
-            (receipt.AcceptedCount == 0 && receipt.RejectedCount > 0);
+        // discarded batch: it now maps to a 400 (via FromReceipt) rather than a 202 that would mask
+        // the total failure. Log it at Warning so an integration that's having everything dropped is
+        // still alertable, and so the operator signal survives regardless of the status code.
+        var fullyRejected = RSAnalyticsIngestionResult.IsFullyRejected(receipt);
         var level = fullyRejected ? LogLevel.Warning : LogLevel.Information;
         _logger.Log(level,
             "Ingested analytics batch id={BatchId} origin={Origin} platform={Platform} accepted={Accepted} rejected={Rejected} dup={Dup} batchRejected={BatchRejected}",
             receipt.BatchId, origin, batch.Platform, receipt.AcceptedCount, receipt.RejectedCount,
             receipt.DuplicateCount, receipt.BatchRejected);
 
-        return RSAnalyticsIngestionResult.Accepted(receipt);
+        return RSAnalyticsIngestionResult.FromReceipt(receipt);
     }
 
     /// <summary>

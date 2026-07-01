@@ -23,8 +23,13 @@ internal sealed class RSADashboardService : IRSADashboardService
         _options = options;
     }
 
-    public RSADashboardVM Build()
+    public RSADashboardVM Build(string? clientId = null, string? appId = null)
     {
+        // Apply the global switcher scope: null = all apps. The fan-out store stamps each row's owning
+        // (client, app), so we filter the per-platform lists to the selected tenant.
+        var client = string.IsNullOrWhiteSpace(clientId) ? null : clientId.Trim().ToLowerInvariant();
+        var app = string.IsNullOrWhiteSpace(appId) ? null : appId.Trim().ToLowerInvariant();
+
         var platforms = new List<RSAPlatformRowVM>();
         var recent = new List<RSCStoredReport>();
         long jsonBytes = 0;
@@ -40,7 +45,10 @@ internal sealed class RSADashboardService : IRSADashboardService
 
         foreach (var p in _options.AllowedPlatforms)
         {
-            var list = _store.List(p);
+            IEnumerable<RSCStoredReport> seq = _store.List(p);
+            if (client is not null) seq = seq.Where(r => string.Equals(r.ClientId, client, StringComparison.OrdinalIgnoreCase));
+            if (app is not null) seq = seq.Where(r => string.Equals(r.AppId, app, StringComparison.OrdinalIgnoreCase));
+            var list = seq.ToList();
             total += list.Count;
             var pMultipart = 0;
             var pJson = 0;

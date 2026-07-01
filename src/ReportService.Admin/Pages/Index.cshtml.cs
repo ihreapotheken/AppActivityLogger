@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using ReportService.Admin.Services;
 using ReportService.Admin.ViewModels;
@@ -40,6 +41,11 @@ public sealed class RSAIndexModel : PageModel
         _indexAccessor = indexAccessor;
     }
 
+    // Global tenant scope from the top-left switcher (rsc_scope cookie → ?client/?app, filled by the
+    // scope-fill middleware). Null = all. Applied so the landing page filters like the other pages.
+    [BindProperty(SupportsGet = true, Name = "client")] public string? Client { get; set; }
+    [BindProperty(SupportsGet = true, Name = "app")] public string? App { get; set; }
+
     public RSADashboardVM Dashboard { get; private set; } = default!;
     public RSCIndexStatusReport? IndexStatus { get; private set; }
 
@@ -77,14 +83,15 @@ public sealed class RSAIndexModel : PageModel
 
     public async Task OnGetAsync(CancellationToken ct)
     {
-        Dashboard = _dashboard.Build();
+        Dashboard = _dashboard.Build(Client, App);
 
-        try { TrendingIssues = _errors.BuildTrending(recentDays: 7, limit: 5); }
+        try { TrendingIssues = _errors.BuildTrending(recentDays: 7, limit: 5, clientId: Client, appId: App); }
         catch { /* report store hiccup — section just renders empty */ }
 
         try
         {
-            var a = await _analytics.BuildAsync(ReportService.Analytics.RSCAnalyticsScope.All, ct).ConfigureAwait(false);
+            var scope = RSATenantScopes.Build(App, Client, platform: null);
+            var a = await _analytics.BuildAsync(scope, ct).ConfigureAwait(false);
             DailyActiveUsers = a.DailyActiveUsers;
             RetentionDay1 = a.Retention.Day1;
         }

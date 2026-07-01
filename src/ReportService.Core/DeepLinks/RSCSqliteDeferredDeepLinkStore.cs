@@ -82,6 +82,7 @@ public sealed class RSCSqliteDeferredDeepLinkStore : RSCIDeferredDeepLinkStore
                     new RSCDM002_AddClickQueryParams(),
                     new RSCDM003_AddSettingsAndLinkIndex(),
                     new RSCDM004_AddClickSignals(),
+                    new RSCDM005_AddPlatformRedirects(),
                 }, _logger);
             _schemaVersion = runner.Run(conn);
 
@@ -107,7 +108,7 @@ public sealed class RSCSqliteDeferredDeepLinkStore : RSCIDeferredDeepLinkStore
             using var cmd = conn.CreateCommand();
             cmd.CommandTimeout = _commandTimeoutSeconds;
             cmd.CommandText = @"
-SELECT id, slug, name, page_pattern, redirect_url, enabled, created_at, updated_at
+SELECT id, slug, name, page_pattern, redirect_url, enabled, created_at, updated_at, redirect_url_android, redirect_url_ios
 FROM deferred_deep_links
 WHERE (@like IS NULL OR slug LIKE @like ESCAPE '\' OR name LIKE @like ESCAPE '\' OR page_pattern LIKE @like ESCAPE '\')
 ORDER BY updated_at DESC, id DESC
@@ -160,7 +161,7 @@ WHERE (@like IS NULL OR slug LIKE @like ESCAPE '\' OR name LIKE @like ESCAPE '\'
             using var cmd = conn.CreateCommand();
             cmd.CommandTimeout = _commandTimeoutSeconds;
             cmd.CommandText = @"
-SELECT id, slug, name, page_pattern, redirect_url, enabled, created_at, updated_at
+SELECT id, slug, name, page_pattern, redirect_url, enabled, created_at, updated_at, redirect_url_android, redirect_url_ios
 FROM deferred_deep_links WHERE slug = @slug LIMIT 1;";
             cmd.Parameters.AddWithValue("@slug", slug);
             using var reader = await cmd.ExecuteReaderAsync(innerCt).ConfigureAwait(false);
@@ -169,7 +170,8 @@ FROM deferred_deep_links WHERE slug = @slug LIMIT 1;";
     }
 
     public async Task<bool> UpsertLinkAsync(
-        string slug, string name, string pagePattern, string redirectUrl, bool enabled, CancellationToken ct)
+        string slug, string name, string pagePattern, string redirectUrl,
+        string? redirectUrlAndroid, string? redirectUrlIos, bool enabled, CancellationToken ct)
     {
         var nowIso = ToIso(DateTimeOffset.UtcNow);
         return await ExecuteWithRetryAsync(async innerCt =>
@@ -188,20 +190,24 @@ FROM deferred_deep_links WHERE slug = @slug LIMIT 1;";
             using var cmd = conn.CreateCommand();
             cmd.CommandTimeout = _commandTimeoutSeconds;
             // created_at is preserved on update (only set on the initial insert); updated_at always
-            // re-stamps. enabled/name/page_pattern/redirect_url overwrite.
+            // re-stamps. enabled/name/page_pattern/redirect_url(_android/_ios) overwrite.
             cmd.CommandText = @"
-INSERT INTO deferred_deep_links(slug, name, page_pattern, redirect_url, enabled, created_at, updated_at)
-VALUES(@slug, @name, @page_pattern, @redirect_url, @enabled, @now, @now)
+INSERT INTO deferred_deep_links(slug, name, page_pattern, redirect_url, redirect_url_android, redirect_url_ios, enabled, created_at, updated_at)
+VALUES(@slug, @name, @page_pattern, @redirect_url, @redirect_url_android, @redirect_url_ios, @enabled, @now, @now)
 ON CONFLICT(slug) DO UPDATE SET
-  name         = excluded.name,
-  page_pattern = excluded.page_pattern,
-  redirect_url = excluded.redirect_url,
-  enabled      = excluded.enabled,
-  updated_at   = excluded.updated_at;";
+  name                 = excluded.name,
+  page_pattern         = excluded.page_pattern,
+  redirect_url         = excluded.redirect_url,
+  redirect_url_android = excluded.redirect_url_android,
+  redirect_url_ios     = excluded.redirect_url_ios,
+  enabled              = excluded.enabled,
+  updated_at           = excluded.updated_at;";
             cmd.Parameters.AddWithValue("@slug", slug);
             cmd.Parameters.AddWithValue("@name", name);
             cmd.Parameters.AddWithValue("@page_pattern", pagePattern);
             cmd.Parameters.AddWithValue("@redirect_url", redirectUrl);
+            cmd.Parameters.AddWithValue("@redirect_url_android", (object?)redirectUrlAndroid ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@redirect_url_ios", (object?)redirectUrlIos ?? DBNull.Value);
             cmd.Parameters.AddWithValue("@enabled", enabled ? 1 : 0);
             cmd.Parameters.AddWithValue("@now", nowIso);
             await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false);
@@ -248,7 +254,7 @@ ON CONFLICT(slug) DO UPDATE SET
     public async Task<RSCDeferredDeepLinkClick> RecordClickAsync(
         string ip, string pageUrl, string? userAgent,
         IReadOnlyDictionary<string, string>? queryParams, IReadOnlyDictionary<string, string>? signals,
-        DateTimeOffset at, CancellationToken ct)
+        string? platform, DateTimeOffset at, CancellationToken ct)
     {
         return await ExecuteWithRetryAsync(async innerCt =>
         {
@@ -259,7 +265,11 @@ ON CONFLICT(slug) DO UPDATE SET
             // links is small and operator-managed, so an in-process scan is simpler — and more
             // flexible — than encoding "longest substring match" in SQL.
             var matched = await ResolveLinkAsync(conn, pageUrl, innerCt).ConfigureAwait(false);
-            return await InsertClickAsync(conn, ip, pageUrl, userAgent, matched?.Slug, matched?.RedirectUrl, queryParams, signals, at, innerCt)
+            // Denormalise the platform-resolved address so the capture's echo (POST /clicks response)
+            // reflects what this visitor's platform would open. The /match read re-resolves from the
+            // live link, so an operator's later edit still takes effect for pending clicks.
+            var redirect = matched?.ResolveRedirect(platform);
+            return await InsertClickAsync(conn, ip, pageUrl, userAgent, matched?.Slug, redirect, queryParams, signals, at, innerCt)
                 .ConfigureAwait(false);
         }, ct).ConfigureAwait(false);
     }
@@ -267,12 +277,12 @@ ON CONFLICT(slug) DO UPDATE SET
     public async Task<RSCDeferredDeepLinkClick> RecordClickForLinkAsync(
         RSCDeferredDeepLink link, string ip, string pageUrl, string? userAgent,
         IReadOnlyDictionary<string, string>? queryParams, IReadOnlyDictionary<string, string>? signals,
-        DateTimeOffset at, CancellationToken ct)
+        string? platform, DateTimeOffset at, CancellationToken ct)
     {
         return await ExecuteWithRetryAsync(async innerCt =>
         {
             using var conn = await OpenAsync(innerCt).ConfigureAwait(false);
-            return await InsertClickAsync(conn, ip, pageUrl, userAgent, link.Slug, link.RedirectUrl, queryParams, signals, at, innerCt)
+            return await InsertClickAsync(conn, ip, pageUrl, userAgent, link.Slug, link.ResolveRedirect(platform), queryParams, signals, at, innerCt)
                 .ConfigureAwait(false);
         }, ct).ConfigureAwait(false);
     }
@@ -314,7 +324,7 @@ SELECT last_insert_rowid();";
     }
 
     public async Task<RSCDeferredDeepLinkMatch?> FindMatchForIpAsync(
-        string ip, TimeSpan window, bool claim, DateTimeOffset now, CancellationToken ct)
+        string ip, TimeSpan window, bool claim, DateTimeOffset now, string? platform, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(ip)) return null;
         var cutoffIso = ToIso(now - window);
@@ -331,7 +341,7 @@ SELECT last_insert_rowid();";
             {
                 cmd.CommandTimeout = _commandTimeoutSeconds;
                 cmd.CommandText = @"
-SELECT c.id, l.slug, l.name, l.redirect_url, c.page_url, c.created_at, c.query_params, c.signals
+SELECT c.id, l.slug, l.name, l.redirect_url, c.page_url, c.created_at, c.query_params, c.signals, l.redirect_url_android, l.redirect_url_ios
 FROM deferred_deep_link_clicks c
 JOIN deferred_deep_links l ON l.slug = c.link_slug AND l.enabled = 1
 WHERE c.ip = @ip AND c.matched_at IS NULL AND c.created_at >= @cutoff
@@ -343,14 +353,34 @@ LIMIT 1;";
                 if (!await reader.ReadAsync(innerCt).ConfigureAwait(false)) return null;
 
                 clickId = reader.GetInt64(0);
+                var signals = reader.IsDBNull(7) ? null : RSCDeepLinkQuery.Deserialize(reader.GetString(7));
+
+                // Resolve the redirect for the caller's platform: the explicit argument (the app's
+                // own platform) wins; otherwise fall back to the platform captured as a device signal
+                // on the originating click. Each platform falls back to the default redirect when it
+                // has no override.
+                var resolvedPlatform = RSCDeepLinkPlatform.Normalize(platform);
+                if (resolvedPlatform is null && signals is not null && signals.TryGetValue("platform", out var sigPlatform))
+                    resolvedPlatform = RSCDeepLinkPlatform.Normalize(sigPlatform);
+
+                var defaultUrl = reader.GetString(3);
+                var androidUrl = reader.IsDBNull(8) ? null : reader.GetString(8);
+                var iosUrl = reader.IsDBNull(9) ? null : reader.GetString(9);
+                var redirect = resolvedPlatform switch
+                {
+                    RSCDeepLinkPlatform.Android => string.IsNullOrEmpty(androidUrl) ? defaultUrl : androidUrl,
+                    RSCDeepLinkPlatform.Ios => string.IsNullOrEmpty(iosUrl) ? defaultUrl : iosUrl,
+                    _ => defaultUrl,
+                };
+
                 match = new RSCDeferredDeepLinkMatch(
                     Slug: reader.GetString(1),
                     Name: reader.GetString(2),
-                    RedirectUrl: reader.GetString(3),
+                    RedirectUrl: redirect,
                     PageUrl: reader.GetString(4),
                     ClickedAt: ParseIso(reader.GetString(5)),
                     QueryParams: reader.IsDBNull(6) ? null : RSCDeepLinkQuery.Deserialize(reader.GetString(6)),
-                    Signals: reader.IsDBNull(7) ? null : RSCDeepLinkQuery.Deserialize(reader.GetString(7)));
+                    Signals: signals);
             }
 
             if (claim)
@@ -467,7 +497,7 @@ LIMIT @limit;";
         using var cmd = conn.CreateCommand();
         cmd.CommandTimeout = _commandTimeoutSeconds;
         cmd.CommandText = @"
-SELECT id, slug, name, page_pattern, redirect_url, enabled, created_at, updated_at
+SELECT id, slug, name, page_pattern, redirect_url, enabled, created_at, updated_at, redirect_url_android, redirect_url_ios
 FROM deferred_deep_links WHERE enabled = 1;";
 
         var list = new List<RSCDeferredDeepLink>();
@@ -542,6 +572,8 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value;";
         Name: reader.GetString(2),
         PagePattern: reader.GetString(3),
         RedirectUrl: reader.GetString(4),
+        RedirectUrlAndroid: reader.IsDBNull(8) ? null : reader.GetString(8),
+        RedirectUrlIos: reader.IsDBNull(9) ? null : reader.GetString(9),
         Enabled: reader.GetInt64(5) != 0,
         CreatedAt: ParseIso(reader.GetString(6)),
         UpdatedAt: ParseIso(reader.GetString(7)));

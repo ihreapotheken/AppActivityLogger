@@ -18,7 +18,8 @@ public static class RSApiKeyEndpoints
         string? Label,
         DateTimeOffset? ExpiresAt,
         int? ExpiresInDays,
-        int? RateLimitPerMinute);
+        int? RateLimitPerMinute,
+        string? ClientId);
 
     public sealed record CreateKeyResponse(
         string Id,
@@ -27,7 +28,8 @@ public static class RSApiKeyEndpoints
         string? Label,
         DateTimeOffset CreatedAt,
         DateTimeOffset? ExpiresAt,
-        int? RateLimitPerMinute);
+        int? RateLimitPerMinute,
+        string? ClientId);
 
     public static IEndpointRouteBuilder MapApiKeyManagementEndpoints(this IEndpointRouteBuilder app)
     {
@@ -37,9 +39,17 @@ public static class RSApiKeyEndpoints
 
         group.MapPost("", async (CreateKeyRequest body, HttpContext ctx, RSCIApiKeyStore store, RSCIAuditLog audit, CancellationToken ct) =>
             {
-                var role = string.IsNullOrWhiteSpace(body.Role) ? RSCApiKeyRoles.User : body.Role!.Trim().ToLowerInvariant();
+                var role = string.IsNullOrWhiteSpace(body.Role) ? RSCApiKeyRoles.Client : body.Role!.Trim().ToLowerInvariant();
                 if (!RSCApiKeyRoles.IsValid(role))
-                    return Results.Problem($"role must be '{RSCApiKeyRoles.Admin}' or '{RSCApiKeyRoles.User}'", statusCode: StatusCodes.Status400BadRequest);
+                    return Results.Problem($"role must be '{RSCApiKeyRoles.Admin}' or '{RSCApiKeyRoles.Client}'", statusCode: StatusCodes.Status400BadRequest);
+
+                // Role ⇔ binding: a client key is scoped to one client and must carry a clientId; an
+                // admin key spans all clients and must not be bound. (The store enforces this too.)
+                var clientId = string.IsNullOrWhiteSpace(body.ClientId) ? null : body.ClientId!.Trim().ToLowerInvariant();
+                if (role == RSCApiKeyRoles.Client && clientId is null)
+                    return Results.Problem("a client key must be bound to a client — provide clientId", statusCode: StatusCodes.Status400BadRequest);
+                if (role == RSCApiKeyRoles.Admin && clientId is not null)
+                    return Results.Problem("an admin key spans all clients — omit clientId", statusCode: StatusCodes.Status400BadRequest);
 
                 // expiresAt wins if both are supplied; expiresInDays is the convenience form.
                 DateTimeOffset? expiresAt = body.ExpiresAt
@@ -52,12 +62,12 @@ public static class RSApiKeyEndpoints
                 var actor = ctx.User?.Identity?.Name ?? "unknown";
                 try
                 {
-                    var created = await store.CreateAsync(role, body.Label, expiresAt, body.RateLimitPerMinute, actor, ct);
+                    var created = await store.CreateAsync(role, body.Label, expiresAt, body.RateLimitPerMinute, actor, ct, clientId: clientId);
                     await audit.RecordAsync(ctx, "apikey.create", success: true, target: created.Metadata.Id,
-                        details: $"role={role} expires={expiresAt?.ToString("O") ?? "never"} rate={body.RateLimitPerMinute?.ToString() ?? "default"}");
+                        details: $"role={role} client={clientId ?? "-"} expires={expiresAt?.ToString("O") ?? "never"} rate={body.RateLimitPerMinute?.ToString() ?? "default"}");
                     var m = created.Metadata;
                     return Results.Created($"/api/v1/keys/{m.Id}", new CreateKeyResponse(
-                        m.Id, created.PlaintextKey, m.Role, m.Label, m.CreatedAt, m.ExpiresAt, m.RateLimitPerMinute));
+                        m.Id, created.PlaintextKey, m.Role, m.Label, m.CreatedAt, m.ExpiresAt, m.RateLimitPerMinute, m.ClientId));
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -67,7 +77,7 @@ public static class RSApiKeyEndpoints
             })
             .WithName("CreateApiKey")
             .WithSummary("Mint a new API key (admin only)")
-            .WithDescription("Body: { role: 'user'|'admin', label?, expiresAt? (ISO-8601) | expiresInDays?, rateLimitPerMinute? }. The plaintext `key` is returned ONCE — store it now; only its hash is persisted.")
+            .WithDescription("Body: { role: 'admin'|'client' (default 'client'), clientId? (REQUIRED for 'client', forbidden for 'admin'), label?, expiresAt? (ISO-8601) | expiresInDays?, rateLimitPerMinute? }. An `admin` key reads+writes all clients; a `client` key is bound to `clientId` and is scoped to that one client. The plaintext `key` is returned ONCE — store it now; only its hash is persisted.")
             .Produces<CreateKeyResponse>(StatusCodes.Status201Created)
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status401Unauthorized)

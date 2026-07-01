@@ -25,7 +25,8 @@ Routes follow the page name (`ProblemReports.cshtml` → `/ProblemReports`); `/`
 | Analytics health | `/AnalyticsHealth` | Ingestion lag, dead-letter reasons, aggregation backlog. |
 | Stats | `/Stats` | Aggregate report stats over time. |
 | Audit | `/Audit` | Operator action log (login, delete, export, vacuum, backup, integrity, rebuild). |
-| Maintenance | `/Maintenance` | DB maintenance: one-shot retention purge, vacuum, integrity check, index rebuild, backup — plus the **API keys** section (mint user/admin keys with optional expiry + per-key rate limit, and revoke them; the minted secret is shown **once**, mirroring the REST endpoints in §8.4). |
+| Clients & apps | `/Clients` | Tenancy administration (admin-only): register clients and the apps each owns, mint/rotate access keys, archive/restore or delete tenants, and manage operator API keys. See §8.7. |
+| Maintenance | `/Maintenance` | DB maintenance: one-shot retention purge, vacuum, integrity check, index rebuild, backup. |
 | Status | `/Status` | Component health — DB files, WAL state, sizes, schema versions, retention counters, active API-key count. |
 | Documentation | `/Documentation` | This guide (README + `docs/guide/*` rendered as one page). |
 | API docs | `/ApiDocs`, `/swagger` | Swagger UI / OpenAPI for the ingestion routes. |
@@ -69,32 +70,37 @@ Sizing knobs (`ANALYTICS_SEED_SCALE`, `REPORTS_SEED_SCALE`) and idempotency deta
 
 ## 8.4 API keys
 
-Two roles: **admin** keys can manage keys (mint/list/revoke) **and** ingest; **user** keys can only
-ingest. The configured `ReportService:ApiKey` is the permanent **root-admin** — always valid, never
-expires, not stored in the DB — and is how you bootstrap the first managed keys. Managed keys live in
-`api-keys.db`; only their SHA-256 hash is stored, so a minted secret is shown **once** and is never
-retrievable afterwards. Keys can be given an expiry and a per-key rate-limit override at creation.
+Exactly two roles, and role fixes the binding: **admin** keys are **unbound** — they read + write
+across **all** clients and can manage keys (mint/list/revoke); **client** keys are **bound** to one
+client (`clientId`) and ingest + read only that client's own data (they can't manage keys or reach
+another tenant). There is no unbound non-admin key. The configured `ReportService:ApiKey` is the
+permanent **root-admin** — always valid, never expires, not stored in the DB — and is how you
+bootstrap the first managed keys. Managed keys live in `api-keys.db`; only their SHA-256 hash is
+stored, so a minted secret is shown **once** and is never retrievable afterwards. Keys can be given an
+expiry and a per-key rate-limit override at creation.
 
 Rate limiting is **per key**: each key (and the root key) gets its own sliding-window budget — the
-per-key override if set, else the role tier (`ApiKey{Admin,User}RateLimitPerMinute`), else
-`RateLimitPermitsPerMinute`. Requests with no key fall back to a per-IP budget.
+per-key override if set, else the role tier (`ApiKey{Admin,User}RateLimitPerMinute` — the `User`
+option name is legacy and now sets the client tier), else `RateLimitPermitsPerMinute`. Requests with
+no key fall back to a per-IP budget.
 
-Manage keys from the **API keys** section on the `/Maintenance` page (operator cookie auth) or the
-REST API (admin-key auth):
+Mint **admin** keys from the **API keys** section on the `/Clients` page (operator cookie auth); a
+client's own bound key is minted from that client's **issue key** button in the Clients section. Or
+use the REST API (admin-key auth):
 
 | Method | Route | Body / result |
 |---|---|---|
-| `POST` | `/api/v1/keys` | `{ role: 'user'\|'admin', label?, expiresAt? (ISO) \| expiresInDays?, rateLimitPerMinute? }` → `201` with the one-time `key`. |
+| `POST` | `/api/v1/keys` | `{ role: 'admin'\|'client' (default 'client'), clientId? (required for 'client', forbidden for 'admin'), label?, expiresAt? (ISO) \| expiresInDays?, rateLimitPerMinute? }` → `201` with the one-time `key`. |
 | `GET` | `/api/v1/keys` | Metadata for every key (no hashes/plaintext). |
 | `DELETE` | `/api/v1/keys/{id}` | Revoke — subsequent auth with it returns `401`. `404` if no active key. |
 
 ```bash
-# Mint a 30-day user key with the root key, then ingest with it:
+# Mint a 30-day client key (bound to client 'acme') with the root key, then ingest with it:
 curl -sX POST localhost:8082/api/v1/keys -H "apiKey: $ROOT" -H 'Content-Type: application/json' \
-     -d '{"role":"user","label":"acme","expiresInDays":30}'
+     -d '{"role":"client","clientId":"acme","label":"acme","expiresInDays":30}'
 ```
 
-A user key calling the management routes gets `403`; an unknown/expired/revoked key gets `401`
+A client key calling the management routes gets `403`; an unknown/expired/revoked key gets `401`
 (and repeated failures trip the per-IP auth-abuse ban). Every mint/revoke writes an audit row
 (`apikey.create` / `apikey.revoke`).
 
@@ -218,3 +224,48 @@ The feature is built for **thousands** of link definitions. The smart link and m
 cached in memory (write-invalidated, with a short TTL backstop) so a high-volume capture stream doesn't
 reload definitions from SQLite on every hit. The admin links list is **paginated** (`DeepLinks:LinksPageSize`,
 default 50) and **searchable** (slug/name/page-pattern substring), so the page stays responsive at scale.
+
+## 8.7 Clients & apps {#clients-apps}
+
+Tenancy administration lives on one **admin-only** screen, `/Clients` ("Clients & apps") — it is hidden
+from client logins and folds together what were once three places (a separate apps page and the API-keys
+block on `/Maintenance`). The **client is the top-level tenant, identified by its API access key**; each
+client owns a list of **apps**, and every app is its own dashboard backed by its own database.
+Environment is folded into the app slug — create `app-a-qa` / `app-a-prod` rather than adding a separate
+environment axis.
+
+The page has three sections:
+
+1. **Clients** — register a client (which mints its first `client`-role access key, shown **once**),
+   rename it, `issue key` to mint more of its keys (e.g. to rotate), and archive/restore or delete it.
+   The slug is a non-PII business key (e.g. a pharmacy id), stored verbatim. Traffic sent with an
+   unbound/root key falls back to the seeded `default` client.
+2. **Apps** — pick a client (`?client=`) to create/rename/archive/restore/delete its apps. A slug (the
+   `appId` the SDK sends) is unique only *within* its client, so two clients may each own an app with
+   the same slug. Admins manage any client's apps; a client login manages only its own.
+3. **API keys** — mint/revoke **admin** operator keys only (unbound, all-clients, can manage keys). A
+   client's own bound key is minted from its `issue key` button in the Clients section, not here — see §8.4.
+
+### Archive vs delete
+
+Both clients and apps support two lifecycle actions, and the destructive one is gated by a confirmation
+dialog (§8.2):
+
+- **Archive** is a reversible soft-disable: ingestion is rejected and the tenant drops out of every
+  dashboard, but its rows and on-disk data are kept, and **restore** brings it back exactly as it was.
+  An app is only "active" when its owning client is active too, so archiving a client hides all of its
+  apps without mutating the app rows.
+- **Delete** is a permanent hard-delete: it revokes the client's bound keys, removes the catalog rows,
+  and recursively wipes the on-disk tree (`{ReportsRoot}/apps/{client}[/{app}]/` — analytics + report
+  databases). This cannot be undone.
+
+Both actions refuse the seeded **default** client/app (the fallback for attribution-omitting traffic).
+Every lifecycle change is audited (`client.{archive,unarchive,delete}`, `app.{archive,unarchive,delete}`,
+`apikey.{create,revoke}`).
+
+### Client self-service & login
+
+A client can also manage its own apps over JSON with its key — `GET/POST/DELETE /api/v2/apps` (an
+unbound key gets `403`). Clients log into the console at `/ClientLogin` (paste the key); that session is
+confined to its own per-app dashboards — its analytics and its own problem/error reports — and pinned to
+its own `?client=`, so it can never read another tenant's data by editing the URL.

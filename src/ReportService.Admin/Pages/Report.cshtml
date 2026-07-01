@@ -17,6 +17,14 @@
     <h1 class="report-title">@(s.Title ?? Model.FileName)</h1>
     <div class="chips" aria-label="Report tags">
         <span class="chip chip-platform">@Model.Platform</span>
+        @if (!string.IsNullOrEmpty(Model.ClientId))
+        {
+            <span class="chip chip-tenant">client · @Model.ClientId</span>
+        }
+        @if (!string.IsNullOrEmpty(Model.AppId))
+        {
+            <span class="chip chip-tenant">app · @Model.AppId</span>
+        }
         @if (!string.IsNullOrEmpty(Model.IngestionChannel))
         {
             <span class="chip chip-channel">channel · @Model.IngestionChannel</span>
@@ -54,6 +62,8 @@
                     </text>
                 }
             } }
+            @{ Row("Client", Model.ClientId, "mono"); }
+            @{ Row("App", Model.AppId, "mono"); }
             @{ Row("Device", s.DeviceModel, "mono"); }
             @{ Row("App version", s.AppVersion, "mono"); }
             @{ Row("Source", s.Source); }
@@ -98,9 +108,44 @@
     </section>
 }
 
+@if (Model.LogSummary is { } logSummary)
+{
+    <section class="card report-card">
+        <h2>Log attachment summary</h2>
+        <p class="muted">Extracted at ingest from the gzip attachment (iOS plaintext <code>LogEntry</code> array). Counts per level + total HTTP events; the raw attachment is downloadable above.</p>
+        <div class="tiles tiles-compact">
+            <tile label="Total entries">@logSummary.TotalEntries.ToString("N0")</tile>
+            <tile label="HTTP events">@logSummary.HttpEventCount.ToString("N0")</tile>
+            @if (logSummary.Earliest is { } e1 && logSummary.Latest is { } e2)
+            {
+                <tile label="Window" value-class="mono">@((e2 - e1).ToString(@"hh\:mm\:ss"))</tile>
+            }
+        </div>
+        @if (logSummary.ByLevel.Count > 0)
+        {
+            <h3 class="logcat-overview-h">By level</h3>
+            <div class="chips">
+                @foreach (var kv in logSummary.ByLevel.OrderByDescending(kv => kv.Value))
+                {
+                    <span class="chip chip-loglevel chip-loglevel-@kv.Key.ToLowerInvariant()">@kv.Key.ToLowerInvariant()&nbsp;@kv.Value</span>
+                }
+            </div>
+        }
+    </section>
+}
+
+<section class="card report-card">
+    <h2>Full JSON</h2>
+    <pre class="report">@Model.JsonBody</pre>
+</section>
+
 @* Per-report ephemeral deobfuscation — the operator drops a mapping.txt here, the page parses
    + applies it in memory, and re-renders with symbolic frames. Nothing is written to disk,
-   nothing is shared with the next viewer. Optional SDK consumer mapping for chained retrace. *@
+   nothing is shared with the next viewer. Optional SDK consumer mapping for chained retrace.
+   Only shown when there's something to deobfuscate (a stack trace or an attached log) — a plain
+   report with no crash log attached has nothing to rewrite. *@
+@if (Model.CanDeobfuscate)
+{
 <section class="card report-card">
     <h2>Deobfuscate this report</h2>
     <p class="muted small">
@@ -135,37 +180,7 @@
         <button type="submit" class="primary">Deobfuscate</button>
     </form>
 </section>
-
-@if (Model.LogSummary is { } logSummary)
-{
-    <section class="card report-card">
-        <h2>Log attachment summary</h2>
-        <p class="muted">Extracted at ingest from the gzip attachment (iOS plaintext <code>LogEntry</code> array). Counts per level + total HTTP events; the raw attachment is downloadable above.</p>
-        <div class="tiles tiles-compact">
-            <tile label="Total entries">@logSummary.TotalEntries.ToString("N0")</tile>
-            <tile label="HTTP events">@logSummary.HttpEventCount.ToString("N0")</tile>
-            @if (logSummary.Earliest is { } e1 && logSummary.Latest is { } e2)
-            {
-                <tile label="Window" value-class="mono">@((e2 - e1).ToString(@"hh\:mm\:ss"))</tile>
-            }
-        </div>
-        @if (logSummary.ByLevel.Count > 0)
-        {
-            <h3 class="logcat-overview-h">By level</h3>
-            <div class="chips">
-                @foreach (var kv in logSummary.ByLevel.OrderByDescending(kv => kv.Value))
-                {
-                    <span class="chip chip-loglevel chip-loglevel-@kv.Key.ToLowerInvariant()">@kv.Key.ToLowerInvariant()&nbsp;@kv.Value</span>
-                }
-            </div>
-        }
-    </section>
 }
-
-<section class="card report-card">
-    <h2>Full JSON</h2>
-    <pre class="report">@Model.JsonBody</pre>
-</section>
 
 @if (Model.AttachmentFileName is not null)
 {

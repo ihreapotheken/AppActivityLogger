@@ -25,7 +25,7 @@ public class ReportTenancyTests
             SeedClients = new[] { new RSCCatalogClientSeed { Slug = "pharmacy-42", DisplayName = "Pharmacy 42" } },
             SeedApps = new[]
             {
-                new RSCCatalogAppSeed { ClientSlug = "pharmacy-42", Slug = "app-a", DisplayName = "App A", Environments = new[] { "production" } },
+                new RSCCatalogAppSeed { ClientSlug = "pharmacy-42", Slug = "app-a", DisplayName = "App A" },
             },
         };
         return app;
@@ -34,7 +34,7 @@ public class ReportTenancyTests
     private static async Task<string> MintClientKeyAsync(IngestionAppFactory app, string clientSlug)
     {
         var store = app.Services.GetRequiredService<RSCIApiKeyStore>();
-        var created = await store.CreateAsync(RSCApiKeyRoles.User, "test-client", null, null, "test", default, clientId: clientSlug);
+        var created = await store.CreateAsync(RSCApiKeyRoles.Client, "test-client", null, null, "test", default, clientId: clientSlug);
         return created.PlaintextKey;
     }
 

@@ -7,28 +7,28 @@ using ReportService.Validation;
 namespace ReportService.Admin.Services;
 
 /// <summary>
-/// Reads from the SQLite metadata index when it's available (Storage=SqliteIndex) and falls back to
-/// a per-platform disk walk otherwise. The fallback is deliberately partial — it cannot honour the
-/// channel filter (the column is index-only) — but it preserves listing behaviour when the SQLite
-/// surface is missing or degraded.
+/// Lists problem reports for the admin pages in the <b>database-per-app</b> model: it reads through the
+/// per-app fan-out <see cref="RSCIReportStore"/> (which merges every app's own SQLite index) and scopes
+/// the result to the selected <c>(client, app)</c>. The legacy single global index is no longer the
+/// source of truth for per-app report data, so it is not read here. Filtering on columns carried by
+/// <see cref="RSCStoredReport"/> (platform, kind, attachment, dates, top frame, ingestion channel,
+/// file name, owning client/app) is honoured; the rarer index-only filters (pharmacy / email / user id
+/// / app version) are not applied on this path — pushing them down per-app is a follow-up.
 /// </summary>
 internal sealed class RSAReportListingService : IRSAReportListingService
 {
     private readonly RSCIReportStore _store;
     private readonly RSCReportServiceOptions _options;
-    private readonly IRSAReportIndexAccessor _indexAccessor;
 
     public RSAReportListingService(
         RSCIReportStore store,
-        RSCReportServiceOptions options,
-        IRSAReportIndexAccessor indexAccessor)
+        RSCReportServiceOptions options)
     {
         _store = store;
         _options = options;
-        _indexAccessor = indexAccessor;
     }
 
-    public async Task<RSAReportsPageVM> ListAsync(
+    public Task<RSAReportsPageVM> ListAsync(
         RSAReportsFilterInput filter, int pageSize, RSAReportListingScope scope, CancellationToken ct)
     {
         var pageNumber = Math.Max(1, filter.Page);
@@ -63,22 +63,7 @@ internal sealed class RSAReportListingService : IRSAReportListingService
             Limit: pageSize,
             Offset: offset);
 
-        if (_indexAccessor.Maintenance is { } maint)
-        {
-            try
-            {
-                var page = await maint.SearchAsync(dbFilter, ct).ConfigureAwait(false);
-                var rows = page.Items.Select(r => r.ToRow()).ToList();
-                var totalPages = Math.Max(1, (int)Math.Ceiling(page.TotalMatched / (double)pageSize));
-                return new RSAReportsPageVM(rows, page.TotalMatched, pageNumber, totalPages, UsedIndex: true);
-            }
-            catch
-            {
-                // Fall through to the disk path; the index health entry will surface the failure.
-            }
-        }
-
-        return DiskFallback(dbFilter, pageNumber, pageSize, offset, scope.ClientId, scope.AppId);
+        return Task.FromResult(ReadFromStore(dbFilter, pageNumber, pageSize, offset, scope.ClientId, scope.AppId));
     }
 
     /// <summary>
@@ -96,7 +81,7 @@ internal sealed class RSAReportListingService : IRSAReportListingService
         return scopeKindIn;
     }
 
-    private RSAReportsPageVM DiskFallback(RSCReportFilter f, int pageNumber, int pageSize, int offset,
+    private RSAReportsPageVM ReadFromStore(RSCReportFilter f, int pageNumber, int pageSize, int offset,
         string? clientId = null, string? appId = null)
     {
         var platforms = f.Platform is null ? _options.AllowedPlatforms : new[] { f.Platform };
@@ -105,7 +90,8 @@ internal sealed class RSAReportListingService : IRSAReportListingService
 
         IEnumerable<RSCStoredReport> seq = all;
         // Database-per-app tenancy scope: the fan-out store stamps each row's owning (client, app);
-        // restrict to the selected one when set (null = all apps).
+        // restrict to the selected one when set (null = all apps). For a client login the (client)
+        // axis is pinned upstream, so this is also the tenant-isolation boundary.
         if (!string.IsNullOrWhiteSpace(clientId))
             seq = seq.Where(r => string.Equals(r.ClientId, clientId, StringComparison.OrdinalIgnoreCase));
         if (!string.IsNullOrWhiteSpace(appId))
@@ -114,6 +100,8 @@ internal sealed class RSAReportListingService : IRSAReportListingService
             seq = seq.Where(r => r.FileName.Contains(f.FileNameContains!, StringComparison.OrdinalIgnoreCase));
         if (f.HasAttachment is not null)
             seq = seq.Where(r => (r.AttachmentFileName is not null) == f.HasAttachment.Value);
+        if (!string.IsNullOrWhiteSpace(f.IngestionChannel))
+            seq = seq.Where(r => string.Equals(r.IngestionChannel, f.IngestionChannel, StringComparison.OrdinalIgnoreCase));
         if (f.SubmittedFrom is not null)
             seq = seq.Where(r => r.SubmittedAt >= f.SubmittedFrom);
         if (f.SubmittedUntil is not null)

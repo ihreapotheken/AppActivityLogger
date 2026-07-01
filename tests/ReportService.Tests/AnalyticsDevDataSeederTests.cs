@@ -25,9 +25,16 @@ public class AnalyticsDevDataSeederTests : IDisposable
     private readonly string _root;
     private readonly RSCSqliteAnalyticsStore _store;
     private readonly ServiceProvider _sp;
+    private readonly string? _priorSeedScale;
 
     public AnalyticsDevDataSeederTests()
     {
+        // Synthetic seeding is opt-in (DefaultSeedScale = 0): with no ANALYTICS_SEED_SCALE the seeder
+        // writes nothing. This suite is specifically testing what the seeder emits, so enable it for
+        // the class's lifetime and restore the prior value in Dispose.
+        _priorSeedScale = Environment.GetEnvironmentVariable("ANALYTICS_SEED_SCALE");
+        Environment.SetEnvironmentVariable("ANALYTICS_SEED_SCALE", "1");
+
         _root = Path.Combine(Path.GetTempPath(), $"rs-analytics-seeder-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_root);
 
@@ -110,6 +117,7 @@ public class AnalyticsDevDataSeederTests : IDisposable
 
     public void Dispose()
     {
+        Environment.SetEnvironmentVariable("ANALYTICS_SEED_SCALE", _priorSeedScale);
         _sp.Dispose();
         try { Directory.Delete(_root, recursive: true); } catch { /* ignore */ }
     }

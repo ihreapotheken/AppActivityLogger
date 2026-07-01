@@ -23,6 +23,11 @@ public sealed class RSAStatsModel : PageModel
     [BindProperty(SupportsGet = true, Name = "until")] public DateTime? Until { get; set; }
     [BindProperty(SupportsGet = true, Name = "preset")] public string? Preset { get; set; }
 
+    // Global tenant scope from the top-left switcher (rsc_scope cookie → ?client/?app, filled by the
+    // scope-fill middleware). Null = all. Stats fans out across the apps in scope and merges them.
+    [BindProperty(SupportsGet = true, Name = "client")] public string? Client { get; set; }
+    [BindProperty(SupportsGet = true, Name = "app")] public string? App { get; set; }
+
     [BindProperty(SupportsGet = true, Name = "devicePage")] public int DevicePage { get; set; } = 1;
     [BindProperty(SupportsGet = true, Name = "pharmacyPage")] public int PharmacyPage { get; set; } = 1;
     [BindProperty(SupportsGet = true, Name = "versionPage")] public int VersionPage { get; set; } = 1;
@@ -66,7 +71,7 @@ public sealed class RSAStatsModel : PageModel
         var (from, until) = ResolveWindow();
         RangeFrom = from;
         RangeUntil = until;
-        Stats = await _stats.GetAsync(from, until, TopN, ct).ConfigureAwait(false);
+        Stats = await _stats.GetAsync(from, until, TopN, Client, App, ct).ConfigureAwait(false);
     }
 
     private (DateTimeOffset From, DateTimeOffset Until) ResolveWindow()

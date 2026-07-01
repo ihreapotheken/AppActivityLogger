@@ -13,7 +13,7 @@ namespace ReportService.Storage.Catalog;
 /// bootstrap, WAL + busy-timeout, SQLITE_BUSY retry on mutations, and a lock-free in-memory
 /// validation snapshot rebuilt at construction and after every mutation.
 ///
-/// The hot path (<see cref="IsValidApp"/> / <see cref="IsValidEnvironment"/> / <see cref="IsValidClient"/>)
+/// The hot path (<see cref="IsValidApp"/> / <see cref="IsValidClient"/>)
 /// never touches the DB. If the DB is unavailable, validation fails closed (every batch is rejected
 /// while <c>Catalog:Enabled</c> is true — flip it off to fall back to default attribution) and
 /// <see cref="RSCComponentHealth"/> is marked degraded so the Status page surfaces it.
@@ -32,10 +32,16 @@ public sealed class RSCSqliteCatalog : RSCICatalog
     private readonly ILogger<RSCSqliteCatalog> _logger;
     private readonly bool _ready;
 
+    // The seeded fallback tenant — protected from archive/delete so attribution-omitting traffic and
+    // unbound/root keys always have a client/app to land on.
+    private readonly string _defaultClient;
+    private readonly string _defaultApp;
+
     // Lock-free validation snapshots, replaced wholesale on mutation. Active rows only.
-    // Apps are keyed by (client slug, app slug) since app slugs are unique only within a client.
-    private volatile IReadOnlyDictionary<(string Client, string App), IReadOnlySet<string>> _appEnvs =
-        new Dictionary<(string, string), IReadOnlySet<string>>();
+    // Apps are keyed by (client slug, app slug); the slug carries any environment distinction
+    // (env is folded into the slug — no separate environment axis).
+    private volatile IReadOnlySet<(string Client, string App)> _apps =
+        new HashSet<(string, string)>();
     private volatile IReadOnlySet<string> _clientSlugs = new HashSet<string>(StringComparer.Ordinal);
 
     public RSCSqliteCatalog(
@@ -47,6 +53,8 @@ public sealed class RSCSqliteCatalog : RSCICatalog
         _health = health;
         _logger = logger;
         _commandTimeoutSeconds = Math.Max(1, catalogOptions.SqliteCommandTimeoutSeconds);
+        _defaultClient = DefaultOrFallback(catalogOptions.DefaultClientSlug);
+        _defaultApp = DefaultOrFallback(catalogOptions.DefaultAppSlug);
 
         var dbPath = RSCStatePaths.Resolve(catalogOptions.SqliteDbPath, reportOptions.ReportsRoot);
         var parent = Path.GetDirectoryName(Path.GetFullPath(dbPath));
@@ -80,16 +88,21 @@ public sealed class RSCSqliteCatalog : RSCICatalog
             }
 
             var runner = new RSCSchemaRunner(
-                new RSCISchemaMigration[] { new RSCMA001_CreateCatalog(), new RSCMA002_NestAppsUnderClients() }, _logger);
+                new RSCISchemaMigration[]
+                {
+                    new RSCMA001_CreateCatalog(),
+                    new RSCMA002_NestAppsUnderClients(),
+                    new RSCMA003_DropAppEnvironments(),
+                }, _logger);
             var version = runner.Run(conn);
 
             SeedDefaultsAndOptions(conn, catalogOptions);
 
             _ready = true;
             RebuildCache(conn);
-            _health.MarkHealthy(Component, $"schema v{version}, {_appEnvs.Count} apps, {_clientSlugs.Count} clients");
+            _health.MarkHealthy(Component, $"schema v{version}, {_apps.Count} apps, {_clientSlugs.Count} clients");
             _logger.LogInformation("Catalog ready at {Path} (schema v{Version}, {Apps} apps, {Clients} clients)",
-                dbPath, version, _appEnvs.Count, _clientSlugs.Count);
+                dbPath, version, _apps.Count, _clientSlugs.Count);
         }
         catch (Exception ex)
         {
@@ -104,12 +117,7 @@ public sealed class RSCSqliteCatalog : RSCICatalog
         => _ready && _clientSlugs.Contains(RSCCatalogSlug.Normalize(clientSlug));
 
     public bool IsValidApp(string clientSlug, string appSlug)
-        => _ready && _appEnvs.ContainsKey((RSCCatalogSlug.Normalize(clientSlug), RSCCatalogSlug.Normalize(appSlug)));
-
-    public bool IsValidEnvironment(string clientSlug, string appSlug, string environment)
-        => _ready
-           && _appEnvs.TryGetValue((RSCCatalogSlug.Normalize(clientSlug), RSCCatalogSlug.Normalize(appSlug)), out var envs)
-           && envs.Contains(RSCCatalogSlug.Normalize(environment));
+        => _ready && _apps.Contains((RSCCatalogSlug.Normalize(clientSlug), RSCCatalogSlug.Normalize(appSlug)));
 
     // -------- Apps (client-scoped) --------
 
@@ -126,45 +134,34 @@ public sealed class RSCSqliteCatalog : RSCICatalog
         {
             using var conn = await OpenAsync(innerCt).ConfigureAwait(false);
             var conditions = new List<string>();
-            if (!includeArchived) conditions.Add("a.archived_at IS NULL");
+            // Active listing (fan-out dashboards): an app is hidden if it OR its owning client is
+            // archived — so an archived client's data disappears from every read. The admin console
+            // passes includeArchived:true to still manage them.
+            if (!includeArchived) conditions.Add("a.archived_at IS NULL AND c.archived_at IS NULL");
             if (clientFilter is not null) conditions.Add("a.client_id = @client");
             var where = conditions.Count > 0 ? " WHERE " + string.Join(" AND ", conditions) : string.Empty;
 
             using var cmd = conn.CreateCommand();
             cmd.CommandTimeout = _commandTimeoutSeconds;
             cmd.CommandText = $@"
-SELECT a.id, a.client_id, a.slug, a.display_name, a.created_at, a.archived_at, e.environment
-FROM apps a LEFT JOIN app_environments e ON e.app_id = a.id{where}
-ORDER BY a.client_id ASC, a.created_at DESC, e.environment ASC;";
+SELECT a.id, a.client_id, a.slug, a.display_name, a.created_at, a.archived_at
+FROM apps a JOIN clients c ON c.slug = a.client_id{where}
+ORDER BY a.client_id ASC, a.created_at DESC, a.slug ASC;";
             if (clientFilter is not null) cmd.Parameters.AddWithValue("@client", clientFilter);
 
-            var byId = new Dictionary<string, (RSCAppRecord Rec, List<string> Envs)>(StringComparer.Ordinal);
-            var order = new List<string>();
+            var rows = new List<RSCAppRecord>();
             using var reader = await cmd.ExecuteReaderAsync(innerCt).ConfigureAwait(false);
             while (await reader.ReadAsync(innerCt).ConfigureAwait(false))
             {
-                var id = reader.GetString(0);
-                if (!byId.TryGetValue(id, out var entry))
-                {
-                    var rec = new RSCAppRecord(
-                        Id: id,
-                        ClientSlug: reader.GetString(1),
-                        Slug: reader.GetString(2),
-                        DisplayName: reader.GetString(3),
-                        CreatedAt: ParseTs(reader.GetString(4)) ?? DateTimeOffset.UtcNow,
-                        ArchivedAt: reader.IsDBNull(5) ? null : ParseTs(reader.GetString(5)),
-                        Environments: Array.Empty<string>());
-                    entry = (rec, new List<string>());
-                    byId[id] = entry;
-                    order.Add(id);
-                }
-                if (!reader.IsDBNull(6)) entry.Envs.Add(reader.GetString(6));
+                rows.Add(new RSCAppRecord(
+                    Id: reader.GetString(0),
+                    ClientSlug: reader.GetString(1),
+                    Slug: reader.GetString(2),
+                    DisplayName: reader.GetString(3),
+                    CreatedAt: ParseTs(reader.GetString(4)) ?? DateTimeOffset.UtcNow,
+                    ArchivedAt: reader.IsDBNull(5) ? null : ParseTs(reader.GetString(5))));
             }
-            return order.Select(id =>
-            {
-                var (rec, envs) = byId[id];
-                return rec with { Environments = envs };
-            }).ToList();
+            return rows;
         }, ct).ConfigureAwait(false);
     }
 
@@ -176,7 +173,7 @@ ORDER BY a.client_id ASC, a.created_at DESC, e.environment ASC;";
     }
 
     public async Task<RSCAppRecord> CreateAppAsync(
-        string clientSlug, string appSlug, string displayName, IReadOnlyList<string> environments, CancellationToken ct)
+        string clientSlug, string appSlug, string displayName, CancellationToken ct)
     {
         EnsureReady();
         var normClient = RSCCatalogSlug.Require(clientSlug, "Client slug");
@@ -184,9 +181,6 @@ ORDER BY a.client_id ASC, a.created_at DESC, e.environment ASC;";
             throw new RSCCatalogException($"Unknown client '{normClient}'. Register the client before adding apps to it.");
         var normSlug = RSCCatalogSlug.Require(appSlug, "App slug");
         var name = string.IsNullOrWhiteSpace(displayName) ? normSlug : displayName.Trim();
-        var envs = NormalizeEnvironments(environments);
-        if (envs.Count == 0)
-            throw new RSCCatalogException("An app needs at least one environment (e.g. production).");
 
         var id = NewId("app");
         var createdAt = DateTimeOffset.UtcNow;
@@ -196,24 +190,17 @@ ORDER BY a.client_id ASC, a.created_at DESC, e.environment ASC;";
             await ExecuteWithRetryAsync(async innerCt =>
             {
                 using var conn = await OpenAsync(innerCt).ConfigureAwait(false);
-                using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(innerCt).ConfigureAwait(false);
-                using (var cmd = conn.CreateCommand())
-                {
-                    cmd.Transaction = tx;
-                    cmd.CommandTimeout = _commandTimeoutSeconds;
-                    cmd.CommandText = @"
+                using var cmd = conn.CreateCommand();
+                cmd.CommandTimeout = _commandTimeoutSeconds;
+                cmd.CommandText = @"
 INSERT INTO apps(id, client_id, slug, display_name, created_at, archived_at)
 VALUES(@id, @client, @slug, @name, @created_at, NULL);";
-                    cmd.Parameters.AddWithValue("@id", id);
-                    cmd.Parameters.AddWithValue("@client", normClient);
-                    cmd.Parameters.AddWithValue("@slug", normSlug);
-                    cmd.Parameters.AddWithValue("@name", name);
-                    cmd.Parameters.AddWithValue("@created_at", Format(createdAt));
-                    await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false);
-                }
-                foreach (var env in envs)
-                    await InsertEnvironmentAsync(conn, tx, id, env, createdAt, innerCt).ConfigureAwait(false);
-                await tx.CommitAsync(innerCt).ConfigureAwait(false);
+                cmd.Parameters.AddWithValue("@id", id);
+                cmd.Parameters.AddWithValue("@client", normClient);
+                cmd.Parameters.AddWithValue("@slug", normSlug);
+                cmd.Parameters.AddWithValue("@name", name);
+                cmd.Parameters.AddWithValue("@created_at", Format(createdAt));
+                await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false);
                 return 0;
             }, ct).ConfigureAwait(false);
         }
@@ -223,7 +210,7 @@ VALUES(@id, @client, @slug, @name, @created_at, NULL);";
         }
 
         RebuildCacheSafe();
-        return new RSCAppRecord(id, normClient, normSlug, name, createdAt, null, envs);
+        return new RSCAppRecord(id, normClient, normSlug, name, createdAt, null);
     }
 
     public Task<bool> RenameAppAsync(string clientSlug, string appSlug, string displayName, CancellationToken ct)
@@ -248,59 +235,12 @@ VALUES(@id, @client, @slug, @name, @created_at, NULL);";
         // No cache rebuild: display name isn't part of the validation snapshot.
     }
 
-    public async Task<bool> AddEnvironmentAsync(string clientSlug, string appSlug, string environment, CancellationToken ct)
-    {
-        EnsureReady();
-        var normClient = RSCCatalogSlug.Normalize(clientSlug);
-        var normSlug = RSCCatalogSlug.Normalize(appSlug);
-        var env = RSCCatalogSlug.Require(environment, "Environment");
-        var added = await ExecuteWithRetryAsync(async innerCt =>
-        {
-            using var conn = await OpenAsync(innerCt).ConfigureAwait(false);
-            var appId = await GetActiveAppIdAsync(conn, null, normClient, normSlug, innerCt).ConfigureAwait(false);
-            if (appId is null) return false;
-            await InsertEnvironmentAsync(conn, null, appId, env, DateTimeOffset.UtcNow, innerCt).ConfigureAwait(false);
-            return true;
-        }, ct).ConfigureAwait(false);
-        if (added) RebuildCacheSafe();
-        return added;
-    }
-
-    public async Task<bool> RemoveEnvironmentAsync(string clientSlug, string appSlug, string environment, CancellationToken ct)
-    {
-        EnsureReady();
-        var normClient = RSCCatalogSlug.Normalize(clientSlug);
-        var normSlug = RSCCatalogSlug.Normalize(appSlug);
-        var env = RSCCatalogSlug.Normalize(environment);
-        var removed = await ExecuteWithRetryAsync(async innerCt =>
-        {
-            using var conn = await OpenAsync(innerCt).ConfigureAwait(false);
-            var appId = await GetActiveAppIdAsync(conn, null, normClient, normSlug, innerCt).ConfigureAwait(false);
-            if (appId is null) return false;
-
-            using (var count = conn.CreateCommand())
-            {
-                count.CommandText = "SELECT COUNT(*) FROM app_environments WHERE app_id = @id;";
-                count.Parameters.AddWithValue("@id", appId);
-                if (Convert.ToInt32(await count.ExecuteScalarAsync(innerCt).ConfigureAwait(false) ?? 0) <= 1)
-                    return false; // refuse to strip the last environment
-            }
-
-            using var cmd = conn.CreateCommand();
-            cmd.CommandText = "DELETE FROM app_environments WHERE app_id = @id AND environment = @env;";
-            cmd.Parameters.AddWithValue("@id", appId);
-            cmd.Parameters.AddWithValue("@env", env);
-            return await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false) > 0;
-        }, ct).ConfigureAwait(false);
-        if (removed) RebuildCacheSafe();
-        return removed;
-    }
-
     public async Task<bool> ArchiveAppAsync(string clientSlug, string appSlug, CancellationToken ct)
     {
         EnsureReady();
         var normClient = RSCCatalogSlug.Normalize(clientSlug);
         var normSlug = RSCCatalogSlug.Normalize(appSlug);
+        RequireNotDefaultApp(normClient, normSlug, "archived");
         var archived = await ExecuteWithRetryAsync(async innerCt =>
         {
             using var conn = await OpenAsync(innerCt).ConfigureAwait(false);
@@ -313,6 +253,43 @@ VALUES(@id, @client, @slug, @name, @created_at, NULL);";
         }, ct).ConfigureAwait(false);
         if (archived) RebuildCacheSafe();
         return archived;
+    }
+
+    public async Task<bool> UnarchiveAppAsync(string clientSlug, string appSlug, CancellationToken ct)
+    {
+        EnsureReady();
+        var normClient = RSCCatalogSlug.Normalize(clientSlug);
+        var normSlug = RSCCatalogSlug.Normalize(appSlug);
+        var restored = await ExecuteWithRetryAsync(async innerCt =>
+        {
+            using var conn = await OpenAsync(innerCt).ConfigureAwait(false);
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "UPDATE apps SET archived_at = NULL WHERE client_id = @client AND slug = @slug AND archived_at IS NOT NULL;";
+            cmd.Parameters.AddWithValue("@client", normClient);
+            cmd.Parameters.AddWithValue("@slug", normSlug);
+            return await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false) > 0;
+        }, ct).ConfigureAwait(false);
+        if (restored) RebuildCacheSafe();
+        return restored;
+    }
+
+    public async Task<bool> DeleteAppAsync(string clientSlug, string appSlug, CancellationToken ct)
+    {
+        EnsureReady();
+        var normClient = RSCCatalogSlug.Normalize(clientSlug);
+        var normSlug = RSCCatalogSlug.Normalize(appSlug);
+        RequireNotDefaultApp(normClient, normSlug, "deleted");
+        var deleted = await ExecuteWithRetryAsync(async innerCt =>
+        {
+            using var conn = await OpenAsync(innerCt).ConfigureAwait(false);
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "DELETE FROM apps WHERE client_id = @client AND slug = @slug;";
+            cmd.Parameters.AddWithValue("@client", normClient);
+            cmd.Parameters.AddWithValue("@slug", normSlug);
+            return await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false) > 0;
+        }, ct).ConfigureAwait(false);
+        if (deleted) RebuildCacheSafe();
+        return deleted;
     }
 
     // -------- Clients --------
@@ -406,6 +383,7 @@ VALUES(@id, @slug, @name, @created_at, NULL);";
     {
         EnsureReady();
         var normSlug = RSCCatalogSlug.Normalize(slug);
+        RequireNotDefaultClient(normSlug, "archived");
         var archived = await ExecuteWithRetryAsync(async innerCt =>
         {
             using var conn = await OpenAsync(innerCt).ConfigureAwait(false);
@@ -419,20 +397,97 @@ VALUES(@id, @slug, @name, @created_at, NULL);";
         return archived;
     }
 
-    public Task<int> CountActiveAppsAsync(CancellationToken ct) => CountAsync("apps", ct);
-    public Task<int> CountActiveClientsAsync(CancellationToken ct) => CountAsync("clients", ct);
+    public async Task<bool> UnarchiveClientAsync(string slug, CancellationToken ct)
+    {
+        EnsureReady();
+        var normSlug = RSCCatalogSlug.Normalize(slug);
+        var restored = await ExecuteWithRetryAsync(async innerCt =>
+        {
+            using var conn = await OpenAsync(innerCt).ConfigureAwait(false);
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "UPDATE clients SET archived_at = NULL WHERE slug = @slug AND archived_at IS NOT NULL;";
+            cmd.Parameters.AddWithValue("@slug", normSlug);
+            return await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false) > 0;
+        }, ct).ConfigureAwait(false);
+        // Cache rebuild matters here: the client (and so its non-archived apps) re-enter the validation
+        // snapshot and the dashboards.
+        if (restored) RebuildCacheSafe();
+        return restored;
+    }
 
-    private async Task<int> CountAsync(string table, CancellationToken ct)
+    public async Task<bool> DeleteClientAsync(string slug, CancellationToken ct)
+    {
+        EnsureReady();
+        var normSlug = RSCCatalogSlug.Normalize(slug);
+        RequireNotDefaultClient(normSlug, "deleted");
+        var deleted = await ExecuteWithRetryAsync(async innerCt =>
+        {
+            using var conn = await OpenAsync(innerCt).ConfigureAwait(false);
+            using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(innerCt).ConfigureAwait(false);
+            // Remove the client's apps first, then the client itself, atomically.
+            using (var apps = conn.CreateCommand())
+            {
+                apps.Transaction = tx;
+                apps.CommandTimeout = _commandTimeoutSeconds;
+                apps.CommandText = "DELETE FROM apps WHERE client_id = @slug;";
+                apps.Parameters.AddWithValue("@slug", normSlug);
+                await apps.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false);
+            }
+            int rows;
+            using (var cli = conn.CreateCommand())
+            {
+                cli.Transaction = tx;
+                cli.CommandTimeout = _commandTimeoutSeconds;
+                cli.CommandText = "DELETE FROM clients WHERE slug = @slug;";
+                cli.Parameters.AddWithValue("@slug", normSlug);
+                rows = await cli.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false);
+            }
+            await tx.CommitAsync(innerCt).ConfigureAwait(false);
+            return rows > 0;
+        }, ct).ConfigureAwait(false);
+        if (deleted) RebuildCacheSafe();
+        return deleted;
+    }
+
+    // Active apps require an active owning client too (same rule as the validation snapshot), so the
+    // Status count doesn't include apps hidden behind an archived client.
+    public Task<int> CountActiveAppsAsync(CancellationToken ct) => CountAsync(
+        "SELECT COUNT(*) FROM apps a JOIN clients c ON c.slug = a.client_id WHERE a.archived_at IS NULL AND c.archived_at IS NULL;", ct);
+    public Task<int> CountActiveClientsAsync(CancellationToken ct) => CountAsync(
+        "SELECT COUNT(*) FROM clients WHERE archived_at IS NULL;", ct);
+
+    private async Task<int> CountAsync(string sql, CancellationToken ct)
     {
         if (!_ready) return 0;
         try
         {
             using var conn = await OpenAsync(ct).ConfigureAwait(false);
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = $"SELECT COUNT(*) FROM {table} WHERE archived_at IS NULL;";
+            cmd.CommandText = sql;
             return Convert.ToInt32(await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false) ?? 0);
         }
         catch { return 0; }
+    }
+
+    // -------- Default-tenant guards --------
+
+    private void RequireNotDefaultClient(string normSlug, string verb)
+    {
+        if (string.Equals(normSlug, _defaultClient, StringComparison.Ordinal))
+            throw new RSCCatalogException($"The default client '{normSlug}' cannot be {verb} — it is the fallback for attribution-omitting traffic.");
+    }
+
+    private void RequireNotDefaultApp(string normClient, string normApp, string verb)
+    {
+        if (string.Equals(normClient, _defaultClient, StringComparison.Ordinal) &&
+            string.Equals(normApp, _defaultApp, StringComparison.Ordinal))
+            throw new RSCCatalogException($"The default app '{normClient}/{normApp}' cannot be {verb} — it is the fallback for attribution-omitting traffic.");
+    }
+
+    private static string DefaultOrFallback(string? slug)
+    {
+        var n = RSCCatalogSlug.Normalize(slug);
+        return n.Length == 0 ? "default" : n;
     }
 
     // -------- Bootstrap seeding --------
@@ -442,11 +497,10 @@ VALUES(@id, @slug, @name, @created_at, NULL);";
         var now = DateTimeOffset.UtcNow;
         var defaultClient = RSCCatalogSlug.Normalize(options.DefaultClientSlug);
 
-        // Always-present default client + its default app/env so attribution-omitting (older) SDK
+        // Always-present default client + its default app so attribution-omitting (older) SDK
         // builds, and any key with no client binding, still resolve.
         SeedClientIfMissing(conn, defaultClient, "Default client", now);
-        SeedAppIfMissing(conn, defaultClient, RSCCatalogSlug.Normalize(options.DefaultAppSlug), "Default app",
-            new[] { RSCCatalogSlug.Normalize(options.DefaultEnvironment) }, now);
+        SeedAppIfMissing(conn, defaultClient, RSCCatalogSlug.Normalize(options.DefaultAppSlug), "Default app", now);
 
         // Config-declared client seeds first (dev appsettings supplies demo clients).
         foreach (var client in options.SeedClients)
@@ -456,17 +510,15 @@ VALUES(@id, @slug, @name, @created_at, NULL);";
             SeedClientIfMissing(conn, slug, string.IsNullOrWhiteSpace(client.DisplayName) ? slug : client.DisplayName.Trim(), now);
         }
 
-        // Config-declared app seeds, each owned by a client (App A / App B in dev). Apps whose
-        // ClientSlug is blank or unregistered fall back to the default client.
+        // Config-declared app seeds, each owned by a client. Apps whose ClientSlug is blank or
+        // unregistered fall back to the default client. (Environment, if any, is part of the slug.)
         foreach (var app in options.SeedApps)
         {
             var slug = RSCCatalogSlug.Normalize(app.Slug);
             if (!RSCCatalogSlug.IsValid(slug)) continue;
             var owner = RSCCatalogSlug.Normalize(app.ClientSlug);
             if (!RSCCatalogSlug.IsValid(owner) || !ClientExists(conn, owner)) owner = defaultClient;
-            var envs = NormalizeEnvironments(app.Environments);
-            if (envs.Count == 0) envs = new List<string> { RSCCatalogSlug.Normalize(options.DefaultEnvironment) };
-            SeedAppIfMissing(conn, owner, slug, string.IsNullOrWhiteSpace(app.DisplayName) ? slug : app.DisplayName.Trim(), envs, now);
+            SeedAppIfMissing(conn, owner, slug, string.IsNullOrWhiteSpace(app.DisplayName) ? slug : app.DisplayName.Trim(), now);
         }
     }
 
@@ -478,37 +530,21 @@ VALUES(@id, @slug, @name, @created_at, NULL);";
         return find.ExecuteScalar() is not null;
     }
 
-    private void SeedAppIfMissing(SqliteConnection conn, string clientSlug, string slug, string displayName, IReadOnlyList<string> envs, DateTimeOffset now)
+    private void SeedAppIfMissing(SqliteConnection conn, string clientSlug, string slug, string displayName, DateTimeOffset now)
     {
-        string? appId;
-        using (var find = conn.CreateCommand())
-        {
-            find.CommandText = "SELECT id FROM apps WHERE client_id = @client AND slug = @slug;";
-            find.Parameters.AddWithValue("@client", clientSlug);
-            find.Parameters.AddWithValue("@slug", slug);
-            appId = (string?)find.ExecuteScalar();
-        }
-        if (appId is null)
-        {
-            appId = NewId("app");
-            using var ins = conn.CreateCommand();
-            ins.CommandText = "INSERT INTO apps(id, client_id, slug, display_name, created_at, archived_at) VALUES(@id,@client,@slug,@name,@at,NULL);";
-            ins.Parameters.AddWithValue("@id", appId);
-            ins.Parameters.AddWithValue("@client", clientSlug);
-            ins.Parameters.AddWithValue("@slug", slug);
-            ins.Parameters.AddWithValue("@name", displayName);
-            ins.Parameters.AddWithValue("@at", Format(now));
-            ins.ExecuteNonQuery();
-        }
-        foreach (var env in envs)
-        {
-            using var ins = conn.CreateCommand();
-            ins.CommandText = "INSERT OR IGNORE INTO app_environments(app_id, environment, created_at) VALUES(@id,@env,@at);";
-            ins.Parameters.AddWithValue("@id", appId);
-            ins.Parameters.AddWithValue("@env", env);
-            ins.Parameters.AddWithValue("@at", Format(now));
-            ins.ExecuteNonQuery();
-        }
+        using var find = conn.CreateCommand();
+        find.CommandText = "SELECT 1 FROM apps WHERE client_id = @client AND slug = @slug;";
+        find.Parameters.AddWithValue("@client", clientSlug);
+        find.Parameters.AddWithValue("@slug", slug);
+        if (find.ExecuteScalar() is not null) return;
+        using var ins = conn.CreateCommand();
+        ins.CommandText = "INSERT INTO apps(id, client_id, slug, display_name, created_at, archived_at) VALUES(@id,@client,@slug,@name,@at,NULL);";
+        ins.Parameters.AddWithValue("@id", NewId("app"));
+        ins.Parameters.AddWithValue("@client", clientSlug);
+        ins.Parameters.AddWithValue("@slug", slug);
+        ins.Parameters.AddWithValue("@name", displayName);
+        ins.Parameters.AddWithValue("@at", Format(now));
+        ins.ExecuteNonQuery();
     }
 
     private void SeedClientIfMissing(SqliteConnection conn, string slug, string displayName, DateTimeOffset now)
@@ -528,36 +564,6 @@ VALUES(@id, @slug, @name, @created_at, NULL);";
 
     // -------- Internals --------
 
-    private static async Task<string?> GetActiveAppIdAsync(
-        SqliteConnection conn, SqliteTransaction? tx, string clientSlug, string appSlug, CancellationToken ct)
-    {
-        using var cmd = conn.CreateCommand();
-        cmd.Transaction = tx;
-        cmd.CommandText = "SELECT id FROM apps WHERE client_id = @client AND slug = @slug AND archived_at IS NULL;";
-        cmd.Parameters.AddWithValue("@client", clientSlug);
-        cmd.Parameters.AddWithValue("@slug", appSlug);
-        return (string?)await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
-    }
-
-    private static async Task InsertEnvironmentAsync(
-        SqliteConnection conn, SqliteTransaction? tx, string appId, string env, DateTimeOffset at, CancellationToken ct)
-    {
-        using var cmd = conn.CreateCommand();
-        cmd.Transaction = tx;
-        cmd.CommandText = "INSERT OR IGNORE INTO app_environments(app_id, environment, created_at) VALUES(@id,@env,@at);";
-        cmd.Parameters.AddWithValue("@id", appId);
-        cmd.Parameters.AddWithValue("@env", env);
-        cmd.Parameters.AddWithValue("@at", Format(at));
-        await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-    }
-
-    private static List<string> NormalizeEnvironments(IEnumerable<string>? environments) =>
-        (environments ?? Array.Empty<string>())
-            .Select(RSCCatalogSlug.Normalize)
-            .Where(RSCCatalogSlug.IsValid)
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-
     private static string NewId(string prefix) => $"{prefix}_{Guid.NewGuid():N}"[..(prefix.Length + 1 + 12)];
 
     private void EnsureReady()
@@ -573,7 +579,7 @@ VALUES(@id, @slug, @name, @created_at, NULL);";
             using var conn = new SqliteConnection(_connectionString);
             conn.Open();
             RebuildCache(conn);
-            _health.MarkHealthy(Component, $"{_appEnvs.Count} apps, {_clientSlugs.Count} clients cached");
+            _health.MarkHealthy(Component, $"{_apps.Count} apps, {_clientSlugs.Count} clients cached");
         }
         catch (Exception ex)
         {
@@ -584,24 +590,19 @@ VALUES(@id, @slug, @name, @created_at, NULL);";
 
     private void RebuildCache(SqliteConnection conn)
     {
-        var apps = new Dictionary<(string, string), IReadOnlySet<string>>();
+        var apps = new HashSet<(string, string)>();
         using (var cmd = conn.CreateCommand())
         {
+            // An app validates only while BOTH it and its owning client are active — archiving a client
+            // therefore disables ingestion to all its apps without touching the app rows (so un-archiving
+            // restores them exactly).
             cmd.CommandText = @"
-SELECT a.client_id, a.slug, e.environment FROM apps a
-LEFT JOIN app_environments e ON e.app_id = a.id
-WHERE a.archived_at IS NULL;";
+SELECT a.client_id, a.slug
+FROM apps a JOIN clients c ON c.slug = a.client_id
+WHERE a.archived_at IS NULL AND c.archived_at IS NULL;";
             using var reader = cmd.ExecuteReader();
             while (reader.Read())
-            {
-                var key = (reader.GetString(0), reader.GetString(1));
-                if (!apps.TryGetValue(key, out var set))
-                {
-                    set = new HashSet<string>(StringComparer.Ordinal);
-                    apps[key] = set;
-                }
-                if (!reader.IsDBNull(2)) ((HashSet<string>)set).Add(reader.GetString(2));
-            }
+                apps.Add((reader.GetString(0), reader.GetString(1)));
         }
 
         var clients = new HashSet<string>(StringComparer.Ordinal);
@@ -612,7 +613,7 @@ WHERE a.archived_at IS NULL;";
             while (reader.Read()) clients.Add(reader.GetString(0));
         }
 
-        _appEnvs = apps;
+        _apps = apps;
         _clientSlugs = clients;
     }
 

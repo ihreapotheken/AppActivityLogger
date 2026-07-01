@@ -1,6 +1,7 @@
 using ReportService.Analytics;
 using ReportService.Models;
 using ReportService.Options;
+using ReportService.Storage.Catalog;
 
 namespace ReportService.Admin.Services;
 
@@ -128,7 +129,10 @@ internal static class RSAAnalyticsDevDataSeeder
     // ANALYTICS_SEED_SCALE in its .env. The seeder is deterministic per (platform, label, idx),
     // so a given scale always produces the same rows — re-runs at the same scale insert zero
     // duplicates.
-    private const int DefaultSeedScale = 1;
+    // Off by default: synthetic seeding is OPT-IN. With no ANALYTICS_SEED_SCALE (or 0) the seeder
+    // writes nothing, so a fresh dev instance shows only real traffic. Set ANALYTICS_SEED_SCALE>0
+    // (e.g. in .env) to populate the synthetic dataset.
+    private const int DefaultSeedScale = 0;
 
     private static int ResolveScale(ILogger logger)
     {
@@ -136,7 +140,7 @@ internal static class RSAAnalyticsDevDataSeeder
         if (string.IsNullOrWhiteSpace(raw))
             return DefaultSeedScale;
 
-        if (int.TryParse(raw, out var parsed) && parsed >= 1)
+        if (int.TryParse(raw, out var parsed) && parsed >= 0)
             return parsed;
 
         logger.LogWarning(
@@ -166,8 +170,25 @@ internal static class RSAAnalyticsDevDataSeeder
         var validator = sp.GetRequiredService<RSCAnalyticsValidator>();
         var hasher    = sp.GetRequiredService<RSCAnalyticsIdentifierHasher>();
 
+        // Database-per-app: distribute the synthetic cohorts across the catalog's registered apps so
+        // each client's dashboard — and each client login — sees its own per-app analytics. The store
+        // routes each batch to apps/{client}/{app}/analytics.db by the batch's ClientId/AppId; the
+        // admin "all clients" view fans out and sums them. Falls back to the default app if empty.
+        var catalog = sp.GetService<RSCICatalog>();
+        var appList = catalog is null
+            ? new List<(string Client, string App)>()
+            : (await catalog.ListAllAppsAsync(includeArchived: false, ct).ConfigureAwait(false))
+                .Select(a => (Client: a.ClientSlug, App: a.Slug)).ToList();
+        if (appList.Count == 0) appList.Add((Client: "default", App: "default"));
+
         var now    = DateTimeOffset.UtcNow;
         var scale   = ResolveScale(logger);
+        if (scale <= 0)
+        {
+            logger.LogInformation(
+                "Dev analytics seeder disabled (ANALYTICS_SEED_SCALE unset or 0); set ANALYTICS_SEED_SCALE>0 to enable synthetic data.");
+            return;
+        }
         var cohorts = BuildCohorts(scale);
         int batches = 0, events = 0;
 
@@ -182,7 +203,11 @@ internal static class RSAAnalyticsDevDataSeeder
 
             foreach (var spec in cohorts)
             {
-                var anonId = $"seed-{platform[..3]}-{spec.Label}-{spec.Idx:D3}";
+                // Each cohort belongs to one catalog app (round-robin by cohort index), partitioning
+                // the synthetic users across apps. Fold the app slug into the anon id so ids stay
+                // unique per app.
+                var (clientSlug, appSlug) = appList[spec.Idx % appList.Count];
+                var anonId = $"seed-{platform[..3]}-{appSlug}-{spec.Label}-{spec.Idx:D3}";
 
                 foreach (var offset in spec.ReturnOffsets)
                 {
@@ -223,9 +248,10 @@ internal static class RSAAnalyticsDevDataSeeder
                             SdkVersion:     sdkVer,
                             HostAppVersion: appVer,
                             AnonymousId:    anonId,
-                            ClientId:       null,
+                            ClientId:       clientSlug,
                             GeneratedAt:    start.ToString("O"),
-                            Events:         ctx.Events);
+                            Events:         ctx.Events,
+                            AppId:          appSlug);
 
                         // Receive the batch a couple of minutes after the session actually ends. Jittered
                         // gaps mean sessions no longer have a fixed length, so anchor to the real end

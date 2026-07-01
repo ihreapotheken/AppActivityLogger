@@ -27,7 +27,6 @@
 </hint-box>
 
 @await Html.PartialAsync("_ScopeTabs", new RSAScopeTabsVM("/AnalyticsSales", scope))
-@await Html.PartialAsync("_TenantScope", Model.TenantScope)
 
 <section class="tiles" aria-label="Sales summary">
     <tile label="Revenue · last 30 days">@Money(s.TotalRevenue)</tile>

@@ -35,12 +35,12 @@ public class ApiKeyStoreTests : IDisposable
     public async Task Create_then_resolve_roundtrips_role_and_limit()
     {
         var store = NewStore();
-        var created = await store.CreateAsync(RSCApiKeyRoles.User, "acme", expiresAt: null, rateLimitPerMinute: 42, createdBy: "test", default);
+        var created = await store.CreateAsync(RSCApiKeyRoles.Client, "acme", expiresAt: null, rateLimitPerMinute: 42, createdBy: "test", default, clientId: "acme");
 
         var rec = store.Resolve(created.PlaintextKey);
         Assert.NotNull(rec);
         Assert.Equal(created.Metadata.Id, rec!.Id);
-        Assert.Equal(RSCApiKeyRoles.User, rec.Role);
+        Assert.Equal(RSCApiKeyRoles.Client, rec.Role);
         Assert.Equal(42, rec.RateLimitPerMinute);
 
         var list = await store.ListAsync(default);
@@ -63,7 +63,7 @@ public class ApiKeyStoreTests : IDisposable
     public async Task Only_the_hash_is_persisted_never_the_plaintext()
     {
         var store = NewStore();
-        var created = await store.CreateAsync(RSCApiKeyRoles.User, null, null, null, "test", default);
+        var created = await store.CreateAsync(RSCApiKeyRoles.Client, null, null, null, "test", default, clientId: "acme");
 
         using var conn = new SqliteConnection(ConnString());
         conn.Open();
@@ -80,7 +80,7 @@ public class ApiKeyStoreTests : IDisposable
     public async Task Revoke_makes_the_key_unresolvable_and_is_idempotent()
     {
         var store = NewStore();
-        var created = await store.CreateAsync(RSCApiKeyRoles.User, null, null, null, "test", default);
+        var created = await store.CreateAsync(RSCApiKeyRoles.Client, null, null, null, "test", default, clientId: "acme");
 
         Assert.True(await store.RevokeAsync(created.Metadata.Id, "test", default));
         Assert.Null(store.Resolve(created.PlaintextKey));
@@ -99,7 +99,7 @@ public class ApiKeyStoreTests : IDisposable
     {
         var seed = NewStore(); // creates the schema/table
         const string plaintext = "rsk_dead_beef_expiredsecret";
-        RawInsert("expired", RSCApiKeyGenerator.Hash(plaintext), RSCApiKeyRoles.User,
+        RawInsert("expired", RSCApiKeyGenerator.Hash(plaintext), RSCApiKeyRoles.Client,
             expiresAt: DateTimeOffset.UtcNow.AddDays(-1), revokedAt: null);
 
         // Fresh instance rebuilds its cache from the DB, including the hand-inserted row.
@@ -114,7 +114,7 @@ public class ApiKeyStoreTests : IDisposable
         await Assert.ThrowsAsync<ArgumentException>(() =>
             store.CreateAsync("superuser", null, null, null, "test", default));
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            store.CreateAsync(RSCApiKeyRoles.User, null, DateTimeOffset.UtcNow.AddMinutes(-1), null, "test", default));
+            store.CreateAsync(RSCApiKeyRoles.Client, null, DateTimeOffset.UtcNow.AddMinutes(-1), null, "test", default, clientId: "acme"));
     }
 
     private string ConnString() => new SqliteConnectionStringBuilder

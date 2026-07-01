@@ -5,14 +5,24 @@
     Analytics, Errors, AnalyticsSessions, AnalyticsEvents, and the Stats Top-N buckets.
 *@
 @model ReportService.Admin.ViewModels.RSAPagerVM
+@{
+    // Point the prev/next links at the listing-top anchor (an element with id == AnchorId that the
+    // owning page renders just above its table) so a full-page reload lands back on the listing
+    // instead of scrolling to the very top on every page change. The owning page's BuildPageHref
+    // produces query-only hrefs (no fragment), so appending "#" + the id is safe.
+    var anchor = string.IsNullOrEmpty(Model.AnchorId) ? null : "#" + Model.AnchorId;
+    // Leave hrefs that already carry their own fragment (e.g. the Report log viewer's "#log") alone.
+    string? WithAnchor(string? href) =>
+        href is null || anchor is null || href.Contains('#') ? href : href + anchor;
+}
 <nav class="pager@(string.IsNullOrEmpty(Model.ExtraClass) ? "" : " " + Model.ExtraClass)" aria-label="@Model.AriaLabel">
     @if (Model.PrevHref is not null)
     {
-        <a href="@Model.PrevHref">← previous</a>
+        <a href="@WithAnchor(Model.PrevHref)">← previous</a>
     }
     <span class="muted">@Model.Label</span>
     @if (Model.NextHref is not null)
     {
-        <a href="@Model.NextHref">next →</a>
+        <a href="@WithAnchor(Model.NextHref)">next →</a>
     }
 </nav>

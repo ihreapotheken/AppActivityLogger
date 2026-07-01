@@ -29,8 +29,11 @@ public class ErrorsKindFilterTests : IDisposable
         Directory.CreateDirectory(_root);
         _options = new RSCReportServiceOptions { ReportsRoot = _root, SqliteDbPath = "kindfilter.db", Storage = "SqliteIndex" };
         _index = new RSCSqliteReportIndex(_options, NullLogger<RSCSqliteReportIndex>.Instance);
-        var store = new RSCFileSystemReportStore(_options, NullLogger<RSCFileSystemReportStore>.Instance);
-        _listing = new RSAReportListingService(store, _options, new StubAccessor(_index));
+        var fileStore = new RSCFileSystemReportStore(_options, NullLogger<RSCFileSystemReportStore>.Instance);
+        // The per-app read path lists through an indexing store (a file store + its own SQLite index),
+        // the same shape the fan-out store wraps per app — so List() returns index-backed rows incl. Kind.
+        var store = new RSCSqliteIndexingReportStore(fileStore, _index, NullLogger<RSCSqliteIndexingReportStore>.Instance);
+        _listing = new RSAReportListingService(store, _options);
     }
 
     public void Dispose()
@@ -45,7 +48,8 @@ public class ErrorsKindFilterTests : IDisposable
 
         var page = await _listing.ListAsync(new RSAReportsFilterInput(), 100, ErrorsScope, default);
 
-        Assert.True(page.UsedIndex);
+        // The per-app read path reads the store (not a single global index), so UsedIndex is false.
+        Assert.False(page.UsedIndex);
         // 2 crashes + 2 errors in scope; the analytics + null-kind rows are excluded.
         Assert.Equal(4, page.TotalMatched);
         Assert.All(page.Items, r => Assert.Contains(r.Kind, new[] { "crash", "error" }));
@@ -99,15 +103,5 @@ public class ErrorsKindFilterTests : IDisposable
         await AddAsync("error");
         await AddAsync("analytics");
         await AddAsync(null);
-    }
-
-    /// <summary>Hands the listing service a live SQLite index as its maintenance surface.</summary>
-    private sealed class StubAccessor : IRSAReportIndexAccessor
-    {
-        private readonly RSCSqliteReportIndex _index;
-        public StubAccessor(RSCSqliteReportIndex index) => _index = index;
-        public bool IsConfigured => true;
-        public RSCResilientReportIndex? Resilient => null;
-        public RSCIReportIndexMaintenance? Maintenance => _index;
     }
 }

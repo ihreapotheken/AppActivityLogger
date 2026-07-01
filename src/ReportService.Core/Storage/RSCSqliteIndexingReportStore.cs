@@ -33,15 +33,25 @@ public sealed class RSCSqliteIndexingReportStore : RSCIReportStore
     }
 
     /// <inheritdoc />
-    public async Task<RSCStoredReport> SaveAsync(
+    public Task<RSCStoredReport> SaveAsync(
         RSCProblemReport report,
         ReadOnlyMemory<byte> jsonBytes,
         Stream? attachment,
         long? attachmentLength,
         string ingestionChannel,
         CancellationToken ct)
+        => SaveAsync(report, jsonBytes, attachment, attachmentLength, ingestionChannel, DateTimeOffset.UtcNow, ct);
+
+    public async Task<RSCStoredReport> SaveAsync(
+        RSCProblemReport report,
+        ReadOnlyMemory<byte> jsonBytes,
+        Stream? attachment,
+        long? attachmentLength,
+        string ingestionChannel,
+        DateTimeOffset submittedAt,
+        CancellationToken ct)
     {
-        var stored = await _inner.SaveAsync(report, jsonBytes, attachment, attachmentLength, ingestionChannel, ct).ConfigureAwait(false);
+        var stored = await _inner.SaveAsync(report, jsonBytes, attachment, attachmentLength, ingestionChannel, submittedAt, ct).ConfigureAwait(false);
 
         string? topFrame = null;
         string? logSummaryJson = null;

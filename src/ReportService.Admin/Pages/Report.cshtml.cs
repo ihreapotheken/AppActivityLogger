@@ -43,6 +43,13 @@ public sealed class RSAReportModel : PageModel
     }
 
     public string Platform { get; private set; } = string.Empty;
+
+    /// <summary>The tenant (client) and app this report was submitted under, resolved from the
+    /// per-app store's metadata (the fan-out store stamps each listing row with its owning
+    /// <c>(client, app)</c>). Null/blank only for a legacy report that predates per-app attribution.</summary>
+    public string? ClientId { get; private set; }
+    public string? AppId { get; private set; }
+
     public string FileName { get; private set; } = string.Empty;
     public string? AttachmentFileName { get; private set; }
     public long SizeBytes { get; private set; }
@@ -84,6 +91,12 @@ public sealed class RSAReportModel : PageModel
     public string? LogcatNotice { get; private set; }
     public bool LogcatAvailable => LogcatLines.Count > 0;
 
+    /// <summary>Whether a mapping.txt would have anything to rewrite on this report — an obfuscated
+    /// stack trace, or a decompressed logcat from the attachment. When false (e.g. a plain problem
+    /// report with no crash log attached) the "Deobfuscate this report" section is hidden, since the
+    /// deobfuscation pass acts only on the stack trace and the logcat lines.</summary>
+    public bool CanDeobfuscate => !string.IsNullOrEmpty(StackTrace) || LogcatAvailable;
+
     /// <summary>Summary of the attachment log: per-level counts + first error excerpt. Lets the
     /// operator triage a large log without scrolling the full dump below.</summary>
     public RSALogcatOverview? LogcatOverview { get; private set; }
@@ -120,6 +133,12 @@ public sealed class RSAReportModel : PageModel
         var meta = _store.List(p).FirstOrDefault(r => string.Equals(r.FileName, fileName, StringComparison.Ordinal));
         if (meta is null) return NotFound();
 
+        // A client login may only open reports belonging to its own client (database-per-app means
+        // a guessed filename could otherwise resolve to another tenant's report via the fan-out).
+        // Operators (no client claim) are unrestricted. 404 (not 403) so a client can't probe which
+        // filenames exist under other clients.
+        if (DeniedForClientLogin(meta)) return NotFound();
+
         using var stream = _store.OpenRead(p, fileName);
         if (stream is null) return NotFound();
 
@@ -151,6 +170,8 @@ public sealed class RSAReportModel : PageModel
         }
 
         Platform = p;
+        ClientId = string.IsNullOrWhiteSpace(meta.ClientId) ? null : meta.ClientId;
+        AppId = string.IsNullOrWhiteSpace(meta.AppId) ? null : meta.AppId;
         FileName = meta.FileName;
         AttachmentFileName = meta.AttachmentFileName;
         SizeBytes = meta.SizeBytes;
@@ -371,10 +392,16 @@ public sealed class RSAReportModel : PageModel
     }
 
     public IActionResult OnGetDownloadJson(string platform, string fileName)
-        => Download(platform, fileName, expectJson: true);
+    {
+        if (DeniedForClientLogin(platform, fileName)) return NotFound();
+        return Download(platform, fileName, expectJson: true);
+    }
 
     public IActionResult OnGetDownloadAttachment(string platform, string fileName)
     {
+        // `fileName` is the JSON document; verify the client login owns it before deriving/serving the
+        // sibling attachment (a client must not pull another tenant's logcat by filename).
+        if (DeniedForClientLogin(platform, fileName)) return NotFound();
         // The `fileName` for a detail page is always the JSON document. Derive the sibling gzip name
         // rather than trusting a client-supplied attachment name: that keeps all path checks and the
         // allow-list entirely server-side.
@@ -391,6 +418,27 @@ public sealed class RSAReportModel : PageModel
 
         var contentType = expectJson ? "application/json" : "application/gzip";
         return File(stream, contentType, fileName);
+    }
+
+    /// <summary>The client slug this request's cookie is bound to (a <c>/ClientLogin</c> session), or
+    /// null for an operator/admin session. Drives the per-report tenant guard below.</summary>
+    private string? LoginClient =>
+        User?.FindFirst(ReportService.Security.RSCTenantClaims.ClientId)?.Value is { Length: > 0 } c ? c : null;
+
+    /// <summary>True when a client login is trying to reach a report that isn't its own client's.
+    /// Operators (no client claim) are never denied.</summary>
+    private bool DeniedForClientLogin(RSCStoredReport meta) =>
+        LoginClient is { } client && !string.Equals(meta.ClientId, client, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Overload for the download handlers, which don't already hold the report's metadata:
+    /// resolves it by its JSON file name and applies the same tenant guard. Unknown platform/file →
+    /// denied (the caller 404s either way).</summary>
+    private bool DeniedForClientLogin(string platform, string jsonFileName)
+    {
+        if (LoginClient is null) return false;
+        if (RSCPlatforms.TryCanonicalize(platform, _options) is not { } p) return true;
+        var meta = _store.List(p).FirstOrDefault(r => string.Equals(r.FileName, jsonFileName, StringComparison.Ordinal));
+        return meta is null || DeniedForClientLogin(meta);
     }
 
     /// <summary>One decompressed logcat line with its inferred level. Filtered + paginated

@@ -26,26 +26,28 @@ public class ApiKeyAuthTests
 
     private static StringContent ReportBody() => new(ValidReport, Encoding.UTF8, "application/json");
 
-    private static async Task<JsonElement> MintAsync(HttpClient client, string adminKey, string role, int? expiresInDays = null, int? rate = null)
+    private static async Task<JsonElement> MintAsync(HttpClient client, string adminKey, string role, int? expiresInDays = null, int? rate = null, string? clientId = null)
     {
-        var body = JsonContent.Create(new { role, expiresInDays, rateLimitPerMinute = rate });
+        var body = JsonContent.Create(new { role, expiresInDays, rateLimitPerMinute = rate, clientId });
         var res = await client.SendAsync(Req(HttpMethod.Post, "/api/v1/keys", adminKey, body));
         Assert.Equal(HttpStatusCode.Created, res.StatusCode);
         return await res.Content.ReadFromJsonAsync<JsonElement>();
     }
 
     [Fact]
-    public async Task Root_key_mints_a_user_key_that_can_ingest()
+    public async Task Root_key_mints_a_client_key_that_can_ingest()
     {
         await using var app = new IngestionAppFactory();
         var client = app.CreateClient();
 
-        var created = await MintAsync(client, IngestionAppFactory.ApiKey, "user");
-        var userKey = created.GetProperty("key").GetString()!;
-        Assert.Equal("user", created.GetProperty("role").GetString());
-        Assert.StartsWith("rsk_", userKey, StringComparison.Ordinal);
+        // A client key is bound to a catalog client; "default" is self-seeded, so it ingests exactly
+        // as the old unbound key did (which also resolved to the default client).
+        var created = await MintAsync(client, IngestionAppFactory.ApiKey, "client", clientId: "default");
+        var clientKey = created.GetProperty("key").GetString()!;
+        Assert.Equal("client", created.GetProperty("role").GetString());
+        Assert.StartsWith("rsk_", clientKey, StringComparison.Ordinal);
 
-        var ingest = await client.SendAsync(Req(HttpMethod.Post, "/api/v1/reports", userKey, ReportBody()));
+        var ingest = await client.SendAsync(Req(HttpMethod.Post, "/api/v1/reports", clientKey, ReportBody()));
         Assert.Equal(HttpStatusCode.Created, ingest.StatusCode);
     }
 
@@ -64,10 +66,10 @@ public class ApiKeyAuthTests
         var asAdmin = await client.SendAsync(Req(HttpMethod.Get, "/api/v1/keys", adminKey));
         Assert.Equal(HttpStatusCode.OK, asAdmin.StatusCode);
 
-        // User key authenticates but is forbidden from management → 403.
-        var userKey = (await MintAsync(client, IngestionAppFactory.ApiKey, "user")).GetProperty("key").GetString()!;
-        var asUser = await client.SendAsync(Req(HttpMethod.Get, "/api/v1/keys", userKey));
-        Assert.Equal(HttpStatusCode.Forbidden, asUser.StatusCode);
+        // Client key authenticates but is forbidden from management → 403.
+        var clientKey = (await MintAsync(client, IngestionAppFactory.ApiKey, "client", clientId: "default")).GetProperty("key").GetString()!;
+        var asClient = await client.SendAsync(Req(HttpMethod.Get, "/api/v1/keys", clientKey));
+        Assert.Equal(HttpStatusCode.Forbidden, asClient.StatusCode);
     }
 
     [Fact]
@@ -76,18 +78,18 @@ public class ApiKeyAuthTests
         await using var app = new IngestionAppFactory();
         var client = app.CreateClient();
 
-        var created = await MintAsync(client, IngestionAppFactory.ApiKey, "user");
-        var userKey = created.GetProperty("key").GetString()!;
+        var created = await MintAsync(client, IngestionAppFactory.ApiKey, "client", clientId: "default");
+        var clientKey = created.GetProperty("key").GetString()!;
         var id = created.GetProperty("id").GetString()!;
 
         // Works before revocation.
-        var before = await client.SendAsync(Req(HttpMethod.Post, "/api/v1/reports", userKey, ReportBody()));
+        var before = await client.SendAsync(Req(HttpMethod.Post, "/api/v1/reports", clientKey, ReportBody()));
         Assert.Equal(HttpStatusCode.Created, before.StatusCode);
 
         var del = await client.SendAsync(Req(HttpMethod.Delete, $"/api/v1/keys/{id}", IngestionAppFactory.ApiKey));
         Assert.Equal(HttpStatusCode.OK, del.StatusCode);
 
-        var after = await client.SendAsync(Req(HttpMethod.Post, "/api/v1/reports", userKey, ReportBody()));
+        var after = await client.SendAsync(Req(HttpMethod.Post, "/api/v1/reports", clientKey, ReportBody()));
         Assert.Equal(HttpStatusCode.Unauthorized, after.StatusCode);
     }
 

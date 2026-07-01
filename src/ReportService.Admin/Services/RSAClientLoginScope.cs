@@ -17,13 +17,17 @@ namespace ReportService.Admin.Services;
 /// </summary>
 public static class RSAClientLoginScope
 {
-    // The dashboards a client login may view. Each scopes its query by the client axis, so pinning
-    // ?client= makes them safe. Operator-only surfaces (Health's cross-tenant DLQ samples, the
-    // catalog/key admin pages, problem reports, exports) are deliberately absent.
+    // The dashboards a client login may view — its own per-app analytics AND its own per-app problem
+    // reports / error reports. The list pages scope their query by the client axis (pinned ?client=
+    // below + the listing service's ClientId filter); the /Report detail + download handlers verify
+    // per-report client ownership themselves (a filename alone must not cross tenants). Operator-only
+    // surfaces (Health's cross-tenant DLQ samples, the catalog/key admin pages, the aggregate
+    // Dashboard/Stats, exports) remain deliberately absent.
     private static readonly HashSet<string> AllowedPages = new(StringComparer.OrdinalIgnoreCase)
     {
         "/Analytics", "/AnalyticsSales", "/AnalyticsRetention", "/AnalyticsFunnels",
         "/AnalyticsSessions", "/AnalyticsSession", "/AnalyticsEvents",
+        "/ProblemReports", "/Errors", "/Report",
         "/Scope", "/ClientLogin", "/Logout", "/Error", "/FeatureUnavailable",
     };
 

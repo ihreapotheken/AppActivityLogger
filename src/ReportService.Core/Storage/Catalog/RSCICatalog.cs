@@ -2,18 +2,18 @@ using System.Text.RegularExpressions;
 
 namespace ReportService.Storage.Catalog;
 
-/// <summary>An app owned by a client, plus its declared environments. <see cref="Slug"/> is the
-/// immutable key the SDK sends as <c>appId</c> — unique <em>within its owning client</em>
-/// (<see cref="ClientSlug"/>), so two clients may each have an app with the same slug.
-/// <see cref="DisplayName"/> is editable.</summary>
+/// <summary>An app owned by a client. <see cref="Slug"/> is the immutable key the SDK sends as
+/// <c>appId</c> — unique <em>within its owning client</em> (<see cref="ClientSlug"/>), so two clients
+/// may each have an app with the same slug. Environment is folded into the slug (a client creates a
+/// separate app entry per environment, e.g. <c>app-a-qa</c> / <c>app-a-prod</c>) — there is no
+/// separate environment axis. <see cref="DisplayName"/> is editable.</summary>
 public sealed record RSCAppRecord(
     string Id,
     string ClientSlug,
     string Slug,
     string DisplayName,
     DateTimeOffset CreatedAt,
-    DateTimeOffset? ArchivedAt,
-    IReadOnlyList<string> Environments)
+    DateTimeOffset? ArchivedAt)
 {
     public bool IsArchived => ArchivedAt is not null;
 }
@@ -46,11 +46,8 @@ public interface RSCICatalog
     bool IsValidClient(string clientSlug);
 
     /// <summary>True iff <paramref name="clientSlug"/> is an active client that owns an active app
-    /// with <paramref name="appSlug"/>.</summary>
+    /// with <paramref name="appSlug"/>. (Environment is folded into the slug — no separate check.)</summary>
     bool IsValidApp(string clientSlug, string appSlug);
-
-    /// <summary>True iff the client's app declares <paramref name="environment"/>.</summary>
-    bool IsValidEnvironment(string clientSlug, string appSlug, string environment);
 
     // -------- Apps (client-scoped) --------
 
@@ -63,25 +60,47 @@ public interface RSCICatalog
 
     Task<RSCAppRecord?> GetAppAsync(string clientSlug, string appSlug, CancellationToken ct);
 
-    /// <summary>Register a new app under a client + its initial environments. Throws
-    /// <see cref="RSCCatalogException"/> on an invalid/unknown client, an invalid slug, an empty
-    /// environment list, or a slug already used by that client.</summary>
-    Task<RSCAppRecord> CreateAppAsync(string clientSlug, string appSlug, string displayName, IReadOnlyList<string> environments, CancellationToken ct);
+    /// <summary>Register a new app under a client. The slug carries any environment distinction
+    /// (e.g. <c>app-a-qa</c>). Throws <see cref="RSCCatalogException"/> on an invalid/unknown client,
+    /// an invalid slug, or a slug already used by that client.</summary>
+    Task<RSCAppRecord> CreateAppAsync(string clientSlug, string appSlug, string displayName, CancellationToken ct);
 
     Task<bool> RenameAppAsync(string clientSlug, string appSlug, string displayName, CancellationToken ct);
-    Task<bool> AddEnvironmentAsync(string clientSlug, string appSlug, string environment, CancellationToken ct);
 
-    /// <summary>Remove an environment. Returns false if it's the app's last environment (an app with
-    /// zero environments could never be attributed to) or the env/app/client is unknown.</summary>
-    Task<bool> RemoveEnvironmentAsync(string clientSlug, string appSlug, string environment, CancellationToken ct);
+    /// <summary>Soft-disable an app: ingestion is rejected and it drops out of the dashboards, but the
+    /// row and its on-disk data are kept. Reversible via <see cref="UnarchiveAppAsync"/>.</summary>
     Task<bool> ArchiveAppAsync(string clientSlug, string appSlug, CancellationToken ct);
+
+    /// <summary>Restore an archived app (clear <c>archived_at</c>). No-op (returns false) if the app
+    /// isn't archived or doesn't exist.</summary>
+    Task<bool> UnarchiveAppAsync(string clientSlug, string appSlug, CancellationToken ct);
+
+    /// <summary>Permanently remove an app's catalog row (hard delete, unlike <see cref="ArchiveAppAsync"/>).
+    /// The caller is responsible for purging the app's on-disk data. Refuses the seeded default app of the
+    /// default client (throws <see cref="RSCCatalogException"/>). Returns false if the app didn't exist.</summary>
+    Task<bool> DeleteAppAsync(string clientSlug, string appSlug, CancellationToken ct);
 
     // -------- Clients --------
     Task<IReadOnlyList<RSCClientRecord>> ListClientsAsync(bool includeArchived, CancellationToken ct);
     Task<RSCClientRecord?> GetClientAsync(string slug, CancellationToken ct);
     Task<RSCClientRecord> CreateClientAsync(string slug, string displayName, CancellationToken ct);
     Task<bool> RenameClientAsync(string slug, string displayName, CancellationToken ct);
+
+    /// <summary>Soft-disable a whole tenant: ingestion under any of its keys is rejected and all its apps
+    /// drop out of the dashboards (an app is only active when its owning client is active too), but every
+    /// row and all on-disk data are kept. Reversible via <see cref="UnarchiveClientAsync"/>. Refuses the
+    /// default client (throws <see cref="RSCCatalogException"/>).</summary>
     Task<bool> ArchiveClientAsync(string slug, CancellationToken ct);
+
+    /// <summary>Restore an archived client (clear <c>archived_at</c>); its apps become visible again in
+    /// exactly the per-app archived states they had before. No-op (returns false) if not archived.</summary>
+    Task<bool> UnarchiveClientAsync(string slug, CancellationToken ct);
+
+    /// <summary>Permanently remove a client and all its apps from the catalog (hard delete, unlike
+    /// <see cref="ArchiveClientAsync"/>). The caller is responsible for purging the client's on-disk data
+    /// and revoking its API keys. Refuses the default client (throws <see cref="RSCCatalogException"/>).
+    /// Returns false if the client didn't exist.</summary>
+    Task<bool> DeleteClientAsync(string slug, CancellationToken ct);
 
     // -------- Status dashboard --------
     Task<int> CountActiveAppsAsync(CancellationToken ct);

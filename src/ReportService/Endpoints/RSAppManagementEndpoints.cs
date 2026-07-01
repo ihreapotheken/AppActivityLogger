@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using ReportService.Audit;
 using ReportService.Security;
 using ReportService.Storage.Catalog;
 
@@ -16,13 +17,13 @@ namespace ReportService.Endpoints;
 /// </summary>
 public static class RSAppManagementEndpoints
 {
-    public sealed record AppRequest(string? Slug, string? DisplayName, string[]? Environments);
+    public sealed record AppRequest(string? Slug, string? DisplayName);
 
     public sealed record AppResponse(
-        string ClientSlug, string Slug, string DisplayName, IReadOnlyList<string> Environments, bool Archived);
+        string ClientSlug, string Slug, string DisplayName, bool Archived);
 
     private static AppResponse Map(RSCAppRecord a) =>
-        new(a.ClientSlug, a.Slug, a.DisplayName, a.Environments, a.IsArchived);
+        new(a.ClientSlug, a.Slug, a.DisplayName, a.IsArchived);
 
     public static IEndpointRouteBuilder MapAppManagementEndpoints(this IEndpointRouteBuilder app)
     {
@@ -50,24 +51,25 @@ public static class RSAppManagementEndpoints
             .Produces(StatusCodes.Status403Forbidden)
             .Produces(StatusCodes.Status503ServiceUnavailable);
 
-        group.MapPost("", async (AppRequest body, HttpContext ctx, RSCICatalog catalog, CancellationToken ct) =>
+        group.MapPost("", async (AppRequest body, HttpContext ctx, RSCICatalog catalog, RSCIAuditLog audit, CancellationToken ct) =>
             {
                 if (ClientOf(ctx) is not { } client) return NotAClientKey();
                 try
                 {
                     var created = await catalog.CreateAppAsync(
-                        client, body.Slug ?? string.Empty, body.DisplayName ?? string.Empty,
-                        body.Environments ?? Array.Empty<string>(), ct);
+                        client, body.Slug ?? string.Empty, body.DisplayName ?? string.Empty, ct);
+                    await audit.RecordAsync(ctx, "app.create", success: true, target: $"{client}/{created.Slug}");
                     return Results.Created($"/api/v2/apps/{created.Slug}", Map(created));
                 }
                 catch (RSCCatalogException ex)
                 {
+                    await audit.RecordAsync(ctx, "app.create", success: false, target: $"{client}/{body.Slug}", details: ex.Message);
                     return Results.Problem(ex.Message, statusCode: StatusCodes.Status400BadRequest);
                 }
             })
             .WithName("RegisterMyApp")
             .WithSummary("Register one of the authenticated client's apps")
-            .WithDescription("Body: { slug, displayName?, environments: [..] }. The slug is the immutable appId the SDK sends; it must be unique within your client. Returns 400 on a bad/duplicate slug or an empty environment list.")
+            .WithDescription("Body: { slug, displayName? }. The slug is the immutable appId the SDK sends; it must be unique within your client. Fold any environment distinction into the slug (e.g. app-a-qa / app-a-prod). Returns 400 on a bad or duplicate slug.")
             .Accepts<AppRequest>("application/json")
             .Produces<AppResponse>(StatusCodes.Status201Created)
             .Produces(StatusCodes.Status400BadRequest)
@@ -75,10 +77,11 @@ public static class RSAppManagementEndpoints
             .Produces(StatusCodes.Status403Forbidden)
             .Produces(StatusCodes.Status503ServiceUnavailable);
 
-        group.MapDelete("/{slug}", async (string slug, HttpContext ctx, RSCICatalog catalog, CancellationToken ct) =>
+        group.MapDelete("/{slug}", async (string slug, HttpContext ctx, RSCICatalog catalog, RSCIAuditLog audit, CancellationToken ct) =>
             {
                 if (ClientOf(ctx) is not { } client) return NotAClientKey();
                 var archived = await catalog.ArchiveAppAsync(client, slug, ct);
+                await audit.RecordAsync(ctx, "app.archive", success: archived, target: $"{client}/{slug}");
                 return archived ? Results.Ok(new { slug, archived = true }) : Results.NotFound();
             })
             .WithName("ArchiveMyApp")

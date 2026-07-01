@@ -29,7 +29,13 @@ public sealed class RSAReportStoreErrorDashboardService : IRSAErrorDashboardServ
         _options = options;
     }
 
-    public RSAErrorDashboardVM Build(string? platform = null, RSAErrorRateWindow? rateWindow = null)
+    // Tenant/app scope check — a null axis means "all". Reports carry their owning (client, app)
+    // because the fan-out store stamps every listing row (RSCFanOutReportStore.List).
+    private static bool InScope(RSCStoredReport r, string? clientId, string? appId)
+        => (clientId is not { Length: > 0 } || string.Equals(r.ClientId, clientId, StringComparison.OrdinalIgnoreCase))
+        && (appId is not { Length: > 0 } || string.Equals(r.AppId, appId, StringComparison.OrdinalIgnoreCase));
+
+    public RSAErrorDashboardVM Build(string? platform = null, RSAErrorRateWindow? rateWindow = null, string? clientId = null, string? appId = null)
     {
         var now = DateTimeOffset.UtcNow;
         var dayAgo = now.AddDays(-1);
@@ -66,6 +72,7 @@ public sealed class RSAReportStoreErrorDashboardService : IRSAErrorDashboardServ
 
             foreach (var stored in _store.List(p))
             {
+                if (!InScope(stored, clientId, appId)) continue;
                 var doc = TryReadDoc(p, stored.FileName);
                 if (doc is null) continue;
 
@@ -235,7 +242,7 @@ public sealed class RSAReportStoreErrorDashboardService : IRSAErrorDashboardServ
         return points;
     }
 
-    public IReadOnlyList<RSATrendingIssueVM> BuildTrending(int recentDays = 7, int limit = 5)
+    public IReadOnlyList<RSATrendingIssueVM> BuildTrending(int recentDays = 7, int limit = 5, string? clientId = null, string? appId = null)
     {
         if (recentDays < 1) recentDays = 1;
         var now = DateTimeOffset.UtcNow;
@@ -249,6 +256,7 @@ public sealed class RSAReportStoreErrorDashboardService : IRSAErrorDashboardServ
         {
             foreach (var stored in _store.List(p))
             {
+                if (!InScope(stored, clientId, appId)) continue;
                 // Only signature-able crashes (a real top_frame) — same rule as the top-errors table,
                 // so a trending row always drills into a non-empty /Errors result.
                 if (string.IsNullOrWhiteSpace(stored.TopFrame)) continue;

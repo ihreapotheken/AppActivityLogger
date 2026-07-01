@@ -128,15 +128,15 @@ public sealed class RSCAnalyticsValidator
 
         // Tenancy validation (batch-level, like platform). The client is the top-level tenant: it's
         // derived from the authenticated API key by the ingestion layer (not the body) and apps are
-        // nested under it, so we validate client first, then the app within that client, then the
-        // environment the client declared for that app. We coalesce null → the configured default so
-        // direct callers (seeder/tests) and key-less/root traffic resolve to the seeded default
-        // tenant. Unknown ⇒ whole batch rejected, mirroring platform_unknown.
+        // nested under it, so we validate client first, then the app within that client. Environment is
+        // folded into the app slug (a client creates a separate app entry per environment, e.g.
+        // app-a-qa / app-a-prod) — there is no separate environment axis to validate. We coalesce
+        // null → the configured default so direct callers (seeder/tests) and key-less/root traffic
+        // resolve to the seeded default tenant. Unknown ⇒ whole batch rejected, mirroring platform_unknown.
         if (_catalogOptions.Enabled)
         {
             var clientSlug = Coalesce(batch.ClientId, _catalogOptions.DefaultClientSlug);
             var appSlug = Coalesce(batch.AppId, _catalogOptions.DefaultAppSlug);
-            var environment = Coalesce(batch.Environment, _catalogOptions.DefaultEnvironment);
 
             if (!_catalog.IsValidClient(clientSlug))
                 return RejectAll(batch, RSCAnalyticsDeadLetterReasons.ClientUnknown,
@@ -144,9 +144,6 @@ public sealed class RSCAnalyticsValidator
             if (!_catalog.IsValidApp(clientSlug, appSlug))
                 return RejectAll(batch, RSCAnalyticsDeadLetterReasons.AppUnknown,
                     $"app '{appSlug}' is not registered for client '{clientSlug}'");
-            if (!_catalog.IsValidEnvironment(clientSlug, appSlug, environment))
-                return RejectAll(batch, RSCAnalyticsDeadLetterReasons.EnvironmentUnknown,
-                    $"environment '{environment}' is not declared for app '{appSlug}' (client '{clientSlug}')");
         }
 
         var accepted = new List<RSCAcceptedAnalyticsEvent>(events.Count);

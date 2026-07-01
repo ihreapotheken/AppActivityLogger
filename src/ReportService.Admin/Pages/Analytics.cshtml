@@ -27,7 +27,6 @@
 </hint-box>
 
 @await Html.PartialAsync("_ScopeTabs", new RSAScopeTabsVM("/Analytics", scope))
-@await Html.PartialAsync("_TenantScope", Model.TenantScope)
 
 <section class="tiles" aria-label="Engagement summary">
     <tile label="Daily active users">@Model.Dashboard.DailyActiveUsers.ToString("N0")</tile>
@@ -191,6 +190,7 @@ else
     <script src="~/js/auto-submit.js" asp-append-version="true"></script>
 }
 
+<span id="list" class="list-anchor"></span>
 <p class="muted">
     @Model.Listing.TotalMatched matching event@(Model.Listing.TotalMatched == 1 ? "" : "s") · page @Model.Listing.PageNumber of @Model.Listing.TotalPages
     · source: <span class="mono">@(Model.Listing.UsedIndex ? "sqlite index" : "filesystem scan")</span>

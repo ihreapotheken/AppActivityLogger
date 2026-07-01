@@ -1,0 +1,180 @@
+@page
+@model RSAApiConsoleModel
+@using ReportService.Admin.ViewModels
+@{
+    ViewData["Title"] = "API console";
+}
+@await Html.PartialAsync("_PageHeader", new RSAPageHeaderVM(
+    "API console",
+    "Run the bundled request collection straight from the dashboard — pick a request, tweak variables, send. Requests fire same-origin, so your admin session and the dev API key carry over automatically."))
+
+@if (Model.HasCollection)
+{
+    <div class="hint-box">
+        <strong>Scope: @Model.ScopeLabel.</strong>
+        @if (Model.HasScope)
+        {
+            <text>The <code>{{clientId}}</code> / <code>{{appId}}</code> variables are pinned to this app, and the console adds them as <code>X-Analytics-Client</code>/<code>X-Analytics-App</code> (analytics) or <code>X-Report-App</code> (reports) so ingestion requests target it. The console is free-form — a request that already sets those headers sends as written.</text>
+        }
+        else
+        {
+            <text>No client is pinned. To target one without leaving “All clients”, set <code>clientId</code> / <code>appId</code> in the <strong>Variables</strong> tab — the console then adds the matching <code>X-Analytics-Client</code>/<code>X-Analytics-App</code> (or <code>X-Report-App</code>) header to ingestion requests. Left blank, the server falls back to its configured default tenant.</text>
+        }
+        <p class="apic-downloads">
+            <span class="muted">Prefer your own client?</span>
+            <a class="btn" asp-page-handler="DownloadCollection" download="report-service.postman_collection.json">Download collection (.json)</a>
+            @if (Model.EnvironmentJson is not null)
+            {
+                <a class="btn" asp-page-handler="DownloadEnvironment" download="report-service.postman_environment.json">Download environment (.json)</a>
+            }
+        </p>
+    </div>
+}
+
+@if (Model.IsDevInstance)
+{
+    <section class="card">
+        <h2>Mock data generator</h2>
+        <p class="muted">Fill the dashboards with synthetic clients, apps, analytics and reports — dev only. Creates fresh <code>mock-…</code> clients each run; nothing is overwritten.</p>
+        <form method="post" asp-page-handler="GenerateMock" class="filter-form">
+            @Html.AntiForgeryToken()
+            <label>
+                <span>Clients</span>
+                <input type="number" name="clients" value="3" min="1" max="20" />
+            </label>
+            <label>
+                <span>Apps / client</span>
+                <input type="number" name="appsPerClient" value="2" min="1" max="10" />
+            </label>
+            <label>
+                <span>Events / app</span>
+                <input type="number" name="eventsPerApp" value="25" min="0" max="500" />
+            </label>
+            <label>
+                <span>Reports / app</span>
+                <input type="number" name="reportsPerApp" value="4" min="0" max="50" />
+            </label>
+            <button type="submit" class="primary">Generate mock data</button>
+        </form>
+    </section>
+}
+
+@if (!Model.HasCollection)
+{
+    <empty-state>No request collection ships in this build (expected at <code>api-fixtures/collection.json</code>).</empty-state>
+}
+else
+{
+    @* CSP-safe data blocks: type="application/json" is never executed, so it passes script-src 'self'.
+       JSON only ever contains '<' inside strings, so escaping "</" as "<\/" keeps a stray "</script>"
+       in a request body from closing the block early while staying valid JSON. *@
+    <script type="application/json" id="api-console-collection">@Html.Raw(Model.CollectionJson!.Replace("</", "<\\/"))</script>
+    @if (Model.EnvironmentJson is not null)
+    {
+        <script type="application/json" id="api-console-environment">@Html.Raw(Model.EnvironmentJson.Replace("</", "<\\/"))</script>
+    }
+    @if (Model.HasScope)
+    {
+        @* Switcher scope → pinned clientId/appId vars (slugs are [a-z0-9-], safe in JSON). *@
+        <script type="application/json" id="api-console-scope">{"clientId":"@(Model.ScopeClient ?? "")","appId":"@(Model.ScopeApp ?? "")"}</script>
+    }
+    @if (Model.DevApiKey is { } devKey)
+    {
+        @* The instance's real ingestion key → pinned {{apiKey}} so requests authenticate (the fixture
+           value is only a placeholder for desktop Postman). JsonSerializer escapes '<' as <, so a
+           key can never break out of the block. Admin-only page. *@
+        <script type="application/json" id="api-console-auth">@Html.Raw(System.Text.Json.JsonSerializer.Serialize(new { apiKey = devKey }))</script>
+    }
+
+    <div class="api-console" id="api-console">
+        @* Left: the request library, grouped by collection folder. *@
+        <aside class="apic-library" aria-label="Request library">
+            <div class="apic-library-search">
+                <input type="search" id="apic-filter" class="input" placeholder="Filter requests…" aria-label="Filter requests" autocomplete="off" />
+            </div>
+            <nav class="apic-tree" id="apic-tree" aria-label="Requests"></nav>
+            <p class="apic-tree-empty muted" id="apic-tree-empty" hidden>No requests match.</p>
+        </aside>
+
+        @* Right: the request editor + response. *@
+        <section class="apic-main" aria-label="Request editor">
+            <div class="apic-bar">
+                <select class="apic-method" id="apic-method" aria-label="HTTP method">
+                    <option>GET</option>
+                    <option>POST</option>
+                    <option>PUT</option>
+                    <option>PATCH</option>
+                    <option>DELETE</option>
+                    <option>HEAD</option>
+                    <option>OPTIONS</option>
+                </select>
+                <input type="text" class="apic-url input" id="apic-url" placeholder="{{baseUrl}}/api/…" aria-label="Request URL" spellcheck="false" autocomplete="off" />
+                <button type="button" class="btn primary apic-send" id="apic-send" title="Send request (⌘/Ctrl + Enter)">
+                    Send <kbd class="apic-kbd">⌘↵</kbd>
+                </button>
+            </div>
+            <p class="apic-resolved muted" id="apic-resolved" aria-live="polite"></p>
+            <p class="apic-warn" id="apic-warn" hidden></p>
+            <p class="apic-desc muted" id="apic-desc" hidden></p>
+
+            <div class="apic-tabs" role="tablist" aria-label="Request panels">
+                <button type="button" class="apic-tab is-active" role="tab" data-apic-tab="body" aria-selected="true">Body</button>
+                <button type="button" class="apic-tab" role="tab" data-apic-tab="headers" aria-selected="false">Headers <span class="apic-badge" id="apic-hdr-count" hidden></span></button>
+                <button type="button" class="apic-tab" role="tab" data-apic-tab="vars" aria-selected="false">Variables <span class="apic-badge" id="apic-var-count" hidden></span></button>
+                <button type="button" class="apic-tab" role="tab" data-apic-tab="tests" aria-selected="false">Tests</button>
+            </div>
+
+            <div class="apic-panel" data-apic-panel="body">
+                <div class="apic-panel-actions">
+                    <span class="apic-chip apic-body-kind" id="apic-body-kind">raw</span>
+                    <span class="apic-panel-tools">
+                        <button type="button" class="apic-ghost" id="apic-curl">Copy as cURL</button>
+                        <button type="button" class="apic-ghost" id="apic-format">Format JSON</button>
+                    </span>
+                </div>
+                <textarea class="apic-body code" id="apic-body" spellcheck="false" placeholder="Request body (raw)…" aria-label="Request body"></textarea>
+            </div>
+
+            <div class="apic-panel" data-apic-panel="headers" hidden>
+                <table class="apic-kv" id="apic-headers" aria-label="Request headers"></table>
+                <button type="button" class="apic-ghost" id="apic-add-header">+ add header</button>
+            </div>
+
+            <div class="apic-panel" data-apic-panel="vars" hidden>
+                <div class="apic-panel-actions">
+                    <span class="muted">Values substituted into <code>{{name}}</code> placeholders — edits are saved in this browser.</span>
+                    <button type="button" class="apic-ghost" id="apic-reset-vars">Reset</button>
+                </div>
+                <table class="apic-kv" id="apic-vars" aria-label="Environment variables"></table>
+                <button type="button" class="apic-ghost" id="apic-add-var">+ add variable</button>
+            </div>
+
+            <div class="apic-panel" data-apic-panel="tests" hidden>
+                <p class="muted">The collection's Postman test scripts, shown for reference. They are <strong>not</strong> executed here.</p>
+                <pre class="apic-tests code" id="apic-tests"></pre>
+            </div>
+
+            <div class="apic-response" id="apic-response" hidden>
+                <div class="apic-response-meta">
+                    <span class="apic-status" id="apic-status"></span>
+                    <span class="apic-meta-item" id="apic-time"></span>
+                    <span class="apic-meta-item" id="apic-size"></span>
+                    <span class="apic-response-tools">
+                        <button type="button" class="apic-ghost" id="apic-wrap" aria-pressed="false">Wrap</button>
+                        <button type="button" class="apic-ghost" id="apic-copy">Copy</button>
+                        <span class="apic-tabs apic-tabs-sm" role="tablist" aria-label="Response panels">
+                            <button type="button" class="apic-tab is-active" role="tab" data-apic-restab="body" aria-selected="true">Body</button>
+                            <button type="button" class="apic-tab" role="tab" data-apic-restab="headers" aria-selected="false">Headers</button>
+                        </span>
+                    </span>
+                </div>
+                <pre class="apic-out code" data-apic-respanel="body" id="apic-resbody"></pre>
+                <pre class="apic-out code" data-apic-respanel="headers" id="apic-resheaders" hidden></pre>
+            </div>
+        </section>
+    </div>
+}
+
+@section Scripts {
+    <script src="~/js/api-console.js" asp-append-version="true"></script>
+}

@@ -4,8 +4,9 @@ using ReportService.Storage.ApiKeys;
 namespace ReportService.Security;
 
 /// <summary>Outcome of resolving a presented API key: who it is, its role, its effective per-minute
-/// rate limit, and the catalog client it's bound to (<c>null</c> for the root/unbound operator keys).
-/// Shared by the auth handler and the rate limiter so they never disagree.</summary>
+/// rate limit, and the catalog client it's bound to (<c>null</c> only for <c>admin</c> keys — the
+/// static root key and any managed admin key — which span all clients; a <c>client</c> key always
+/// carries its binding). Shared by the auth handler and the rate limiter so they never disagree.</summary>
 public sealed record RSCApiKeyResolution(string KeyId, string Role, int EffectiveRateLimitPerMinute, string? ClientId = null);
 
 /// <summary>
@@ -33,13 +34,15 @@ public static class RSCApiKeyResolver
 
         var limit = rec.Role == RSCApiKeyRoles.Admin
             ? AdminLimit(options, rec.RateLimitPerMinute)
-            : UserLimit(options, rec.RateLimitPerMinute);
+            : ClientLimit(options, rec.RateLimitPerMinute);
         return new RSCApiKeyResolution(rec.Id, rec.Role, limit, rec.ClientId);
     }
 
     private static int AdminLimit(RSCReportServiceOptions o, int? perKeyOverride) =>
         perKeyOverride ?? (o.ApiKeyAdminRateLimitPerMinute > 0 ? o.ApiKeyAdminRateLimitPerMinute : o.RateLimitPermitsPerMinute);
 
-    private static int UserLimit(RSCReportServiceOptions o, int? perKeyOverride) =>
+    // The non-admin (client) rate tier. The backing option keeps its historical name
+    // (ApiKeyUserRateLimitPerMinute) to avoid a config break; it now applies to client keys.
+    private static int ClientLimit(RSCReportServiceOptions o, int? perKeyOverride) =>
         perKeyOverride ?? (o.ApiKeyUserRateLimitPerMinute > 0 ? o.ApiKeyUserRateLimitPerMinute : o.RateLimitPermitsPerMinute);
 }

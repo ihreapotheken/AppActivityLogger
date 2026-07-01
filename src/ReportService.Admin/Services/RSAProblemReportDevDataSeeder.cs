@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.IO.Compression;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
@@ -8,6 +7,7 @@ using ReportService.Audit;
 using ReportService.Models;
 using ReportService.Options;
 using ReportService.Storage;
+using ReportService.Storage.Catalog;
 
 namespace ReportService.Admin.Services;
 
@@ -29,7 +29,7 @@ namespace ReportService.Admin.Services;
 /// </remarks>
 internal static class RSAProblemReportDevDataSeeder
 {
-    private const int DefaultSeedScale = 1;          // baseline; docker dev opts into more via REPORTS_SEED_SCALE
+    private const int DefaultSeedScale = 0;          // OFF by default; opt in via REPORTS_SEED_SCALE>0
     private const int BaseReportsPerPlatform = 40;   // multiplied by the scale
     private const int SpreadDays = 30;               // back-date reports across this many days
 
@@ -127,11 +127,23 @@ internal static class RSAProblemReportDevDataSeeder
             return;
         }
 
-        // Idempotency + freshness: skip only when the newest report is from today. If the dataset
-        // is stale (newest < today — e.g. the container restarted on a later day against a
-        // persistent volume), seed a fresh batch so "latest submissions" and the daily chart stay
-        // current instead of trailing off days ago. Retention trims the older synthetic rows.
-        var existing = await index.ListAsync("android", 1, 0, ct).ConfigureAwait(false);
+        // Database-per-app: write through the fan-out store (which routes each report to its own
+        // (client, app)'s tree + index by report.ClientId/AppId) and distribute the synthetic reports
+        // across the catalog's registered apps, so each client's dashboard — and each client login —
+        // sees its own per-app reports. Falls back to the default app if the catalog is empty.
+        var store = sp.GetRequiredService<RSCIReportStore>();
+        var catalog = sp.GetService<RSCICatalog>();
+        var apps = catalog is null
+            ? new List<(string Client, string App)>()
+            : (await catalog.ListAllAppsAsync(includeArchived: false, ct).ConfigureAwait(false))
+                .Select(a => (Client: a.ClientSlug, App: a.Slug)).ToList();
+        if (apps.Count == 0) apps.Add((Client: "default", App: "default"));
+
+        // Idempotency + freshness: skip only when the newest report (across all apps) is from today.
+        // If the dataset is stale (newest < today — e.g. the container restarted on a later day
+        // against a persistent volume), seed a fresh batch so "latest submissions" and the daily chart
+        // stay current instead of trailing off days ago. Retention trims the older synthetic rows.
+        var existing = store.List("android");
         if (existing.Count > 0 && existing[0].SubmittedAt.UtcDateTime.Date >= DateTime.UtcNow.Date)
         {
             logger.LogInformation("Problem-report seeder: fresh data already present, skipping.");
@@ -140,6 +152,12 @@ internal static class RSAProblemReportDevDataSeeder
 
         var options = sp.GetRequiredService<RSCReportServiceOptions>();
         var scale = ResolveScale(logger);
+        if (scale <= 0)
+        {
+            logger.LogInformation(
+                "Problem-report seeder disabled (REPORTS_SEED_SCALE unset or 0); set REPORTS_SEED_SCALE>0 to enable synthetic reports.");
+            return;
+        }
         var now = DateTimeOffset.UtcNow;
 
         int written = 0, crashes = 0, errors = 0, analytics = 0, withAttachment = 0;
@@ -149,8 +167,6 @@ internal static class RSAProblemReportDevDataSeeder
             var devices = platform == "android" ? AndroidDevices : IosDevices;
             var crashSigs = platform == "android" ? AndroidCrashes : IosCrashes;
             var errorSigs = platform == "android" ? AndroidErrors : IosErrors;
-            var folder = Path.Combine(options.ReportsRoot, platform, "problem-reports");
-            Directory.CreateDirectory(folder);
 
             var total = BaseReportsPerPlatform * scale;
             for (int i = 0; i < total; i++)
@@ -179,14 +195,17 @@ internal static class RSAProblemReportDevDataSeeder
                 var userId = $"{platform}-user-{1000 + i}";
                 var channel = i % 5 == 0 ? RSCIngestionChannels.Json : RSCIngestionChannels.Multipart;
                 var labels = new List<string> { Labels[i % Labels.Length], Labels[(i + 3) % Labels.Length] };
+                // Distribute reports across the catalog's apps so each client's dashboard — and each
+                // client login — sees its own per-app reports. (top_frame / log_summary / kind are
+                // derived by the indexing decorator on save, exactly as production ingestion does.)
+                var (clientSlug, appSlug) = apps[i % apps.Count];
 
-                string? title, message, topFrame, stackTrace, kind;
+                string? title, message, stackTrace, kind;
                 if (isCrash)
                 {
                     var (cTitle, cFrame, cMessage) = crashSigs[i % crashSigs.Length];
                     title = cTitle;
                     message = cMessage;
-                    topFrame = cFrame;
                     stackTrace = BuildStackTrace(platform, cTitle, cFrame, i);
                     kind = "crash";
                     crashes++;
@@ -196,7 +215,6 @@ internal static class RSAProblemReportDevDataSeeder
                     var (eTitle, eFrame, eMessage) = errorSigs[i % errorSigs.Length];
                     title = eTitle;
                     message = eMessage;
-                    topFrame = eFrame;
                     stackTrace = BuildStackTrace(platform, eTitle, eFrame, i);
                     kind = "error";
                     errors++;
@@ -206,7 +224,6 @@ internal static class RSAProblemReportDevDataSeeder
                     var (aTitle, aMessage) = AnalyticsEvents[i % AnalyticsEvents.Length];
                     title = aTitle;
                     message = aMessage;
-                    topFrame = null;
                     stackTrace = null;
                     kind = "analytics";
                     analytics++;
@@ -216,7 +233,6 @@ internal static class RSAProblemReportDevDataSeeder
                     var (uTitle, uMessage) = UserReports[i % UserReports.Length];
                     title = uTitle;
                     message = uMessage;
-                    topFrame = null;
                     stackTrace = null;
                     kind = null;
                 }
@@ -238,10 +254,11 @@ internal static class RSAProblemReportDevDataSeeder
                     StackTrace: stackTrace,
                     EventProperties: null,
                     OccurredAt: submittedAt.ToString("O", CultureInfo.InvariantCulture),
-                    UserId: userId);
+                    UserId: userId,
+                    AppId: appSlug,
+                    ClientId: clientSlug);
 
                 var jsonBytes = JsonSerializer.SerializeToUtf8Bytes(report, JsonOptions);
-                var jsonHash12 = ShortHashHex(jsonBytes);
 
                 // Crashes and non-fatal errors always carry a gzip log bundle (both ship the
                 // captured stack trace); user problem reports ~60% do. Analytics submissions are
@@ -249,45 +266,14 @@ internal static class RSAProblemReportDevDataSeeder
                 byte[]? attachment = (isCrash || isError || (!isAnalytics && i % 5 < 3))
                     ? GzipLog(BuildLogText(platform, report, stackTrace, submittedAt))
                     : null;
-                string? attachmentHash12 = attachment is null ? null : ShortHashHex(attachment);
+                using var attachmentStream = attachment is null ? null : new MemoryStream(attachment);
 
-                var ts = submittedAt.UtcDateTime.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
-                var baseName = attachmentHash12 is null
-                    ? $"problem-report_{ts}_{jsonHash12}"
-                    : $"problem-report_{ts}_{jsonHash12}_{attachmentHash12}";
-
-                var jsonFileName = baseName + ".json";
-                await File.WriteAllBytesAsync(Path.Combine(folder, jsonFileName), jsonBytes, ct).ConfigureAwait(false);
-
-                string? attachmentFileName = null;
-                if (attachment is not null)
-                {
-                    attachmentFileName = baseName + ".log.gz";
-                    await File.WriteAllBytesAsync(Path.Combine(folder, attachmentFileName), attachment, ct).ConfigureAwait(false);
-                    withAttachment++;
-                }
-
-                var metadata = new RSCReportMetadata(
-                    Platform: platform,
-                    FileName: jsonFileName,
-                    SubmittedAt: submittedAt,
-                    DeviceModel: device,
-                    Title: title,
-                    EmailHash: HashEmail(email),
-                    PharmacyId: pharmacy,
-                    AppVersion: appVersion,
-                    HasAttachment: attachment is not null,
-                    SizeBytes: jsonBytes.Length,
-                    AttachmentSizeBytes: attachment?.Length,
-                    LabelsJson: JsonSerializer.Serialize(labels, JsonOptions),
-                    IngestionChannel: channel,
-                    TopFrame: topFrame,
-                    UserId: userId,
-                    Phone: null,
-                    LogSummaryJson: null,
-                    Kind: kind);
-
-                await index.UpsertAsync(metadata, ct).ConfigureAwait(false);
+                // Route through the per-app fan-out store with the backdated submittedAt: it writes the
+                // file under apps/{client}/{app}/{platform}/problem-reports and indexes the metadata
+                // (top frame, log summary, kind, channel) just like production ingestion.
+                await store.SaveAsync(report, jsonBytes, attachmentStream, attachment?.Length, channel, submittedAt, ct)
+                    .ConfigureAwait(false);
+                if (attachment is not null) withAttachment++;
                 written++;
             }
         }
@@ -362,7 +348,7 @@ internal static class RSAProblemReportDevDataSeeder
     {
         var raw = Environment.GetEnvironmentVariable("REPORTS_SEED_SCALE");
         if (string.IsNullOrWhiteSpace(raw)) return DefaultSeedScale;
-        if (int.TryParse(raw, out var parsed) && parsed >= 1) return parsed;
+        if (int.TryParse(raw, out var parsed) && parsed >= 0) return parsed;
         logger.LogWarning("Ignoring invalid REPORTS_SEED_SCALE='{Raw}'; using {Default}", raw, DefaultSeedScale);
         return DefaultSeedScale;
     }
@@ -410,20 +396,5 @@ internal static class RSAProblemReportDevDataSeeder
             gz.Write(bytes, 0, bytes.Length);
         }
         return output.ToArray();
-    }
-
-    private static string ShortHashHex(ReadOnlySpan<byte> bytes)
-    {
-        Span<byte> hash = stackalloc byte[32];
-        SHA256.HashData(bytes, hash);
-        return Convert.ToHexString(hash[..6]).ToLowerInvariant();
-    }
-
-    private static string? HashEmail(string? email)
-    {
-        if (string.IsNullOrEmpty(email)) return null;
-        Span<byte> hash = stackalloc byte[32];
-        SHA256.HashData(Encoding.UTF8.GetBytes(email), hash);
-        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 }

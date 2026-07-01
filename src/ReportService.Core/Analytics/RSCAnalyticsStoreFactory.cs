@@ -20,6 +20,14 @@ public interface RSCIAnalyticsStoreFactory
     /// <summary>The default app's store (the configured default client/app) — the landing bucket for
     /// traffic with no explicit attribution and the back-compat target for legacy single-DB callers.</summary>
     RSCSqliteAnalyticsStore GetDefault();
+
+    /// <summary>Drop every cached store handle for a client's apps and release their pooled SQLite
+    /// connections, so the on-disk DBs can be deleted. Used when a client is purged.</summary>
+    void EvictClient(string clientSlug);
+
+    /// <summary>Drop the cached store handle for one app and release its pooled SQLite connections, so
+    /// its on-disk DB can be deleted. Used when a single app is purged.</summary>
+    void EvictApp(string clientSlug, string appSlug);
 }
 
 /// <summary>
@@ -66,6 +74,22 @@ public sealed class RSCSqliteAnalyticsStoreFactory : RSCIAnalyticsStoreFactory
     }
 
     public RSCSqliteAnalyticsStore GetDefault() => Get(_defaultClient, _defaultApp);
+
+    public void EvictClient(string clientSlug)
+    {
+        var client = Coalesce(clientSlug, _defaultClient);
+        foreach (var key in _stores.Keys.Where(k => string.Equals(k.Client, client, StringComparison.Ordinal)).ToList())
+            Remove(key);
+    }
+
+    public void EvictApp(string clientSlug, string appSlug)
+        => Remove((Coalesce(clientSlug, _defaultClient), Coalesce(appSlug, _defaultApp)));
+
+    private void Remove((string Client, string App) key)
+    {
+        if (_stores.TryRemove(key, out var lazy) && lazy.IsValueCreated)
+            lazy.Value.EvictPooledConnections();
+    }
 
     private static string Coalesce(string? value, string fallback) =>
         string.IsNullOrWhiteSpace(value) ? RSCCatalogSlug.Normalize(fallback) : RSCCatalogSlug.Normalize(value);

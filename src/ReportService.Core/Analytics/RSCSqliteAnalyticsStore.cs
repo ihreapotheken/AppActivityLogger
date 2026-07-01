@@ -89,6 +89,15 @@ public sealed partial class RSCSqliteAnalyticsStore : RSCIAnalyticsStore
         Bootstrap();
     }
 
+    /// <summary>Close the pooled connections held for this store's DB so the underlying file can be
+    /// deleted (used when the owning app/client is purged). Microsoft.Data.Sqlite pools by connection
+    /// string, so this clears exactly this DB's pool and nothing else.</summary>
+    internal void EvictPooledConnections()
+    {
+        using var conn = new SqliteConnection(_connectionString);
+        SqliteConnection.ClearPool(conn);
+    }
+
     private static IEnumerable<RSCISchemaMigration> BuildMigrations() => new RSCISchemaMigration[]
     {
         new RSCM001_CreateAnalyticsTables(),

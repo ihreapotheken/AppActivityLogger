@@ -48,12 +48,23 @@ public sealed class RSCFileSystemReportStore : RSCIReportStore
     }
 
     /// <inheritdoc />
+    /// <summary>Production overload — stamps the report with the current time.</summary>
+    public Task<RSCStoredReport> SaveAsync(
+        RSCProblemReport report,
+        ReadOnlyMemory<byte> jsonBytes,
+        Stream? attachment,
+        long? attachmentLength,
+        string ingestionChannel,
+        CancellationToken ct)
+        => SaveAsync(report, jsonBytes, attachment, attachmentLength, ingestionChannel, DateTimeOffset.UtcNow, ct);
+
     public async Task<RSCStoredReport> SaveAsync(
         RSCProblemReport report,
         ReadOnlyMemory<byte> jsonBytes,
         Stream? attachment,
         long? attachmentLength,
         string ingestionChannel,
+        DateTimeOffset submittedAt,
         CancellationToken ct)
     {
         // The file store is opaque to the channel — the column lives in the SQLite index. Argument
@@ -62,7 +73,6 @@ public sealed class RSCFileSystemReportStore : RSCIReportStore
         var platform = report.Platform.ToLowerInvariant();
         var platformFolder = ResolvePlatformFolder(platform);
 
-        var submittedAt = DateTimeOffset.UtcNow;
         var jsonHash12 = ShortHashHex(jsonBytes.Span);
 
         // Stream the attachment (if any) to a temp file while computing its SHA-256 in the same

@@ -29,3 +29,6 @@ public sealed record RSCDailyVolume(DateOnly Date, int Multipart, int Json)
 
 /// <summary>Generic key + count row used for top-N breakdowns (top types, top devices, …).</summary>
 public sealed record RSCStatsBucket(string Key, int Count);
+
+/// <summary>Per-platform aggregate row for the admin dashboard.</summary>
+public sealed record RSCPlatformSummary(string Platform, int ReportCount, long TotalSizeBytes, long TotalAttachmentBytes, DateTimeOffset? NewestSubmittedAt);

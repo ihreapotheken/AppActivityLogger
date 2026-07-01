@@ -27,10 +27,11 @@ public class DeepLinkEndpointTests
     private static StringContent Body(object payload) =>
         new(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 
-    private static async Task SeedLinkAsync(IngestionAppFactory app, string slug, string pattern, string redirect, bool enabled = true)
+    private static async Task SeedLinkAsync(IngestionAppFactory app, string slug, string pattern, string redirect,
+        bool enabled = true, string? redirectAndroid = null, string? redirectIos = null)
     {
         var store = app.Services.GetRequiredService<RSCIDeferredDeepLinkStore>();
-        await store.UpsertLinkAsync(slug, slug, pattern, redirect, enabled, CancellationToken.None);
+        await store.UpsertLinkAsync(slug, slug, pattern, redirect, redirectAndroid, redirectIos, enabled, CancellationToken.None);
     }
 
     [Fact]
@@ -76,6 +77,65 @@ public class DeepLinkEndpointTests
         Assert.Equal("spring-promo", matchBody.Slug);
         Assert.Equal("myapp://promo/spring", matchBody.RedirectUrl);
         Assert.Equal("https://site.example/promo/spring/landing", matchBody.PageUrl);
+    }
+
+    [Fact]
+    public async Task Match_returns_platform_specific_redirect_override()
+    {
+        await using var app = new IngestionAppFactory();
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Add("apiKey", IngestionAppFactory.ApiKey);
+        await SeedLinkAsync(app, "spring-promo", "/promo/spring", "myapp://promo/spring",
+            redirectAndroid: "https://play.google.com/store/apps/details?id=app",
+            redirectIos: "https://apps.apple.com/app/id123");
+
+        const string ip = "203.0.113.7";
+        await client.PostAsync(ClicksUrl, Body(new { pageUrl = "https://site/promo/spring", ip }));
+
+        // android → Play Store override.
+        var android = await (await client.GetAsync($"{MatchUrl}?ip={ip}&platform=android")).Content.ReadFromJsonAsync<RSDeepLinkMatchResponse>();
+        Assert.True(android!.Matched);
+        Assert.Equal("https://play.google.com/store/apps/details?id=app", android.RedirectUrl);
+    }
+
+    [Fact]
+    public async Task Match_falls_back_to_default_when_platform_has_no_override()
+    {
+        await using var app = new IngestionAppFactory();
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Add("apiKey", IngestionAppFactory.ApiKey);
+        // Android override only — an iOS caller must get the default redirect.
+        await SeedLinkAsync(app, "spring-promo", "/promo/spring", "myapp://promo/spring",
+            redirectAndroid: "https://play.google.com/store/apps/details?id=app");
+
+        const string ip = "203.0.113.8";
+        await client.PostAsync(ClicksUrl, Body(new { pageUrl = "https://site/promo/spring", ip }));
+
+        var ios = await (await client.GetAsync($"{MatchUrl}?ip={ip}&platform=ios")).Content.ReadFromJsonAsync<RSDeepLinkMatchResponse>();
+        Assert.True(ios!.Matched);
+        Assert.Equal("myapp://promo/spring", ios.RedirectUrl);
+    }
+
+    [Fact]
+    public async Task Smart_link_infers_platform_from_user_agent_for_redirect()
+    {
+        await using var app = new IngestionAppFactory();
+        await SeedLinkAsync(app, "spring-promo", "/promo/spring", "myapp://promo/spring",
+            redirectIos: "https://apps.apple.com/app/id123");
+
+        // An iPhone browser navigation must be forwarded to the iOS override.
+        var ctx = await app.Server.SendAsync(c =>
+        {
+            c.Request.Method = "GET";
+            c.Request.Scheme = "http";
+            c.Request.Host = new HostString("localhost");
+            c.Request.Path = "/dl/spring-promo";
+            c.Request.Headers.UserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15";
+            c.Connection.RemoteIpAddress = IPAddress.Parse("203.0.113.21");
+        });
+
+        Assert.Equal(StatusCodes.Status302Found, ctx.Response.StatusCode);
+        Assert.Equal("https://apps.apple.com/app/id123", ctx.Response.Headers.Location.ToString());
     }
 
     [Fact]
@@ -163,7 +223,7 @@ public class DeepLinkEndpointTests
             && c.PageUrl == "https://shop.example/promo/spring");
 
         var match = await store.FindMatchForIpAsync(
-            "203.0.113.7", TimeSpan.FromHours(24), claim: true, DateTimeOffset.UtcNow, CancellationToken.None);
+            "203.0.113.7", TimeSpan.FromHours(24), claim: true, DateTimeOffset.UtcNow, null, CancellationToken.None);
         Assert.NotNull(match);
         Assert.Equal("myapp://promo/spring", match!.RedirectUrl);
     }
@@ -248,7 +308,7 @@ public class DeepLinkEndpointTests
         });
 
         var store = app.Services.GetRequiredService<RSCIDeferredDeepLinkStore>();
-        var match = await store.FindMatchForIpAsync(ip, TimeSpan.FromHours(24), claim: false, DateTimeOffset.UtcNow, CancellationToken.None);
+        var match = await store.FindMatchForIpAsync(ip, TimeSpan.FromHours(24), claim: false, DateTimeOffset.UtcNow, null, CancellationToken.None);
         Assert.NotNull(match!.QueryParams);
         Assert.Equal(new RSCDeepLinkOptions().MaxQueryParams, match.QueryParams!.Count);
     }

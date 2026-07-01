@@ -28,7 +28,7 @@ public class TenancyKeyClientTests
             SeedClients = new[] { new RSCCatalogClientSeed { Slug = "pharmacy-42", DisplayName = "Pharmacy 42" } },
             SeedApps = new[]
             {
-                new RSCCatalogAppSeed { ClientSlug = "pharmacy-42", Slug = "app-a", DisplayName = "App A", Environments = new[] { "production" } },
+                new RSCCatalogAppSeed { ClientSlug = "pharmacy-42", Slug = "app-a", DisplayName = "App A" },
             },
         };
         return app;
@@ -37,7 +37,7 @@ public class TenancyKeyClientTests
     private static async Task<string> MintClientKeyAsync(IngestionAppFactory app, string clientSlug)
     {
         var store = app.Services.GetRequiredService<RSCIApiKeyStore>();
-        var created = await store.CreateAsync(RSCApiKeyRoles.User, "test-client", null, null, "test", default, clientId: clientSlug);
+        var created = await store.CreateAsync(RSCApiKeyRoles.Client, "test-client", null, null, "test", default, clientId: clientSlug);
         return created.PlaintextKey;
     }
 
@@ -110,8 +110,8 @@ public class TenancyKeyClientTests
         var client = app.CreateClient();
         client.DefaultRequestHeaders.Add("apiKey", clientKey);
 
-        // Register a new app for this client.
-        var create = await client.PostAsync(AppsUrl, Body(new { slug = "app-new", displayName = "New App", environments = new[] { "production", "staging" } }));
+        // Register a new app for this client. Environment is folded into the slug (e.g. app-new-prod).
+        var create = await client.PostAsync(AppsUrl, Body(new { slug = "app-new", displayName = "New App" }));
         Assert.Equal(HttpStatusCode.Created, create.StatusCode);
 
         // It now shows for this client (alongside the seeded app-a).
@@ -122,7 +122,6 @@ public class TenancyKeyClientTests
         // And it's a valid attribution target under this client.
         var catalog = app.Services.GetRequiredService<ReportService.Storage.Catalog.RSCICatalog>();
         Assert.True(catalog.IsValidApp("pharmacy-42", "app-new"));
-        Assert.True(catalog.IsValidEnvironment("pharmacy-42", "app-new", "staging"));
         // The app is NOT visible under another client.
         Assert.False(catalog.IsValidApp("default", "app-new"));
     }

@@ -13,11 +13,17 @@
     <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" />
     <label class="visually-hidden" for="tenant-switcher-select">@ariaLabel</label>
     <select id="tenant-switcher-select" class="tenant-switcher-select" name="sel" data-tenant-switcher aria-label="@ariaLabel">
-        <option value="" selected="@(!Model.HasSelection)">@allLabel</option>
+        <option value="" selected="@Model.AllSelected">@allLabel</option>
         @if (Model.IsClientLogin)
         {
+            @* Client login: the client axis is fixed, so "All my apps" above already is the
+               whole-client selection; only the specific apps are listed. *@
             @foreach (var g in Model.Groups)
             {
+                @if (g.Apps.Count == 0)
+                {
+                    <option value="" disabled>No registered apps</option>
+                }
                 @foreach (var a in g.Apps)
                 {
                     <option value="@a.Value" selected="@a.Selected">@a.AppDisplay</option>
@@ -29,9 +35,19 @@
             @foreach (var g in Model.Groups)
             {
                 <optgroup label="@g.ClientDisplay (@g.ClientSlug)">
-                    @foreach (var a in g.Apps)
+                    @if (g.Apps.Count == 0)
                     {
-                        <option value="@a.Value" selected="@a.Selected">@a.AppDisplay</option>
+                        @* Client is registered but owns no apps yet — still shown, as a caption. *@
+                        <option value="" disabled>No registered apps</option>
+                    }
+                    else
+                    {
+                        @* Whole-client option (all of this client's apps), then each specific app. *@
+                        <option value="@g.ClientValue" selected="@g.ClientSelected">All @g.ClientDisplay apps</option>
+                        @foreach (var a in g.Apps)
+                        {
+                            <option value="@a.Value" selected="@a.Selected">@a.AppDisplay</option>
+                        }
                     }
                 </optgroup>
             }

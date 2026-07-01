@@ -63,8 +63,8 @@ public static class RSDeepLinkEndpoints
 
         app.Map(HttpVerb.Get, "/api/v2/deeplinks/match",
                 (HttpContext ctx, RSCIDeferredDeepLinkStore store, RSCDeepLinkOptions opts,
-                 string? ip, bool? claim, CancellationToken ct)
-                    => MatchAsync(ctx, store, opts, ip, claim, ct))
+                 string? ip, bool? claim, string? platform, CancellationToken ct)
+                    => MatchAsync(ctx, store, opts, ip, claim, platform, ct))
             .Apply(
                 EndpointModifier.RequireAuth,
                 EndpointModifier.AcceptHeaderFilter)
@@ -72,7 +72,7 @@ public static class RSDeepLinkEndpoints
             .WithName("MatchDeepLinkForIp")
             .WithSummary("Resolve a deferred deep link for the caller's IP")
             .WithDescription(
-                "Looks for a recent recorded click from the caller's IP (override with the `ip` query parameter) that resolved to an enabled deep link inside the configured match window. Returns 200 with `matched=true`, the originating page, the captured `params` object, the device-identification `signals` (screen/browser/timezone/…), and the redirect address (with those params appended) when one is found, otherwise `matched=false`. Unless `claim=false` is passed the matched click is consumed so it is handed out at most once — the typical app-first-launch call should claim.")
+                "Looks for a recent recorded click from the caller's IP (override with the `ip` query parameter) that resolved to an enabled deep link inside the configured match window. Returns 200 with `matched=true`, the originating page, the captured `params` object, the device-identification `signals` (screen/browser/timezone/…), and the redirect address (with those params appended) when one is found, otherwise `matched=false`. Pass the caller's `platform` (`android`/`ios`) to receive that platform's redirect override when the link defines one (otherwise the captured platform signal, then the link's default address, is used). Unless `claim=false` is passed the matched click is consumed so it is handed out at most once — the typical app-first-launch call should claim.")
             .Produces<RSDeepLinkMatchResponse>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status401Unauthorized)
             .Produces(StatusCodes.Status406NotAcceptable);
@@ -152,6 +152,13 @@ public static class RSDeepLinkEndpoints
             opts.MaxQueryParams, opts.MaxQueryParamLength);
         var signals = CaptureSignals(ctx, bodySignals: null, opts);
 
+        // The visitor's platform (a plain browser navigation, so derived from the client-hint
+        // platform signal, falling back to a user-agent sniff) selects which redirect override the
+        // smart link forwards to — e.g. an Android visitor to the Play Store, an iOS visitor to the
+        // App Store — falling back to the link's default address.
+        var ua = ctx.Request.Headers.UserAgent.ToString();
+        var platform = ResolvePlatform(explicitPlatform: null, signals, ua);
+
         // Capture is best-effort: a missing IP (or a transient store hiccup) must never stop the
         // visitor from being forwarded on. Record, then always redirect.
         var ip = ctx.Connection.RemoteIpAddress?.ToString();
@@ -165,16 +172,16 @@ public static class RSDeepLinkEndpoints
                 : referer;
             if (pageUrl.Length > MaxPageUrlLength) pageUrl = pageUrl[..MaxPageUrlLength];
 
-            var userAgent = ctx.Request.Headers.UserAgent.ToString();
-            if (string.IsNullOrWhiteSpace(userAgent)) userAgent = null;
-            else if (userAgent.Length > MaxUserAgentLength) userAgent = userAgent[..MaxUserAgentLength];
+            var userAgent = string.IsNullOrWhiteSpace(ua) ? null
+                : ua.Length > MaxUserAgentLength ? ua[..MaxUserAgentLength] : ua;
 
-            await store.RecordClickForLinkAsync(link, ip, pageUrl, userAgent, queryParams, signals, DateTimeOffset.UtcNow, ct)
+            await store.RecordClickForLinkAsync(link, ip, pageUrl, userAgent, queryParams, signals, platform, DateTimeOffset.UtcNow, ct)
                 .ConfigureAwait(false);
         }
 
-        // Forward the captured params onto the redirect so attribution reaches the destination.
-        return Results.Redirect(RSCDeepLinkQuery.Append(link.RedirectUrl, queryParams));
+        // Forward the captured params onto the platform-resolved redirect so attribution reaches the
+        // destination the visitor's platform should open.
+        return Results.Redirect(RSCDeepLinkQuery.Append(link.ResolveRedirect(platform), queryParams));
     }
 
     private static async Task<IResult> RecordClickAsync(
@@ -207,7 +214,12 @@ public static class RSDeepLinkEndpoints
             opts.MaxQueryParams, opts.MaxQueryParamLength);
         var signals = CaptureSignals(ctx, body?.Signals, opts);
 
-        var click = await store.RecordClickAsync(ip, pageUrl, userAgent, queryParams, signals, DateTimeOffset.UtcNow, ct)
+        // The end-user's platform selects the redirect override echoed back: an explicit body
+        // `platform` (a server-side caller reporting on behalf of a user) wins, then the captured
+        // platform signal, then a user-agent sniff — falling back to the link's default address.
+        var platform = ResolvePlatform(body?.Platform, signals, userAgent);
+
+        var click = await store.RecordClickAsync(ip, pageUrl, userAgent, queryParams, signals, platform, DateTimeOffset.UtcNow, ct)
             .ConfigureAwait(false);
 
         // Echo back the redirect with the params appended when the visit matched a link.
@@ -223,14 +235,14 @@ public static class RSDeepLinkEndpoints
 
     private static async Task<IResult> MatchAsync(
         HttpContext ctx, RSCIDeferredDeepLinkStore store, RSCDeepLinkOptions opts,
-        string? ip, bool? claim, CancellationToken ct)
+        string? ip, bool? claim, string? platform, CancellationToken ct)
     {
         var effectiveIp = string.IsNullOrWhiteSpace(ip) ? ctx.Connection.RemoteIpAddress?.ToString() : ip.Trim();
         if (string.IsNullOrEmpty(effectiveIp))
             return Results.Problem("could not determine client IP", statusCode: StatusCodes.Status400BadRequest);
 
         var window = TimeSpan.FromHours(Math.Max(1, opts.MatchWindowHours));
-        var match = await store.FindMatchForIpAsync(effectiveIp, window, claim ?? true, DateTimeOffset.UtcNow, ct)
+        var match = await store.FindMatchForIpAsync(effectiveIp, window, claim ?? true, DateTimeOffset.UtcNow, platform, ct)
             .ConfigureAwait(false);
 
         if (match is null)
@@ -280,6 +292,42 @@ public static class RSDeepLinkEndpoints
 
         return RSCDeepLinkQuery.Normalize(pairs, opts.MaxQueryParams, opts.MaxQueryParamLength);
     }
+
+    /// <summary>
+    /// Resolves the caller's platform (<c>android</c>/<c>ios</c>, or null) for picking a link's
+    /// per-platform redirect override. An <paramref name="explicitPlatform"/> (an app-supplied query
+    /// parameter or body field) wins; then the captured <c>platform</c> client-hint signal; then a
+    /// sniff of the <paramref name="userAgent"/>. All are folded through
+    /// <see cref="RSCDeepLinkPlatform.Normalize"/>.
+    /// </summary>
+    private static string? ResolvePlatform(
+        string? explicitPlatform, IReadOnlyDictionary<string, string>? signals, string? userAgent)
+    {
+        var p = RSCDeepLinkPlatform.Normalize(explicitPlatform);
+        if (p is not null) return p;
+
+        if (signals is not null && signals.TryGetValue("platform", out var signalPlatform))
+        {
+            p = RSCDeepLinkPlatform.Normalize(signalPlatform);
+            if (p is not null) return p;
+        }
+
+        return PlatformFromUserAgent(userAgent);
+    }
+
+    /// <summary>Best-effort platform from a browser <c>User-Agent</c> (a plain smart-link navigation
+    /// carries no explicit platform). iOS device tokens and the Android marker are unambiguous; any
+    /// other agent yields null (the link's default redirect).</summary>
+    private static string? PlatformFromUserAgent(string? userAgent)
+    {
+        if (string.IsNullOrEmpty(userAgent)) return null;
+        if (userAgent.Contains("Android", StringComparison.OrdinalIgnoreCase)) return RSCDeepLinkPlatform.Android;
+        if (userAgent.Contains("iPhone", StringComparison.OrdinalIgnoreCase)
+            || userAgent.Contains("iPad", StringComparison.OrdinalIgnoreCase)
+            || userAgent.Contains("iPod", StringComparison.OrdinalIgnoreCase))
+            return RSCDeepLinkPlatform.Ios;
+        return null;
+    }
 }
 
 /// <summary>Request body for <c>POST /api/v2/deeplinks/clicks</c>. <see cref="Ip"/> is optional —
@@ -287,9 +335,13 @@ public static class RSDeepLinkEndpoints
 /// attribution/campaign map captured with the click and forwarded onto the redirect; <see cref="Signals"/>
 /// is an optional device-identification map (screen size, browser, timezone, …) merged with any
 /// <c>X-DeepLink-*</c>/fingerprint request headers. Both are capped by
-/// <c>DeepLinks:MaxQueryParams</c> / <c>DeepLinks:MaxQueryParamLength</c>.</summary>
+/// <c>DeepLinks:MaxQueryParams</c> / <c>DeepLinks:MaxQueryParamLength</c>. <see cref="Platform"/> is an
+/// optional <c>android</c>/<c>ios</c> hint (for a server-side caller reporting on behalf of an end
+/// user) selecting which per-platform redirect override is echoed back; when omitted it is inferred
+/// from the captured platform signal / user-agent, falling back to the link's default address.</summary>
 public sealed record RSDeepLinkClickRequest(
-    string? PageUrl, string? Ip, Dictionary<string, string>? Params, Dictionary<string, string>? Signals);
+    string? PageUrl, string? Ip, Dictionary<string, string>? Params, Dictionary<string, string>? Signals,
+    string? Platform);
 
 /// <summary>Response for a recorded click: whether it resolved to a configured link and, if so, the
 /// resolved slug + redirect address (with any captured params appended).</summary>

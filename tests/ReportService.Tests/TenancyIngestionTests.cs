@@ -11,9 +11,11 @@ using Xunit;
 namespace ReportService.Tests;
 
 /// <summary>
-/// End-to-end coverage of the (app, environment, client) tenancy axes on the analytics ingestion
-/// path: attribution resolution (body / header / default), catalog validation, and per-tenant
-/// isolation in storage. The catalog is seeded per-test with app-a/app-b + pharmacy-42.
+/// End-to-end coverage of the (app, client) tenancy axes on the analytics ingestion path: attribution
+/// resolution (body / header / default), catalog validation, and per-tenant isolation in storage.
+/// Environment is folded into the app slug — it is no longer a validated axis (the body's environment
+/// value is still stamped on the vestigial column but never rejected). The catalog is seeded per-test
+/// with app-a/app-b + pharmacy-42.
 /// </summary>
 public class TenancyIngestionTests
 {
@@ -29,8 +31,8 @@ public class TenancyIngestionTests
             SeedClients = new[] { new RSCCatalogClientSeed { Slug = "pharmacy-42", DisplayName = "Pharmacy 42" } },
             SeedApps = new[]
             {
-                new RSCCatalogAppSeed { ClientSlug = "pharmacy-42", Slug = "app-a", DisplayName = "App A", Environments = new[] { "production", "staging" } },
-                new RSCCatalogAppSeed { ClientSlug = "pharmacy-42", Slug = "app-b", DisplayName = "App B", Environments = new[] { "production" } },
+                new RSCCatalogAppSeed { ClientSlug = "pharmacy-42", Slug = "app-a", DisplayName = "App A" },
+                new RSCCatalogAppSeed { ClientSlug = "pharmacy-42", Slug = "app-b", DisplayName = "App B" },
             },
         };
         return app;
@@ -83,6 +85,20 @@ public class TenancyIngestionTests
         return await res.Content.ReadFromJsonAsync<RSCAnalyticsBatchReceipt>();
     }
 
+    /// <summary>Posts a batch expected to be fully rejected: asserts the standardised 400 and returns
+    /// the receipt (still delivered as the response body so the reject reason is visible).</summary>
+    private static async Task<RSCAnalyticsBatchReceipt?> PostRejectedAsync(IngestionAppFactory app, object batch,
+        Action<HttpRequestMessage>? configure = null)
+    {
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Add("apiKey", IngestionAppFactory.ApiKey);
+        var req = new HttpRequestMessage(HttpMethod.Post, Url) { Content = Body(batch) };
+        configure?.Invoke(req);
+        var res = await client.SendAsync(req);
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        return await res.Content.ReadFromJsonAsync<RSCAnalyticsBatchReceipt>();
+    }
+
     [Fact]
     public async Task Registered_tenant_is_accepted_and_stored_under_that_tenant()
     {
@@ -110,26 +126,16 @@ public class TenancyIngestionTests
     public async Task Unknown_app_is_batch_rejected()
     {
         await using var app = NewApp();
-        var receipt = await PostAsync(app, MakeBatch("ghost-app", "production", "pharmacy-42"));
+        var receipt = await PostRejectedAsync(app, MakeBatch("ghost-app", "production", "pharmacy-42"));
         Assert.True(receipt!.BatchRejected);
         Assert.Equal(RSCAnalyticsDeadLetterReasons.AppUnknown, receipt.BatchRejectReason);
-    }
-
-    [Fact]
-    public async Task Undeclared_environment_is_batch_rejected()
-    {
-        await using var app = NewApp();
-        // app-b only declares "production"; "staging" is undeclared for it.
-        var receipt = await PostAsync(app, MakeBatch("app-b", "staging", "pharmacy-42"));
-        Assert.True(receipt!.BatchRejected);
-        Assert.Equal(RSCAnalyticsDeadLetterReasons.EnvironmentUnknown, receipt.BatchRejectReason);
     }
 
     [Fact]
     public async Task Unknown_client_is_batch_rejected()
     {
         await using var app = NewApp();
-        var receipt = await PostAsync(app, MakeBatch("app-a", "production", "ghost-client"));
+        var receipt = await PostRejectedAsync(app, MakeBatch("app-a", "production", "ghost-client"));
         Assert.True(receipt!.BatchRejected);
         Assert.Equal(RSCAnalyticsDeadLetterReasons.ClientUnknown, receipt.BatchRejectReason);
     }

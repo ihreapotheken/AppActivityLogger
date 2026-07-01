@@ -159,13 +159,14 @@ public class ServerAnalyticsEndpointTests
     }
 
     [Fact]
-    public async Task Unknown_platform_is_batch_rejected_in_the_receipt()
+    public async Task Unknown_platform_is_batch_rejected_with_400()
     {
         await using var app = new IngestionAppFactory();
         var client = Authed(app);
 
+        // Batch-level rejection ⇒ 400 (never a 202 masking the total failure); receipt in the body.
         var res = await client.PostAsync(Url, Body(PurchaseRequest("5001", platform: "desktop")));
-        Assert.Equal(HttpStatusCode.Accepted, res.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
         var receipt = await res.Content.ReadFromJsonAsync<RSCAnalyticsBatchReceipt>();
         Assert.True(receipt!.BatchRejected);
         Assert.Equal(RSCAnalyticsDeadLetterReasons.PlatformUnknown, receipt.BatchRejectReason);
@@ -234,8 +235,9 @@ public class ServerAnalyticsEndpointTests
     public async Task Ecommerce_item_with_blank_itemId_is_rejected_in_the_receipt()
     {
         // CODE-REVIEW finding #7: an items[] entry whose itemId deserializes to null/blank violates
-        // the contract. The validator rejects the carrying event (per-event), so the receipt shows
-        // a rejection rather than persisting a contract-violating row.
+        // the contract. The validator rejects the carrying event (per-event). Here the batch holds
+        // that one event only, so nothing is accepted ⇒ the whole batch is a 400 (a partial batch
+        // with at least one accepted event would still be a 202).
         await using var app = new IngestionAppFactory();
         var client = Authed(app);
 
@@ -254,7 +256,7 @@ public class ServerAnalyticsEndpointTests
                 }
             }
         }));
-        Assert.Equal(HttpStatusCode.Accepted, res.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
         var receipt = await res.Content.ReadFromJsonAsync<RSCAnalyticsBatchReceipt>();
         Assert.Equal(0, receipt!.AcceptedCount);
         Assert.Equal(1, receipt.RejectedCount);
@@ -264,9 +266,9 @@ public class ServerAnalyticsEndpointTests
     public async Task Past_dated_backfill_event_is_dead_lettered_as_clock_skew()
     {
         // CODE-REVIEW finding #34/#49/#51: the symmetric skew window (default 24h) means a backend
-        // backfilling a purchase that completed 3 days ago is dead-lettered as ClockSkew while the
-        // receipt still returns 202 with rejectedCount>0. This characterizes the now-documented
-        // behavior so it is intentional; it turns red the moment a backfill allowance is added.
+        // backfilling a purchase that completed 3 days ago is dead-lettered as ClockSkew. This batch
+        // carries only that one event, so nothing is accepted ⇒ it is now a 400 (the standardised
+        // full-rejection status); it turns red the moment a backfill allowance is added.
         await using var app = new IngestionAppFactory();
         var client = Authed(app);
 
@@ -280,7 +282,7 @@ public class ServerAnalyticsEndpointTests
                 new { name = "purchase", type = "ecommerce", eventId = "evt-backfill", occurredAt = threeDaysAgo }
             }
         }));
-        Assert.Equal(HttpStatusCode.Accepted, res.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
 
         var receipt = await res.Content.ReadFromJsonAsync<RSCAnalyticsBatchReceipt>();
         Assert.Equal(0, receipt!.AcceptedCount);

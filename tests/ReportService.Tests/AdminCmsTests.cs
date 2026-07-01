@@ -167,6 +167,37 @@ public class AdminCmsTests
     }
 
     [Fact]
+    public async Task Report_detail_shows_originating_client_and_app()
+    {
+        await using var app = NewFactory();
+
+        // Seed a report under the always-self-seeded default client/app so routing + listing are
+        // deterministic (the fan-out store lists over the catalog's registered apps).
+        string fileName;
+        using (var scope = app.Services.CreateScope())
+        {
+            var store = scope.ServiceProvider.GetRequiredService<RSCIReportStore>();
+            var saved = await store.SaveAsync(new RSCProblemReport(
+                Platform: "android", Message: "tenant-attribution",
+                Title: null, DeviceModel: null, Email: null, PhoneNumber: null, Phone: null,
+                PharmacyId: null, Source: null, AppVersion: null, FunctionalityImportance: null, Labels: null,
+                ClientId: "default", AppId: "default"),
+                new ReadOnlyMemory<byte>(System.Text.Encoding.UTF8.GetBytes("{\"platform\":\"android\",\"message\":\"tenant-attribution\"}")),
+                null, null, default);
+            fileName = saved.FileName;
+        }
+
+        var client = await AuthenticatedClient(app);
+        var html = await (await client.GetAsync($"/Report/android/{fileName}")).Content.ReadAsStringAsync();
+
+        // The detail page surfaces which (client, app) the report came from.
+        Assert.Contains("client ·", html, StringComparison.Ordinal);
+        Assert.Contains("app ·", html, StringComparison.Ordinal);
+        Assert.Contains("chip-tenant", html, StringComparison.Ordinal);
+        Assert.Contains("default", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Toggling_a_deep_link_redirects_and_does_not_500()
     {
         // Regression: the DeepLinks redirect helpers passed `page` (the pager number) as a route

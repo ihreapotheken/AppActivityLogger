@@ -77,7 +77,7 @@ public sealed class RSCSqliteApiKeyStore : RSCIApiKeyStore
             }
 
             var runner = new RSCSchemaRunner(
-                new RSCISchemaMigration[] { new RSCMK001_CreateApiKeys(), new RSCMK002_AddClientBinding() }, _logger);
+                new RSCISchemaMigration[] { new RSCMK001_CreateApiKeys(), new RSCMK002_AddClientBinding(), new RSCMK003_RenameUserRoleToClient() }, _logger);
             var version = runner.Run(conn);
 
             _ready = true;
@@ -115,7 +115,7 @@ public sealed class RSCSqliteApiKeyStore : RSCIApiKeyStore
         string? clientId = null)
     {
         if (!RSCApiKeyRoles.IsValid(role))
-            throw new ArgumentException($"role must be '{RSCApiKeyRoles.Admin}' or '{RSCApiKeyRoles.User}'", nameof(role));
+            throw new ArgumentException($"role must be '{RSCApiKeyRoles.Admin}' or '{RSCApiKeyRoles.Client}'", nameof(role));
         if (rateLimitPerMinute is < 1)
             throw new ArgumentException("rateLimitPerMinute must be >= 1 when set", nameof(rateLimitPerMinute));
         if (expiresAt is { } e && e <= DateTimeOffset.UtcNow)
@@ -123,6 +123,14 @@ public sealed class RSCSqliteApiKeyStore : RSCIApiKeyStore
         EnsureReady();
 
         var normalizedClient = string.IsNullOrWhiteSpace(clientId) ? null : clientId.Trim().ToLowerInvariant();
+
+        // Role ⇔ binding invariant — the two-role model has no unbound non-admin ("legacy") key:
+        // a client key is scoped to exactly one client and MUST be bound; an admin key spans all
+        // clients and MUST be unbound.
+        if (role == RSCApiKeyRoles.Client && normalizedClient is null)
+            throw new ArgumentException("a client key must be bound to a client (clientId is required)", nameof(clientId));
+        if (role == RSCApiKeyRoles.Admin && normalizedClient is not null)
+            throw new ArgumentException("an admin key spans all clients and must not be bound to one", nameof(clientId));
         var gen = RSCApiKeyGenerator.Create();
         var createdAt = DateTimeOffset.UtcNow;
 

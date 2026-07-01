@@ -13,6 +13,14 @@ public static class RSAScopeCookie
 {
     public const string Name = "rsc_scope";
 
+    /// <summary>
+    /// Set once at startup from <c>Admin:EmbedAllowedAncestors</c>. When true the scope cookie is
+    /// written <c>SameSite=None; Secure; Partitioned</c> so it survives the cross-site Confluence
+    /// iframe; otherwise it stays <c>SameSite=Strict</c>. (A static is enough — this is a process-wide
+    /// build/deploy setting, not a per-request value.)
+    /// </summary>
+    public static bool CrossSiteEmbed { get; set; }
+
     public readonly record struct Scope(string? Client, string? App, string? Env);
 
     private static string? Clean(string? v) =>
@@ -32,13 +40,17 @@ public static class RSAScopeCookie
     public static void Write(HttpResponse response, string? client, string? app, string? env)
     {
         var value = $"{Clean(client)}|{Clean(app)}|{Clean(env)}";
-        response.Cookies.Append(Name, value, new CookieOptions
+        var options = new CookieOptions
         {
             HttpOnly = true,
-            SameSite = SameSiteMode.Strict,
+            SameSite = CrossSiteEmbed ? SameSiteMode.None : SameSiteMode.Strict,
+            Secure = CrossSiteEmbed,
             IsEssential = true,
             MaxAge = TimeSpan.FromDays(30),
             Path = "/",
-        });
+        };
+        if (CrossSiteEmbed)
+            options.Extensions.Add("Partitioned");
+        response.Cookies.Append(Name, value, options);
     }
 }

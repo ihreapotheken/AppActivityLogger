@@ -4,7 +4,16 @@ namespace ReportService.DeepLinks;
 /// An operator-configured deferred deep link. When a recorded website click's
 /// <see cref="RSCDeferredDeepLinkClick.PageUrl"/> contains <see cref="PagePattern"/> (case-insensitive
 /// substring), the click resolves to this link and the app — on first launch from the same IP — is
-/// handed <see cref="RedirectUrl"/> to navigate to. The most specific (longest) matching pattern wins.
+/// handed a redirect address to navigate to. The most specific (longest) matching pattern wins.
+/// <para>
+/// <see cref="RedirectUrl"/> is the default/fallback address. A link may additionally carry
+/// platform-specific overrides — <see cref="RedirectUrlAndroid"/> / <see cref="RedirectUrlIos"/> —
+/// so a single slug + page pattern can route an Android visitor to one place (e.g. the Play Store /
+/// an Android universal link) and an iOS visitor to another (the App Store / a custom scheme). The
+/// platform is resolved at every serving boundary (the hosted <c>/dl/{slug}</c> redirect, the
+/// <c>/clicks</c> echo, and the <c>/match</c> response) via <see cref="ResolveRedirect"/>; an unset
+/// or unknown platform — and any platform with no override — falls back to <see cref="RedirectUrl"/>.
+/// </para>
 /// </summary>
 public sealed record RSCDeferredDeepLink(
     long Id,
@@ -12,9 +21,48 @@ public sealed record RSCDeferredDeepLink(
     string Name,
     string PagePattern,
     string RedirectUrl,
+    string? RedirectUrlAndroid,
+    string? RedirectUrlIos,
     bool Enabled,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt)
+{
+    /// <summary>
+    /// The redirect address for <paramref name="platform"/> — the platform-specific override when one
+    /// is configured for that platform, otherwise the default <see cref="RedirectUrl"/>. A null/unknown
+    /// platform (anything other than android/ios) also yields the default.
+    /// </summary>
+    public string ResolveRedirect(string? platform) => RSCDeepLinkPlatform.Normalize(platform) switch
+    {
+        RSCDeepLinkPlatform.Android => string.IsNullOrEmpty(RedirectUrlAndroid) ? RedirectUrl : RedirectUrlAndroid,
+        RSCDeepLinkPlatform.Ios => string.IsNullOrEmpty(RedirectUrlIos) ? RedirectUrl : RedirectUrlIos,
+        _ => RedirectUrl,
+    };
+}
+
+/// <summary>
+/// The platform axis a deep link can be specified against: <c>android</c> or <c>ios</c>.
+/// <see cref="Normalize"/> folds a raw token — an admin form value, a <c>platform</c> client-hint
+/// signal (which arrives quoted, e.g. <c>"Android"</c>), an app-supplied query/body value, or a
+/// user-agent-derived guess — to one of those two, or null when it is neither.
+/// </summary>
+public static class RSCDeepLinkPlatform
+{
+    public const string Android = "android";
+    public const string Ios = "ios";
+
+    public static string? Normalize(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var v = raw.Trim().Trim('"').ToLowerInvariant();
+        return v switch
+        {
+            "android" => Android,
+            "ios" or "iphone" or "ipad" or "ipod" or "ipados" => Ios,
+            _ => null,
+        };
+    }
+}
 
 /// <summary>
 /// One recorded website visit: the visitor's IP and the page they were on, plus the deep link it

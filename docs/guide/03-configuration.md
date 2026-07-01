@@ -16,7 +16,7 @@ Binds to [`RSCReportServiceOptions`](../../src/ReportService.Core/Options/RSCRep
 | `ApiKey` | `""` | Shared secret in the `apiKey` header — the permanent **root-admin** key (always valid, never expires, not stored in the DB). Bootstraps managed keys. Empty disables it (DB keys still work once minted). Must be set in any real deployment. |
 | `ApiKeysDbPath` | `"api-keys.db"` | SQLite file for managed keys (admin/user, expiry, revocation, per-key limit). Only SHA-256 hashes stored. Resolved under `ReportsRoot` when relative. |
 | `ApiKeyAdminRateLimitPerMinute` | `0` (⇒ `RateLimitPermitsPerMinute`) | Per-minute budget for admin-role keys (and the root key). Per-key override beats it. |
-| `ApiKeyUserRateLimitPerMinute` | `0` (⇒ `RateLimitPermitsPerMinute`) | Per-minute budget for user-role keys. Per-key override beats it. |
+| `ApiKeyUserRateLimitPerMinute` | `0` (⇒ `RateLimitPermitsPerMinute`) | Per-minute budget for non-admin (`client`-role) keys — the option name is legacy. Per-key override beats it. |
 | `Environment` | `"production"` | Free-text label surfaced on `/api/health` and the admin badge so you can tell prod from staging. |
 | `ReportsRoot` | `"reports"` | Filesystem root for stored reports (absolute, or resolved against the working dir). Each allowed platform gets a `problem-reports/` child folder, created on startup. |
 | `AllowedPlatforms` | `["android","ios"]` | Allow-list for the `platform` field and `{platform}` route params. Inbound values are lowercased before matching. |

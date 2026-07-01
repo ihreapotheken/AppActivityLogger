@@ -344,4 +344,35 @@ ORDER BY install_day DESC, app_id ASC, environment ASC, client_id ASC, platform 
             return total;
         }, ct).ConfigureAwait(false);
     }
+
+    // Per-app store: this IS one app's database, so the scope's client/app routing was already applied
+    // by the fan-out; the scope is accepted only to satisfy the interface. A wipe is always total here.
+    public async Task<int> WipeAllDataAsync(RSCAnalyticsScope scope, CancellationToken ct)
+    {
+        _ = scope;
+        // Every analytics DATA table. analytics_funnel_definitions is operator config and is kept
+        // (the tenancy catalog + audit log survive a report wipe for the same reason). The names are
+        // compile-time literals — no injection surface. No cross-table FKs, so order is irrelevant.
+        string[] tables =
+        {
+            "analytics_events", "analytics_sessions", "analytics_user_days", "analytics_daily_rollups",
+            "analytics_funnel_steps", "analytics_retention_cohorts", "analytics_batches", "analytics_dead_letters",
+        };
+        return await ExecuteWithRetryAsync(async innerCt =>
+        {
+            using var conn = await OpenConnectionAsync(innerCt).ConfigureAwait(false);
+            using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(innerCt).ConfigureAwait(false);
+            int total = 0;
+            foreach (var table in tables)
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.Transaction = tx;
+                cmd.CommandTimeout = _commandTimeoutSeconds;
+                cmd.CommandText = $"DELETE FROM {table};";
+                total += await cmd.ExecuteNonQueryAsync(innerCt).ConfigureAwait(false);
+            }
+            await tx.CommitAsync(innerCt).ConfigureAwait(false);
+            return total;
+        }, ct).ConfigureAwait(false);
+    }
 }

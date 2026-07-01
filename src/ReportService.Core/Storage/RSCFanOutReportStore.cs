@@ -9,7 +9,7 @@ namespace ReportService.Storage;
 /// The <see cref="RSCIReportStore"/> the host resolves from DI in the database-per-app model. It owns
 /// no files of its own — it routes:
 /// <list type="bullet">
-///   <item><b><see cref="SaveAsync"/></b> stores the report under its own <c>(client, app)</c>'s tree
+///   <item><b><c>SaveAsync</c></b> stores the report under its own <c>(client, app)</c>'s tree
 ///         (attributed by the ingestion layer from the API key + <c>X-Report-App</c>).</item>
 ///   <item><b><see cref="List"/></b> fans out across every app's tree, stamps each row with its owning
 ///         <c>(client, app)</c>, and merges newest-first (capped). Admin pages filter the merged list
@@ -40,14 +40,19 @@ public sealed class RSCFanOutReportStore : RSCIReportStore
         _logger = logger;
     }
 
-    public async Task<RSCStoredReport> SaveAsync(
+    public Task<RSCStoredReport> SaveAsync(
         RSCProblemReport report, ReadOnlyMemory<byte> jsonBytes, Stream? attachment,
         long? attachmentLength, string ingestionChannel, CancellationToken ct)
+        => SaveAsync(report, jsonBytes, attachment, attachmentLength, ingestionChannel, DateTimeOffset.UtcNow, ct);
+
+    public async Task<RSCStoredReport> SaveAsync(
+        RSCProblemReport report, ReadOnlyMemory<byte> jsonBytes, Stream? attachment,
+        long? attachmentLength, string ingestionChannel, DateTimeOffset submittedAt, CancellationToken ct)
     {
         var client = Norm(report.ClientId);
         var app = Norm(report.AppId);
         var stored = await _factory.Get(client, app)
-            .SaveAsync(report, jsonBytes, attachment, attachmentLength, ingestionChannel, ct).ConfigureAwait(false);
+            .SaveAsync(report, jsonBytes, attachment, attachmentLength, ingestionChannel, submittedAt, ct).ConfigureAwait(false);
         // Stamp the owning tenant so the listing/detail/delete paths can scope + route.
         return stored with { ClientId = client, AppId = app };
     }

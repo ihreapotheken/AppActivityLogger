@@ -3,14 +3,18 @@ using ReportService.Storage;
 namespace ReportService.Admin.Services;
 
 /// <summary>
-/// Read-side facade for the Stats page. Hides the SQLite-vs-disk fallback decision and the
-/// optional <see cref="IRSAReportIndexAccessor"/> from the page model.
+/// Read-side facade for the Stats page. In the database-per-app model it fans the window aggregates
+/// out across the per-app SQLite indexes (scoped to the global <c>client</c>/<c>app</c> selection) and
+/// merges them, so Stats agrees with the Dashboard and the per-app listing.
 /// </summary>
 public interface IRSAStatsService
 {
     /// <summary>
-    /// Returns aggregates for the supplied window, or <c>null</c> when no SQLite index is wired
-    /// up (the disk store cannot answer aggregate queries efficiently).
+    /// Aggregates for the supplied window, scoped to one tenant <paramref name="clientId"/> /
+    /// <paramref name="appId"/> (null = all). Merged across every app in scope. Never null — an empty
+    /// scope yields a zeroed report for the window.
     /// </summary>
-    Task<RSCStatsReport?> GetAsync(DateTimeOffset from, DateTimeOffset until, int topN, CancellationToken ct);
+    Task<RSCStatsReport> GetAsync(
+        DateTimeOffset from, DateTimeOffset until, int topN,
+        string? clientId, string? appId, CancellationToken ct);
 }

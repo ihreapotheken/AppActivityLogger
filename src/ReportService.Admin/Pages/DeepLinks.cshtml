@@ -53,6 +53,10 @@
         The <strong>page pattern</strong> is matched as a substring of the visited URL (e.g.
         <code>/promo/spring</code>). The <strong>redirect address</strong> is an absolute URL the app
         opens — an https universal link or a custom scheme such as <code>myapp://promo/spring</code>.
+        The optional <strong>Android</strong> / <strong>iOS</strong> redirects override it per platform
+        (e.g. route to the Play Store vs the App Store); leave one blank to serve the default address on
+        that platform. The platform is taken from the caller's <code>platform</code> on the match
+        request, or inferred from the visitor's browser on the hosted smart link.
     </p>
     <form method="post" asp-page-handler="Save" class="filters">
         @Html.AntiForgeryToken()
@@ -74,6 +78,14 @@
         <label>
             <span>Redirect address</span>
             <input name="redirectUrl" required maxlength="2048" placeholder="myapp://promo/spring" value="@(editing?.RedirectUrl)" />
+        </label>
+        <label>
+            <span>Android redirect <span class="muted">(optional)</span></span>
+            <input name="redirectUrlAndroid" maxlength="2048" placeholder="https://play.google.com/store/apps/details?id=…" value="@(editing?.RedirectUrlAndroid)" />
+        </label>
+        <label>
+            <span>iOS redirect <span class="muted">(optional)</span></span>
+            <input name="redirectUrlIos" maxlength="2048" placeholder="https://apps.apple.com/app/id…" value="@(editing?.RedirectUrlIos)" />
         </label>
         <label>
             <span>State</span>
@@ -157,7 +169,17 @@
                         <td class="mono">@l.Slug</td>
                         <td>@l.Name</td>
                         <td class="mono">@l.PagePattern</td>
-                        <td class="mono">@l.RedirectUrl</td>
+                        <td class="mono">
+                            @l.RedirectUrl
+                            @if (!string.IsNullOrEmpty(l.RedirectUrlAndroid))
+                            {
+                                <div class="muted">android → @l.RedirectUrlAndroid</div>
+                            }
+                            @if (!string.IsNullOrEmpty(l.RedirectUrlIos))
+                            {
+                                <div class="muted">ios → @l.RedirectUrlIos</div>
+                            }
+                        </td>
                         <td class="mono"><a href="@linkBase/dl/@l.Slug" target="_blank" rel="noopener noreferrer">@linkBase/dl/@l.Slug</a></td>
                         <td>@(l.Enabled ? "enabled" : "disabled")</td>
                         <td class="mono" data-sort-value="@l.UpdatedAt.UtcDateTime.ToString("o")">@l.UpdatedAt.AsLocalTime()</td>

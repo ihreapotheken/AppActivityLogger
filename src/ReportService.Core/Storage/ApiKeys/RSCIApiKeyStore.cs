@@ -1,13 +1,23 @@
 namespace ReportService.Storage.ApiKeys;
 
-/// <summary>Role of an API key. <c>admin</c> may manage keys (mint/list/revoke) and ingest;
-/// <c>user</c> may only ingest.</summary>
+/// <summary>
+/// Role of an API key — there are exactly two, and role determines binding:
+/// <list type="bullet">
+///   <item><c>admin</c>: read + write across <b>all</b> clients — manage keys, ingest for any client,
+///         read every dashboard. Always <b>unbound</b> (no <c>client_id</c>). The static root key is
+///         admin.</item>
+///   <item><c>client</c>: scoped to <b>one</b> client and always <b>bound</b> (carries a
+///         <c>client_id</c>). It ingests only its own client's telemetry and reads only its own
+///         dashboards; it cannot manage keys or touch another tenant.</item>
+/// </list>
+/// There is no unbound non-admin ("legacy") key.
+/// </summary>
 public static class RSCApiKeyRoles
 {
     public const string Admin = "admin";
-    public const string User = "user";
+    public const string Client = "client";
 
-    public static bool IsValid(string? role) => role is Admin or User;
+    public static bool IsValid(string? role) => role is Admin or Client;
 }
 
 /// <summary>
@@ -59,7 +69,8 @@ public interface RSCIApiKeyStore
 
     /// <summary>Mint a new key. Returns metadata + the one-time plaintext (never stored).
     /// <paramref name="clientId"/> binds the key to a catalog client (the key becomes that client's
-    /// identity); pass <c>null</c> for an unbound operator/SDK key.</summary>
+    /// identity). It is <b>required for a <c>client</c> role key and must be null for an <c>admin</c>
+    /// key</b> (admin spans all clients) — the store enforces this.</summary>
     Task<RSCApiKeyCreated> CreateAsync(
         string role,
         string? label,

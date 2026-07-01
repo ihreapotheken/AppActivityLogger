@@ -47,6 +47,7 @@
     <script src="~/js/auto-submit.js" asp-append-version="true"></script>
 }
 
+<span id="list" class="list-anchor"></span>
 <p class="muted">
     @vm.TotalMatched matching submission@(vm.TotalMatched == 1 ? "" : "s") · page @vm.PageNumber of @vm.TotalPages
     · source: <span class="mono">@(vm.UsedIndex ? "sqlite index" : "filesystem scan")</span>
@@ -66,6 +67,7 @@ else
             <tr>
                 <th scope="col" tip="Local time the user submitted this report-a-problem to the service">Submitted</th>
                 <th scope="col" tip="Originating SDK platform (android or ios)">Platform</th>
+                <th scope="col" tip="Client (tenant) and app this report is attributed to">Client / App</th>
                 <th scope="col" tip="Stored report file name; links to the full decoded report detail view">File</th>
                 <th scope="col" tip="Size of the attached log bundle, or — when the submission included no logs">Attachment</th>
                 <th scope="col" tip="Parsed log entries: total count plus per-level and http-event chip breakdown">Log entries</th>
@@ -78,6 +80,7 @@ else
                 <tr>
                     <td class="mono">@r.SubmittedAt.AsLocalTime()</td>
                     <td class="mono">@r.Platform</td>
+                    <td class="mono">@(r.ClientId ?? "—") / @(r.AppId ?? "—")</td>
                     <td class="mono"><a asp-page="/Report" asp-route-platform="@r.Platform" asp-route-fileName="@r.FileName">@r.FileName</a></td>
                     <td>@(r.AttachmentFileName is null ? Html.Raw("<span class=\"muted\">— (no logs)</span>") : Html.Raw(RSAByteFormatter.Format(r.AttachmentSizeBytes)))</td>
                     <td>

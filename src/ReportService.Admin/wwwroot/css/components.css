@@ -33,6 +33,19 @@ button.link {
 button.link:hover { text-decoration: underline; }
 form.inline { display: inline; }
 
+/* Trailing "actions" table cell: several inline links/forms (manage apps · issue key ·
+   archive · delete). Without spacing the collapsed whitespace makes them read as one
+   run-on sentence, so lay them out with a real gap and let them wrap on narrow screens. */
+td.row-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1) var(--space-3);
+}
+td.row-actions > form.inline { margin: 0; }
+/* Inline "save" rename forms (field + button in one cell): keep the button off the field. */
+form.inline > input + button { margin-left: var(--space-2); }
+
 /* ---- Form controls ----
  * Native <select> chrome on macOS/Chrome adds intrinsic height beyond `padding` + `border`,
  * so inputs and selects rendered side-by-side end up at different heights even with identical
@@ -448,6 +461,14 @@ a.tile-link .tile-value { color: var(--accent); }
     justify-content: center;
     align-items: center;
     margin: 1.2rem 0;
+}
+
+/* Invisible scroll target rendered just above a paginated listing. The pager links point at it
+   (via a "#" fragment) so paging reloads the page at the listing instead of jumping to the very
+   top. scroll-margin-top keeps it clear of the mobile sticky bar. */
+.list-anchor {
+    display: block;
+    scroll-margin-top: var(--space-5);
 }
 
 /* ---- Badges ---- */
@@ -920,6 +941,7 @@ a.chip:hover { background: var(--accent-bg); color: var(--fg); }
 a.chip-type:hover { background: #fbdcdc; color: var(--danger-soft-fg); }
 .chip-channel { font-family: var(--font-mono); }
 .chip-attachment { background: #eef6ee; color: #1f5b1f; border-color: #cbe3cb; }
+.chip-tenant { font-family: var(--font-mono); background: #eef2ff; color: #3730a3; border-color: #c7d2fe; }
 .chip-label { background: var(--surface-alt); }
 
 .summary-grid {
@@ -1265,8 +1287,380 @@ section.card.danger-zone h2 { color: var(--danger-soft-fg); }
 .chip-loglevel-preview  { background: #f5f3ff; color: #5b21b6; border-color: #ddd6fe; }
 
 /* Header tenant/app switcher — replaces the environment chip; sits under the brand in the sidebar.
-   The native <select> chrome above already styles it; this just fits it to the sidebar width. */
-.tenant-switcher { margin: 0.5rem 0 0.75rem; }
+   With no JS a native <select> is shown; tenant-switcher.js enhances it into the .tenant-dd popover
+   below (three scope levels: all clients / a whole client / one app) and hides the native control. */
+.tenant-switcher { margin: 0.5rem 0 0.75rem; position: relative; }
 .tenant-switcher-select { width: 100%; }
+.tenant-switcher-select--enhanced { display: none; } /* JS active: the fancy widget replaces it */
 .tenant-switcher-links { list-style: none; margin: 0.5rem 0; padding: 0; font-size: 0.85rem; }
 .tenant-switcher-links a { display: block; padding: 0.15rem 0; }
+
+/* ── Enhanced tenant/app dropdown ──────────────────────────────────────────────────────────────*/
+.tenant-dd { position: relative; }
+
+.tenant-dd-trigger {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    width: 100%;
+    min-height: 2.4rem;
+    padding: 0.45rem 0.65rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--fg);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+.tenant-dd-trigger:hover { border-color: #b9bec7; }
+.tenant-dd-trigger:focus-visible,
+.tenant-dd.is-open .tenant-dd-trigger {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-bg);
+}
+.tenant-dd-value {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+/* Chevron drawn from borders so it needs no asset; rotates when open. */
+.tenant-dd-caret {
+    flex: 0 0 auto;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-right: 2px solid var(--fg-muted);
+    border-bottom: 2px solid var(--fg-muted);
+    transform: rotate(45deg) translateY(-2px);
+    transition: transform 0.12s ease;
+}
+.tenant-dd.is-open .tenant-dd-caret { transform: rotate(-135deg) translateY(-1px); }
+
+.tenant-dd-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    z-index: 40;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    box-shadow: 0 8px 24px rgba(15, 17, 21, 0.14);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    max-height: 60vh;
+}
+/* The `display: flex` above is an author rule and would otherwise beat the UA `[hidden]{display:none}`
+   (author origin wins over UA), leaving the menu permanently open. Re-assert the hidden state so the
+   JS toggle (menu.hidden) actually collapses it. */
+.tenant-dd-menu[hidden] { display: none; }
+.tenant-dd-filterwrap { padding: var(--space-2); border-bottom: 1px solid var(--border); }
+.tenant-dd-filter { width: 100%; }
+.tenant-dd-list { overflow-y: auto; padding: var(--space-1) 0; }
+
+.tenant-dd-group {
+    padding: 0.4rem 0.75rem 0.2rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--fg-muted);
+}
+
+.tenant-dd-opt {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    width: 100%;
+    padding: 0.4rem 0.75rem;
+    border: 0;
+    background: transparent;
+    color: var(--fg);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+}
+/* Same author-vs-UA cascade issue as the menu: `display: flex` beats `[hidden]{display:none}`, so the
+   filter's `el.hidden = true` wouldn't collapse non-matching rows. Re-assert it (covers option rows and
+   their group headers) so typing in the filter actually hides results. */
+.tenant-dd-opt[hidden],
+.tenant-dd-group[hidden],
+.tenant-dd-note[hidden] { display: none; }
+
+/* Caption shown under a client that owns no apps yet — informative, not selectable. Indented to line
+   up with the app rows it stands in for. */
+.tenant-dd-note {
+    padding: 0.4rem 0.75rem 0.4rem 1.9rem;
+    color: var(--fg-muted);
+    font-style: italic;
+    font-size: 0.85rem;
+}
+.tenant-dd-opt:hover,
+.tenant-dd-opt.is-active { background: var(--surface-alt); }
+.tenant-dd-opt.is-active { box-shadow: inset 2px 0 0 var(--accent); }
+.tenant-dd-opt.is-selected { color: var(--accent); font-weight: 600; }
+
+/* Indent so the hierarchy reads at a glance: all-clients flush, a whole-client "All apps" one step
+   in, individual apps a step further. */
+.tenant-dd-opt-all { font-weight: 600; }
+.tenant-dd-opt-client { padding-left: 1.1rem; }
+.tenant-dd-opt-app { padding-left: 1.9rem; }
+
+/* Fixed-width check gutter keeps every label left-aligned whether or not it's the current scope. */
+.tenant-dd-check { flex: 0 0 auto; width: 1rem; text-align: center; color: var(--accent); }
+.tenant-dd-opt.is-selected .tenant-dd-check::before { content: "\2713"; }
+.tenant-dd-opt-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── API console (/ApiConsole) ────────────────────────────────────────────────────────────────
+   A two-pane Hoppscotch-style runner: request library on the left, editor + response on the right.
+   Self-contained under .api-console so it doesn't lean on element-level base styles that don't cover
+   the search/textarea variants used here. */
+.api-console {
+    display: grid;
+    grid-template-columns: minmax(220px, 280px) 1fr;
+    gap: var(--space-4);
+    align-items: start;
+}
+/* Download row in the console hint-box: collection / environment .json export buttons. */
+.apic-downloads {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
+}
+.api-console .input,
+.api-console textarea {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font: inherit;
+    background: var(--surface);
+    color: var(--fg);
+}
+.api-console .code,
+.api-console textarea.code {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    background: var(--code-bg);
+    color: var(--code-fg);
+    border: none;
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    margin: 0;
+    white-space: pre;
+    overflow: auto;
+}
+
+/* Left: request library */
+.apic-library {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    overflow: hidden;
+    position: sticky;
+    top: var(--space-4);
+}
+.apic-library-search { padding: var(--space-2); border-bottom: 1px solid var(--border); }
+.apic-tree { max-height: 70vh; overflow-y: auto; padding: var(--space-2); }
+.apic-folder-head {
+    width: 100%;
+    text-align: left;
+    font-weight: 600;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    color: var(--fg-muted);
+    background: none;
+    border: none;
+    padding: 0.45rem 0.4rem;
+    cursor: pointer;
+}
+.apic-folder-head::before { content: "▾ "; }
+.apic-folder-head[aria-expanded="false"]::before { content: "▸ "; }
+.apic-folder-body { padding-left: 0.3rem; margin-bottom: 0.3rem; }
+.apic-req {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: 0.3rem 0.4rem;
+    cursor: pointer;
+    color: var(--fg);
+    font-size: 0.85rem;
+}
+.apic-req:hover { background: var(--surface-alt); }
+.apic-req.is-active { background: var(--accent-bg); }
+.apic-req-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.apic-req-method {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    font-weight: 700;
+    width: 3.1em;
+    text-align: center;
+    padding: 0.1rem 0;
+    border-radius: var(--radius-sm);
+    color: var(--on-accent);
+    background: var(--fg-muted);
+}
+.apic-req-method.m-get    { background: #1b5e20; }
+.apic-req-method.m-post   { background: #b06a00; }
+.apic-req-method.m-put    { background: #2f5d9e; }
+.apic-req-method.m-patch  { background: #6a3d9e; }
+.apic-req-method.m-delete { background: var(--danger); }
+
+.apic-tree-empty { padding: var(--space-3); font-size: 0.85rem; margin: 0; }
+
+/* Right: editor */
+.apic-main { min-width: 0; }
+.apic-bar { display: flex; gap: var(--space-2); }
+/* Method select carries its method colour as a left accent + tinted text, mirroring the library
+   badges so the verb reads at a glance. */
+.apic-method { flex: none; width: 7rem; font-weight: 600; border-left-width: 3px; }
+.apic-method[data-method="get"]    { border-left-color: #1b5e20; color: #1b5e20; }
+.apic-method[data-method="post"]   { border-left-color: #b06a00; color: #b06a00; }
+.apic-method[data-method="put"]    { border-left-color: #2f5d9e; color: #2f5d9e; }
+.apic-method[data-method="patch"]  { border-left-color: #6a3d9e; color: #6a3d9e; }
+.apic-method[data-method="delete"] { border-left-color: var(--danger); color: var(--danger); }
+.apic-url { flex: 1 1 auto; font-family: var(--font-mono); font-size: 0.85rem; }
+.apic-send { flex: none; display: inline-flex; align-items: center; gap: 0.4rem; }
+.apic-send.is-loading { opacity: 0.7; cursor: progress; }
+.apic-kbd {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    line-height: 1;
+    padding: 0.15rem 0.3rem;
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.22);
+    color: var(--on-accent);
+}
+.apic-resolved {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    margin: var(--space-2) 0 0;
+    word-break: break-all;
+}
+.apic-warn {
+    font-size: 0.78rem;
+    margin: var(--space-2) 0 0;
+    padding: 0.35rem 0.55rem;
+    border-radius: var(--radius-sm);
+    background: var(--warn-soft-bg);
+    color: var(--warn-soft-fg);
+    border: 1px solid var(--warn-soft-border);
+}
+.apic-desc { font-size: 0.85rem; margin: var(--space-2) 0 0; }
+
+.apic-tabs { display: flex; gap: 0.2rem; border-bottom: 1px solid var(--border); margin-top: var(--space-3); }
+.apic-tab {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 0.4rem 0.7rem;
+    cursor: pointer;
+    color: var(--fg-muted);
+    font-size: 0.85rem;
+}
+.apic-tab.is-active { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
+.apic-tabs-sm { border-bottom: none; }
+.apic-tabs-sm .apic-tab { padding: 0.1rem 0.5rem; }
+.apic-badge {
+    display: inline-block;
+    min-width: 1.1em;
+    padding: 0 0.35em;
+    border-radius: var(--radius-pill);
+    background: var(--border);
+    color: var(--fg);
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-align: center;
+    vertical-align: 1px;
+}
+
+.apic-panel { margin-top: var(--space-3); }
+.apic-panel-actions { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); margin-bottom: var(--space-2); }
+.apic-panel-tools { display: inline-flex; gap: var(--space-2); }
+.apic-body { min-height: 11rem; resize: vertical; }
+.apic-tests { max-height: 18rem; }
+
+/* Small ghost button shared by all the inline panel/response actions (Copy, Wrap, Format, +add…). */
+.apic-ghost {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--fg-muted);
+    font-size: 0.78rem;
+    padding: 0.25rem 0.55rem;
+    cursor: pointer;
+}
+.apic-ghost:hover { color: var(--fg); border-color: var(--fg-muted); }
+.apic-ghost.is-done { color: var(--success); border-color: var(--success-border); }
+.apic-chip {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: var(--radius-pill);
+    background: var(--surface-alt);
+    border: 1px solid var(--border);
+    color: var(--fg-muted);
+}
+
+.apic-kv { width: 100%; border-collapse: collapse; }
+.apic-kv td { padding: 0.15rem 0.2rem 0.15rem 0; vertical-align: middle; }
+.apic-kv td:nth-child(3) { width: 2rem; }
+.apic-kv-key { font-family: var(--font-mono); font-size: 0.8rem; }
+.apic-kv-val { font-family: var(--font-mono); font-size: 0.8rem; }
+.apic-kv-del {
+    background: none;
+    border: none;
+    color: var(--fg-muted);
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 0.3rem;
+}
+.apic-kv-del:hover { color: var(--danger); }
+
+/* Response */
+.apic-response { margin-top: var(--space-4); border-top: 1px solid var(--border); padding-top: var(--space-3); }
+.apic-response-meta { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-2); }
+.apic-meta-item { font-family: var(--font-mono); font-size: 0.8rem; color: var(--fg-muted); }
+.apic-response-tools { margin-left: auto; display: inline-flex; align-items: center; gap: var(--space-2); }
+/* Status as a filled pill so the outcome is unmistakable at a glance. */
+.apic-status {
+    font-weight: 700;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    padding: 0.15rem 0.55rem;
+    border-radius: var(--radius-pill);
+}
+.apic-status.s-ok    { color: var(--success); background: var(--success-bg); }
+.apic-status.s-redir { color: #2f5d9e; background: #eaf1fb; }
+.apic-status.s-warn  { color: var(--warn-soft-fg); background: var(--warn-soft-bg); }
+.apic-status.s-err   { color: var(--danger); background: var(--danger-bg); }
+.apic-out { max-height: 28rem; }
+.apic-out.is-wrap { white-space: pre-wrap; word-break: break-word; }
+
+/* JSON response syntax highlighting (tokens emitted by highlightJson). */
+.apic-out .j-key  { color: #9cdcfe; }
+.apic-out .j-str  { color: #ce9178; }
+.apic-out .j-num  { color: #b5cea8; }
+.apic-out .j-bool { color: #569cd6; }
+.apic-out .j-null { color: #c586c0; }
+
+@media (max-width: 800px) {
+    .api-console { grid-template-columns: 1fr; }
+    .apic-library { position: static; }
+}

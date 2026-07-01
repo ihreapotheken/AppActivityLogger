@@ -86,7 +86,7 @@ public sealed class RSAErrorsModel : PageModel
     {
         SelectedRange = ParseRange(RangeKey);
         RateWindow = RSAErrorRateWindow.Resolve(SelectedRange, RateFrom, RateTo, DateTimeOffset.UtcNow);
-        Dashboard = _errors.Build(CanonicalPlatform, RateWindow);
+        Dashboard = _errors.Build(CanonicalPlatform, RateWindow, Scope.ClientId, Scope.AppId);
         Listing = await _listing.ListAsync(Filter, PageSize, Scope, ct).ConfigureAwait(false);
     }
 
